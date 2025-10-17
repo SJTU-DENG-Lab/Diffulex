@@ -42,10 +42,10 @@ Q: There are 15 trees in the grove. Grove workers will plant trees in the grove 
 
 
 if __name__ == "__main__":
-    model = "/root/autodl-fs/models/Dream-org/Dream-v0-Base-7B"
+    model = "ckpt/Dream-v0-Base-7B"
     LLM = LLM(
         model,
-        lora_path="/root/autodl-fs/models/SJTU-Deng-Lab/D2F_Dream_Base_7B_Lora",
+        lora_path="ckpt/D2F_Dream_Base_7B_Lora",
         use_lora=True,
         model_name="dream", 
         model_type="diffusion_lm",
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
     
-    dataset = load_dataset("/root/autodl-fs/datasets/openai/gsm8k", "main")['test']['question'][:]
+    dataset = load_dataset("data/gsm8k", "main")['test']['question'][:]
     prompts = [tokenizer.bos_token + FEW_SHOTS + p for p in tqdm(dataset)]
     
     output_file = "log/profiles/perf_dvllm_dream_7B.json"
@@ -85,6 +85,6 @@ if __name__ == "__main__":
           f"Avg TPS: {sum(len(o['token_ids']) for o in outputs) / (e - s):.2f} tok/s.\n"
           f"AVG Number of Diffusion Steps: {sum(o['n_diff_steps'] for o in outputs) / len(outputs):.2f}\n",
           "=*=" * 30)
-    for idx, o in enumerate(outputs):
-        print("\n", "=*=" * 30)
-        print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")
+    # for idx, o in enumerate(outputs):
+    #     print("\n", "=*=" * 30)
+    #     print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")

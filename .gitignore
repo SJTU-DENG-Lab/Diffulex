@@ -29,3 +29,5 @@ dist/
 build/
 cache/
 uv.lock
+ckpt/
+data/

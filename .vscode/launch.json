@@ -3,25 +3,41 @@
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
-    "configurations": [    
-    
-    
-    
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "env": {
+                "HF_ALLOW_CODE_EVAL": "1",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+        },
         {
             "name": "PyDbg: `Dream` Accelerate Launch Debug",
             "type": "debugpy",
             "request": "launch",
             "module": "accelerate.commands.launch",
             "args": [
-                "--main_process_port", "29520",
-                "--num_processes", "1",
+                "--main_process_port",
+                "29520",
+                "--num_processes",
+                "1",
                 "eval_dream.py",
-                "--model", "dream_lora",
-                "--model_args", "pretrained=/data1/ckpts/Dream-org/Dream-v0-Base-7B,lora_path=/data1/xck/ckpt/wx_dream_base/Decoder-ddt_test-20k,max_new_tokens=256,diffusion_steps=256,temperature=0,add_bos_token=true,escape_until=true,block_size=32,block_add_threshold=0.9,skip_threshold=0.95,decoded_token_threshold=0.9,dtype=bfloat16,sampling_strategy=default,save_dir=evals_dream_single/Decoder-ddt_test-20k/humaneval-ns0-len256-temp0-limit10000-diffsteps256-block32-thresh0.9-decodethresh0.9-skip0.95-toppnone-dtypebfloat16-samplingdefault",
-                "--tasks", "humaneval",
-                "--num_fewshot", "0",
-                "--batch_size", "1",
-                "--output_path", "evals_dream_single/Decoder-ddt_test-20k/humaneval-ns0-len256-temp0-limit10000-diffsteps256-block32-thresh0.9-decodethresh0.9-skip0.95-toppnone-dtypebfloat16-samplingdefault",
+                "--model",
+                "dream_lora",
+                "--model_args",
+                "pretrained=/data1/ckpts/Dream-org/Dream-v0-Base-7B,lora_path=/data1/xck/ckpt/wx_dream_base/Decoder-ddt_test-20k,max_new_tokens=256,diffusion_steps=256,temperature=0,add_bos_token=true,escape_until=true,block_size=32,block_add_threshold=0.9,skip_threshold=0.95,decoded_token_threshold=0.9,dtype=bfloat16,sampling_strategy=default,save_dir=evals_dream_single/Decoder-ddt_test-20k/humaneval-ns0-len256-temp0-limit10000-diffsteps256-block32-thresh0.9-decodethresh0.9-skip0.95-toppnone-dtypebfloat16-samplingdefault",
+                "--tasks",
+                "humaneval",
+                "--num_fewshot",
+                "0",
+                "--batch_size",
+                "1",
+                "--output_path",
+                "evals_dream_single/Decoder-ddt_test-20k/humaneval-ns0-len256-temp0-limit10000-diffsteps256-block32-thresh0.9-decodethresh0.9-skip0.95-toppnone-dtypebfloat16-samplingdefault",
                 "--log_samples",
                 "--confirm_run_unsafe_code"
             ],
