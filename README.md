@@ -10,10 +10,6 @@ vLLM implementation for Diffusion LLMs, D2F is integrated as the core inference 
 
 Based on [Nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm).
 
-## How We Implement
-
-
-
 ## Easy Install D2F-vLLM
 
 ```shell

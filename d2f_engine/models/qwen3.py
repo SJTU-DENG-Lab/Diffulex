@@ -1,14 +1,15 @@
 import torch
-from torch import nn
+import torch.nn as nn
 import torch.distributed as dist
+
 from transformers import Qwen3Config
 
-from d2f_engine.layers.activation import SiluAndMul
-from d2f_engine.layers.attention.attention_v4 import Attention
 from d2f_engine.layers.layernorm import RMSNorm
-from d2f_engine.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from d2f_engine.layers.activation import SiluAndMul
 from d2f_engine.layers.rotary_embedding import get_rope
+from d2f_engine.layers.attention.attention_v4 import Attention
 from d2f_engine.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from d2f_engine.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 
 
 class Qwen3Attention(nn.Module):

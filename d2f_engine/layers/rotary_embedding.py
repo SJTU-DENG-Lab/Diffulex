@@ -1,6 +1,7 @@
-from functools import lru_cache
 import torch
-from torch import nn
+import torch.nn as nn
+
+from functools import lru_cache
 
 
 def apply_rotary_emb(

@@ -1,8 +1,8 @@
 import torch
 
 from collections import deque
-from typing import Tuple, List, Deque
 from abc import ABC, abstractmethod
+from typing import Tuple, List, Deque
 
 from d2f_engine.config import Config
 from d2f_engine.engine.sequence import (

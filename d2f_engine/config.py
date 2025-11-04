@@ -9,6 +9,8 @@ class Config:
     lora_path: str = ""
     model_name: str = "dream"
     model_type: str = "diffusion_lm" # "causal_lm" or "diffusion_lm"
+    decoding_strategy: str = "d2f" # "d2f", "fast-dllm-v2", "block-diffusion"
+    
     mask_token_id: int = 151666
     diffusion_block_size: int = 32
     

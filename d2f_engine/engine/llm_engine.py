@@ -2,11 +2,11 @@ import atexit
 
 import torch.multiprocessing as mp
 
-from dataclasses import fields
-from time import perf_counter
-from tqdm.auto import tqdm
-from transformers import AutoTokenizer
 from typing import List
+from tqdm.auto import tqdm
+from time import perf_counter
+from dataclasses import fields
+from transformers import AutoTokenizer
 
 from d2f_engine.config import Config
 from d2f_engine.sampling_params import SamplingParams

@@ -1,7 +1,7 @@
 import time
-
-import pickle
 import torch
+import pickle
+
 import torch.distributed as dist
 
 from typing import List
@@ -22,6 +22,7 @@ from d2f_engine.utils.context import (
     get_context_diffusion_lm,
     reset_context_diffusion_lm
 )
+
 
 class ModelRunnerBase(ABC):
     """Base class for model runners supporting different model types."""
@@ -361,6 +362,7 @@ class ModelRunnerForDiffusionLM(ModelRunnerBase):
         super().__init__(config, rank, event)
         self.diffusion_block_size = config.diffusion_block_size
         self.mask_token_id = config.mask_token_id
+        self.decoding_strategy = config.decoding_strategy
             
     def warmup_model(self):
         # return

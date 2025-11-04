@@ -3,11 +3,12 @@ import torch
 from copy import copy
 from enum import Enum, auto
 from itertools import count
-from typing import List, Tuple, Any
 from dataclasses import dataclass
+from typing import List, Tuple, Any
 
 from d2f_engine.config import Config
 from d2f_engine.sampling_params import SamplingParams
+
 
 class SequenceStatus(Enum):
     WAITING = auto()
@@ -215,6 +216,7 @@ class SequenceForDiffusionLM(SequenceBase):
                  config: Config = None):
         super().__init__(token_ids, sampling_params)
         self.config = config
+        self.decoding_strategy = config.decoding_strategy
         self.kv_cache_layout = config.kv_cache_layout
         self.eos_token_id = config.eos
         self.max_model_len = config.max_model_len
@@ -256,6 +258,7 @@ class SequenceForDiffusionLM(SequenceBase):
             "max_tokens": self.max_tokens,
             "ignore_eos": self.ignore_eos,
             "config": self.config,
+            "decoding_strategy": self.decoding_strategy,
             "kv_cache_layout": self.kv_cache_layout,
             "eos_token_id": self.eos_token_id,
             "max_model_len": self.max_model_len,
@@ -288,6 +291,7 @@ class SequenceForDiffusionLM(SequenceBase):
         self.meet_eos = state["meet_eos"]
 
         self.config = state["config"]
+        self.decoding_strategy = state.get("decoding_strategy", getattr(self.config, "decoding_strategy", None))
         self.kv_cache_layout = state.get("kv_cache_layout", getattr(self.config, "kv_cache_layout", None))
         self.eos_token_id = state["eos_token_id"]
         self.max_model_len = state["max_model_len"]
