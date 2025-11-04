@@ -3,7 +3,7 @@ import torch
 
 from einops import rearrange
 
-from d2f_engine.layers.attention.attention_v4 import store_kvcache_distinct_layout, store_kvcache_unified
+from diffuserve.legacy.layers.attention.attention_v4 import store_kvcache_distinct_layout, store_kvcache_unified
 
 
 if __name__ == "__main__":

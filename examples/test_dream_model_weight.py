@@ -4,8 +4,8 @@ import torch
 from peft import PeftModel, PeftConfig
 from lm_eval.models.utils import get_dtype
 
-from d2f_engine.config import Config
-from d2f_engine.models.auto_model import AutoModelLM
+from diffuserve.legacy.config import Config
+from diffuserve.legacy.models.auto_model import AutoModelLM
 
 from model_cache.dream.model_dream import DreamModel
 from model_cache.dream.configuration_dream import DreamConfig

@@ -1,6 +1,6 @@
 import os
 
-from d2f_engine import LLM, SamplingParams
+from diffuserve.legacy import LLM, SamplingParams
 from viztracer import VizTracer
 
 
