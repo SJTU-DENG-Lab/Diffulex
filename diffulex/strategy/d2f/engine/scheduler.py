@@ -4,7 +4,6 @@ from diffulex.config import Config
 from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
 from diffulex.engine.sequence import SequenceBase, SequenceStatus
 from .sequence import D2FSequence
-from diffulex.layer.sampler import SampleOutputForDiffusionLM
 
 
 @AutoScheduler.register("d2f", is_default=True)
@@ -91,7 +90,7 @@ class D2FScheduler(SchedulerBase):
     def postprocess(
         self,
         seqs: list[D2FSequence],
-        sample_output: SampleOutputForDiffusionLM,
+        sample_output,
     ) -> dict[int, int]:
         n_diff_steps: dict[int, int] = {}
         for seq in seqs:

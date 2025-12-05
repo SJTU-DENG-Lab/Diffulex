@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, list
+from typing import TYPE_CHECKING
 
 from diffulex.config import Config
 from diffulex.engine.kvcache_manager import AutoKVCacheManager, KVCacheManagerBase
 
 if TYPE_CHECKING:
-    from .sequence import BlockDiffusionSequence
+    from .sequence import BDSequence
 
 
 @AutoKVCacheManager.register("block_diffusion", is_default=True)
-class BlockDiffusionKVCacheManager(KVCacheManagerBase):
+class BDKVCacheManager(KVCacheManagerBase):
     def __init__(self, config: Config):
         super().__init__(config)
 
-    def can_append(self, seq: "BlockDiffusionSequence") -> bool:
+    def can_append(self, seq: "BDSequence") -> bool:
         required = 1 if seq.cached_or_caching_num_tokens % self.block_size == 1 else 0
         return len(self.free_block_ids) >= required
 
-    def may_append(self, seq: "BlockDiffusionSequence") -> None:
+    def may_append(self, seq: "BDSequence") -> None:
         if seq.cached_or_caching_num_tokens == 0:
             return
         block_table = seq.block_table

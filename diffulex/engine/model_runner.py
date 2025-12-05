@@ -9,7 +9,7 @@ from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
 
 from diffulex.config import Config
-from diffulex.layer.sampler import AutoSampler
+from diffulex.sampler import AutoSampler
 from diffulex.engine.sequence import SequenceBase
 from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry

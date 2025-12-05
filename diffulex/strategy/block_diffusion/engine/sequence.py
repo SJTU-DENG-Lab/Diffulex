@@ -2,24 +2,24 @@ from __future__ import annotations
 
 import torch
 
-from dataclasses import dataclass
 from enum import Enum, auto
+from dataclasses import dataclass
 
 from diffulex.config import Config
-from diffulex.engine.sequence import AutoSequence, SequenceBase
 from diffulex.sampling_params import SamplingParams
+from diffulex.engine.sequence import AutoSequence, SequenceBase
 
 
-class BlockDiffusionBlockStatus(Enum):
+class BDDiffusionBlockStatus(Enum):
     ACTIVE = auto()
     TO_CACHE = auto()
     IN_CACHE = auto()
 
 
 @dataclass
-class BlockDiffusionBlock:
+class BDDiffusionBlock:
     block_id: int = 0
-    status: BlockDiffusionBlockStatus = BlockDiffusionBlockStatus.ACTIVE
+    status: BDDiffusionBlockStatus = BDDiffusionBlockStatus.ACTIVE
 
     global_start_id: int = 0
     global_end_id: int | None = None
@@ -33,9 +33,9 @@ class BlockDiffusionBlock:
     add_new_block_threshold: float = 0.1
     complete_threshold: float = 0.9
 
-    seq: "BlockDiffusionSequence" | None = None
-    pre_block: "BlockDiffusionBlock" | None = None
-    suf_block: "BlockDiffusionBlock" | None = None
+    seq: "BDSequence" | None = None
+    pre_block: "BDDiffusionBlock" | None = None
+    suf_block: "BDDiffusionBlock" | None = None
 
     def __post_init__(self) -> None:
         self.global_end_id = self.global_start_id + self.size
@@ -58,15 +58,15 @@ class BlockDiffusionBlock:
 
     @property
     def is_active(self) -> bool:
-        return self.status == BlockDiffusionBlockStatus.ACTIVE
+        return self.status == BDDiffusionBlockStatus.ACTIVE
 
     @property
     def is_in_cache(self) -> bool:
-        return self.status == BlockDiffusionBlockStatus.IN_CACHE
+        return self.status == BDDiffusionBlockStatus.IN_CACHE
 
     @property
     def is_to_cache(self) -> bool:
-        return self.status == BlockDiffusionBlockStatus.TO_CACHE
+        return self.status == BDDiffusionBlockStatus.TO_CACHE
 
     @property
     def pre_block_complete(self) -> bool:
@@ -106,11 +106,11 @@ class BlockDiffusionBlock:
 
     def to_cache(self) -> None:
         if self.available_to_cache and not self.is_in_cache:
-            self.status = BlockDiffusionBlockStatus.TO_CACHE
+            self.status = BDDiffusionBlockStatus.TO_CACHE
 
     def in_cache(self) -> None:
         if self.is_to_cache:
-            self.status = BlockDiffusionBlockStatus.IN_CACHE
+            self.status = BDDiffusionBlockStatus.IN_CACHE
 
     def modify_token(self, local_token_id: int, modified_to: int) -> None:
         if self.seq is None:
@@ -122,7 +122,7 @@ class BlockDiffusionBlock:
 
 
 @AutoSequence.register("block_diffusion", is_default=True)
-class BlockDiffusionSequence(SequenceBase):
+class BDSequence(SequenceBase):
     """Sequence implementation tailored for diffusion-based decoding."""
 
     def __init__(
@@ -133,17 +133,15 @@ class BlockDiffusionSequence(SequenceBase):
     ):
         super().__init__(token_ids, sampling_params)
         if config is None:
-            raise ValueError("SequenceForDiffusionLM requires a Config instance.")
+            raise ValueError("BDSequence requires a Config instance.")
         self.config = config
-        self.decoding_strategy = config.decoding_strategy
         self.kv_cache_layout = config.kv_cache_layout
         self.eos_token_id = config.eos
         self.max_model_len = config.max_model_len
         self.mask_token_id = config.mask_token_id
         self.diffusion_block_size = config.diffusion_block_size
-        self.block_mask: torch.Tensor | None = None
         self.meet_eos = False
-        self.diffusion_blocks: list[BlockDiffusionBlock] = []
+        self.diffusion_blocks: list[BDDiffusionBlock] = []
         self.n_steps = 0
         self.input_token_ids: list[int] = []
         self.input_num_tokens = 0
@@ -151,9 +149,9 @@ class BlockDiffusionSequence(SequenceBase):
 
     def __repr__(self) -> str:
         return (
-            "SequenceForDiffusionLM(seq_id={seq_id}, status={status}, num_tokens={num_tokens}, "
+            "BDSequence(seq_id={seq_id}, status={status}, num_tokens={num_tokens}, "
             "num_prompt_tokens={num_prompt_tokens}, num_cached_tokens={num_cached_tokens}, "
-            "diffusion_block_size={diffusion_block_size}, mask_shape={mask_shape})"
+            "diffusion_block_size={diffusion_block_size})"
         ).format(
             seq_id=self.seq_id,
             status=self.status.name,
@@ -161,7 +159,6 @@ class BlockDiffusionSequence(SequenceBase):
             num_prompt_tokens=self.num_prompt_tokens,
             num_cached_tokens=self.num_cached_tokens,
             diffusion_block_size=self.diffusion_block_size,
-            mask_shape=self.block_mask.shape if self.block_mask is not None else None,
         )
 
     def __getstate__(self):
@@ -197,7 +194,6 @@ class BlockDiffusionSequence(SequenceBase):
             "max_tokens": self.max_tokens,
             "ignore_eos": self.ignore_eos,
             "config": self.config,
-            "decoding_strategy": self.decoding_strategy,
             "kv_cache_layout": self.kv_cache_layout,
             "eos_token_id": self.eos_token_id,
             "max_model_len": self.max_model_len,
@@ -208,7 +204,6 @@ class BlockDiffusionSequence(SequenceBase):
             "input_num_tokens": self.input_num_tokens,
             "input_num_prompt_tokens": self.input_num_prompt_tokens,
             "new_tokens": self.new_tokens,
-            "block_mask": self.block_mask,
             "meet_eos": self.meet_eos,
             "n_steps": self.n_steps,
         }
@@ -230,7 +225,6 @@ class BlockDiffusionSequence(SequenceBase):
         self.meet_eos = state["meet_eos"]
 
         self.config = state["config"]
-        self.decoding_strategy = state.get("decoding_strategy", getattr(self.config, "decoding_strategy", None))
         self.kv_cache_layout = state.get("kv_cache_layout", getattr(self.config, "kv_cache_layout", None))
         self.eos_token_id = state["eos_token_id"]
         self.max_model_len = state["max_model_len"]
@@ -241,7 +235,6 @@ class BlockDiffusionSequence(SequenceBase):
         self.input_num_tokens = state.get("input_num_tokens", 0)
         self.input_num_prompt_tokens = state.get("input_num_prompt_tokens", 0)
         self.new_tokens = state.get("new_tokens", 0)
-        self.block_mask = state.get("block_mask")
         self.n_steps = state.get("n_steps", 0)
 
         if self.block_mask is not None and self.block_mask.device.index != torch.cuda.current_device():
@@ -250,7 +243,7 @@ class BlockDiffusionSequence(SequenceBase):
         self.diffusion_blocks = []
         pre_block = None
         for block_state in state["diffusion_blocks_state"]:
-            block = BlockDiffusionBlock(
+            block = BDDiffusionBlock(
                 block_id=block_state["block_id"],
                 status=block_state["status"],
                 global_start_id=block_state["global_start_id"],
@@ -396,40 +389,6 @@ class BlockDiffusionSequence(SequenceBase):
     def set_layout(self, layout: str) -> None:
         self.kv_cache_layout = layout
 
-    @property
-    def current_block_mask(self) -> torch.Tensor:
-        if self.block_mask is None:
-            raise RuntimeError("Block mask not initialized.")
-        if self.kv_cache_layout == "distinct":
-            return self.block_mask[..., self.cached_num_tokens :, self.cached_num_tokens :]
-        return self.block_mask[..., self.cached_num_tokens :, :]
-
-    def update_block_mask(self, is_prefill: bool = False) -> None:
-        if is_prefill:
-            num_tokens = self.num_tokens
-            mask_shape = (1, 1, num_tokens, num_tokens)
-            block_mask = torch.zeros(mask_shape, dtype=torch.bool, device=torch.cuda.current_device())
-            block_mask[..., : self.input_num_tokens, : self.input_num_tokens] = True
-            num_diffusion_blocks = (
-                self.num_tokens - self.input_num_tokens + self.diffusion_block_size - 1
-            ) // self.diffusion_block_size
-            for block_id in range(num_diffusion_blocks):
-                start_h = self.input_num_tokens + block_id * self.diffusion_block_size
-                end_h = start_h + self.diffusion_block_size
-                block_mask[..., start_h:end_h, :end_h] = True
-            self.block_mask = block_mask.clone()
-            return
-
-        if self.block_mask is None:
-            raise RuntimeError("Prefill block mask must be created before decode updates.")
-        dev = self.block_mask.device
-        left_shape = (1, 1, self.num_tokens - self.diffusion_block_size, self.diffusion_block_size)
-        down_shape = (1, 1, self.diffusion_block_size, self.num_tokens)
-        left_cat_tensor = torch.zeros(left_shape, dtype=torch.bool, device=dev)
-        down_cat_tensor = torch.ones(down_shape, dtype=torch.bool, device=dev)
-        self.block_mask = torch.cat([self.block_mask, left_cat_tensor], dim=-1)
-        self.block_mask = torch.cat([self.block_mask, down_cat_tensor], dim=-2)
-
     def next_diffusion_step(self, is_prefill: bool = False) -> None:
         self.n_steps += 1
         if is_prefill:
@@ -438,9 +397,9 @@ class BlockDiffusionSequence(SequenceBase):
             self.input_num_prompt_tokens = self.num_prompt_tokens
             self.num_prompt_tokens += self.diffusion_block_size
             self.diffusion_blocks.append(
-                BlockDiffusionBlock(
+                BDDiffusionBlock(
                     block_id=len(self.diffusion_blocks),
-                    status=BlockDiffusionBlockStatus.TO_CACHE,
+                    status=BDDiffusionBlockStatus.TO_CACHE,
                     global_start_id=0,
                     mask_token_id=self.mask_token_id,
                     size=len(self.input_token_ids),
@@ -461,9 +420,9 @@ class BlockDiffusionSequence(SequenceBase):
                 return
             added_num_tokens = min(self.diffusion_block_size, remaining)
             diffusion_seq = [self.mask_token_id] * added_num_tokens
-            current_block = BlockDiffusionBlock(
+            current_block = BDDiffusionBlock(
                 block_id=len(self.diffusion_blocks),
-                status=BlockDiffusionBlockStatus.ACTIVE,
+                status=BDDiffusionBlockStatus.ACTIVE,
                 global_start_id=self.num_tokens,
                 mask_token_id=self.mask_token_id,
                 size=added_num_tokens,
@@ -477,4 +436,3 @@ class BlockDiffusionSequence(SequenceBase):
             self.token_ids += diffusion_seq
             self.num_tokens += added_num_tokens
             self.diffusion_blocks.append(current_block)
-            self.update_block_mask(is_prefill=is_prefill)

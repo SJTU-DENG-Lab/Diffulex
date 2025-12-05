@@ -17,13 +17,13 @@ from diffulex.strategy.d2f.attention.metadata import fetch_d2f_attn_metadata, se
 @AutoModelRunner.register("d2f", is_default=True)
 class D2FModelRunner(ModelRunnerBase):
     """Reference implementation of D2F decoding strategy."""
-
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+        # Set fetch function BEFORE calling super().__init__ 
+        set_fetch_fn_for_attn_metadata(fetch_d2f_attn_metadata)
+        
         super().__init__(config, rank, event)
         self.diffusion_block_size = config.diffusion_block_size
         self.mask_token_id = config.mask_token_id
-        self.decoding_strategy = config.decoding_strategy
-        set_fetch_fn_for_attn_metadata(fetch_d2f_attn_metadata)
 
     def warmup_model(self):
         print("Warming up model...")

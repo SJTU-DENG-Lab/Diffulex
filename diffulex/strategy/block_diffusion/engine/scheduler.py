@@ -3,12 +3,11 @@ from __future__ import annotations
 from diffulex.config import Config
 from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
 from diffulex.engine.sequence import SequenceBase, SequenceStatus
-from .sequence import BlockDiffusionSequence
-from diffulex.layer.sampler import SampleOutputForDiffusionLM
+from .sequence import BDSequence
 
 
 @AutoScheduler.register("block_diffusion", is_default=True)
-class BlockDiffusionScheduler(SchedulerBase):
+class BDScheduler(SchedulerBase):
     def __init__(self, config: Config):
         super().__init__(config)
         self.diffusion_block_size = config.diffusion_block_size
@@ -16,7 +15,7 @@ class BlockDiffusionScheduler(SchedulerBase):
     def is_finished(self) -> bool:
         return not self.waiting and not self.running
 
-    def add(self, seq: BlockDiffusionSequence) -> None:
+    def add(self, seq: BDSequence) -> None:
         self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[SequenceBase], bool]:
@@ -77,21 +76,21 @@ class BlockDiffusionScheduler(SchedulerBase):
                     f"can_append={can_append}"
                 )
             raise RuntimeError(
-                "BlockDiffusionScheduler: unable to schedule any sequence in decode; "
+                "BDScheduler: unable to schedule any sequence in decode; "
                 f"state={diag}; details={' | '.join(details)}"
             )
         self.running.extendleft(reversed(scheduled))
         return scheduled, False
 
-    def preempt(self, seq: BlockDiffusionSequence) -> None:
+    def preempt(self, seq: BDSequence) -> None:
         seq.status = SequenceStatus.WAITING
         self.block_manager.free(seq)
         self.waiting.appendleft(seq)
 
     def postprocess(
         self,
-        seqs: list[BlockDiffusionSequence],
-        sample_output: SampleOutputForDiffusionLM,
+        seqs: list[BDSequence],
+        sample_output,
     ) -> dict[int, int]:
         n_diff_steps: dict[int, int] = {}
         for seq in seqs:

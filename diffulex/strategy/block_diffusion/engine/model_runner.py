@@ -1,29 +1,29 @@
 from __future__ import annotations
 
 import time
-from typing import list
+
 from multiprocessing.synchronize import Event
 
 import torch
 
 from diffulex.config import Config
 from diffulex.engine.sequence import SequenceBase
-from diffulex.strategy.block_diffusion.engine.sequence import BlockDiffusionSequence
+from diffulex.strategy.block_diffusion.engine.sequence import BDSequence
 from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
 from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
-from diffulex.strategy.block_diffusion.attention.metadata import fetch_block_diffusion_attn_metadata, set_block_diffusion_attn_metadata, reset_block_diffusion_attn_metadata
+from diffulex.strategy.block_diffusion.attention.metadata import fetch_bd_attn_metadata, set_bd_attn_metadata, reset_bd_attn_metadata
 
 
 @AutoModelRunner.register("block_diffusion", is_default=True)
-class BlockDiffusionModelRunner(ModelRunnerBase):
+class BDModelRunner(ModelRunnerBase):
     """Reference implementation of Block Diffusion decoding strategy."""
-
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
+        # Set fetch function BEFORE calling super().__init__ 
+        set_fetch_fn_for_attn_metadata(fetch_bd_attn_metadata)
+        
         super().__init__(config, rank, event)
         self.diffusion_block_size = config.diffusion_block_size
         self.mask_token_id = config.mask_token_id
-        self.decoding_strategy = config.decoding_strategy
-        set_fetch_fn_for_attn_metadata(fetch_block_diffusion_attn_metadata)
 
     def warmup_model(self):
         print("Warming up model...")
@@ -35,7 +35,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
         )
         num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
         test_input_ids = [0] * max_model_len
-        seqs = [BlockDiffusionSequence(test_input_ids, config=self.config) for _ in range(num_seqs)]
+        seqs = [BDSequence(test_input_ids, config=self.config) for _ in range(num_seqs)]
         self.run(seqs, True)
         for seq in seqs:
             seq.post_process()
@@ -151,7 +151,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
                 )
             )
 
-    def prepare_prefill(self, seqs: list[BlockDiffusionSequence]):
+    def prepare_prefill(self, seqs: list[BDSequence]):
         input_ids: list[int] = []
         positions: list[int] = []
         cu_seqlens_q = [0]
@@ -223,7 +223,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
             )
         )
 
-        set_block_diffusion_attn_metadata(
+        set_bd_attn_metadata(
             True,
             cu_seqlens_q=cu_seqlens_q_tensor,
             cu_seqlens_k=cu_seqlens_k_tensor,
@@ -239,7 +239,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
         )
         return input_ids_tensor, positions_tensor
 
-    def prepare_decode(self, seqs: list[BlockDiffusionSequence]):
+    def prepare_decode(self, seqs: list[BDSequence]):
         input_ids: list[int] = []
         positions: list[int] = []
         cu_seqlens_q = [0]
@@ -346,7 +346,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
         slot_mapping_tensor = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         block_tables = self.prepare_block_tables(seqs)
-        set_block_diffusion_attn_metadata(
+        set_bd_attn_metadata(
             False,
             slot_mapping=slot_mapping_tensor,
             context_lens=context_lens_tensor,
@@ -360,7 +360,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
             seq_lens_ts=seq_lens_ts,
             kv_cache_layout=self.config.kv_cache_layout,
             need_kv_cache_store=need_kv_cache_store,
-            block_diffusion_pp=True,
+            d2f_pp=True,
         )
         return input_ids_tensor, positions_tensor
 
@@ -369,7 +369,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
             return self.model.compute_logits(self.model(input_ids, positions))
         bs = input_ids.size(0)
-        context = fetch_block_diffusion_attn_metadata()
+        context = fetch_bd_attn_metadata()
         graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
         graph_vars = self.graph_vars
         for key, value in graph_vars.items():
@@ -397,7 +397,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
         start = time.time()
         sample_output = self.sampler(logits, temperatures) if self.rank == 0 else None
         print(f"Sampled tokens in {time.time() - start:.2f} seconds")
-        reset_block_diffusion_attn_metadata()
+        reset_bd_attn_metadata()
         return sample_output
 
     def run(self, seqs: list[SequenceBase], is_prefill: bool) -> list[int]:
@@ -405,7 +405,7 @@ class BlockDiffusionModelRunner(ModelRunnerBase):
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
         logits = self.run_model(input_ids, positions, is_prefill)
         sample_output = self.sampler(logits, temperatures) if self.rank == 0 else None
-        reset_block_diffusion_attn_metadata()
+        reset_bd_attn_metadata()
         return sample_output
 
     @torch.inference_mode()
