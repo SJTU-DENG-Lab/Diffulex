@@ -15,8 +15,7 @@ class BDKVCacheManager(KVCacheManagerBase):
         super().__init__(config)
 
     def can_append(self, seq: "BDSequence") -> bool:
-        required = 1 if seq.cached_or_caching_num_tokens % self.block_size == 1 else 0
-        return len(self.free_block_ids) >= required
+        return len(self.free_block_ids) >= (seq.cached_or_caching_num_tokens % self.block_size == 1)
 
     def may_append(self, seq: "BDSequence") -> None:
         if seq.cached_or_caching_num_tokens == 0:

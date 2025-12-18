@@ -40,7 +40,10 @@ Repository = "https://zhijie-group.github.io/D2fEngine"
 "Organization" = "https://github.com/zhijie-group"
 
 [tool.setuptools.packages.find]
-include = ["diffulex"]
+include = [
+    "diffulex",
+    "diffulex_kernel",
+]
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"

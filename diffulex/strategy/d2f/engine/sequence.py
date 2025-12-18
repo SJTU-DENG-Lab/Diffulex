@@ -140,7 +140,6 @@ class D2FSequence(SequenceBase):
         self.max_model_len = config.max_model_len
         self.mask_token_id = config.mask_token_id
         self.diffusion_block_size = config.diffusion_block_size
-        self.meet_eos = False
         self.diffusion_blocks: list[D2FDiffusionBlock] = []
         self.n_steps = 0
         self.input_token_ids: list[int] = []
@@ -434,5 +433,4 @@ class D2FSequence(SequenceBase):
             )
             self.diffusion_blocks[-1].suf_block = current_block
             self.token_ids += diffusion_seq
-            self.num_tokens += added_num_tokens
             self.diffusion_blocks.append(current_block)

@@ -9,7 +9,7 @@ import torch
 from diffulex.config import Config
 from diffulex.engine.sequence import SequenceBase
 from diffulex.strategy.d2f.engine.sequence import D2FSequence
-from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
+from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata, set_warming_up, reset_warming_up
 from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
 from diffulex.strategy.d2f.attention.metadata import fetch_d2f_attn_metadata, set_d2f_attn_metadata, reset_d2f_attn_metadata
 
@@ -18,15 +18,16 @@ from diffulex.strategy.d2f.attention.metadata import fetch_d2f_attn_metadata, se
 class D2FModelRunner(ModelRunnerBase):
     """Reference implementation of D2F decoding strategy."""
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
-        # Set fetch function BEFORE calling super().__init__ 
         set_fetch_fn_for_attn_metadata(fetch_d2f_attn_metadata)
         
-        super().__init__(config, rank, event)
         self.diffusion_block_size = config.diffusion_block_size
         self.mask_token_id = config.mask_token_id
+        
+        super().__init__(config, rank, event)
 
     def warmup_model(self):
         print("Warming up model...")
+        set_warming_up(True)
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         max_num_batched_tokens, max_model_len = (
@@ -40,116 +41,7 @@ class D2FModelRunner(ModelRunnerBase):
         for seq in seqs:
             seq.post_process()
         torch.cuda.empty_cache()
-
-    def allocate_kv_cache(self):
-        config = self.config
-        hf_config = config.hf_config
-        free, total = torch.cuda.mem_get_info()
-        used = total - free
-        peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
-        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        num_kv_heads = getattr(
-            hf_config,
-            "num_key_value_heads",
-            getattr(hf_config, "n_kv_heads", None),
-        ) // self.world_size
-
-        if hasattr(hf_config, "head_dim"):
-            head_dim = hf_config.head_dim
-        elif hasattr(hf_config, "hidden_size") and hasattr(hf_config, "num_attention_heads"):
-            head_dim = hf_config.hidden_size // hf_config.num_attention_heads
-        else:
-            raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
-
-        dtype = (
-            hf_config.torch_dtype
-            if hasattr(hf_config, "torch_dtype") and hf_config.torch_dtype
-            else torch.bfloat16
-        )
-        block_bytes = (
-            2
-            * hf_config.num_hidden_layers
-            * self.block_size
-            * num_kv_heads
-            * head_dim
-            * dtype.itemsize
-        )
-        get_num_kvcache_blocks = (
-            lambda gpu_memory_utilization: int(total * gpu_memory_utilization - used - peak + current)
-            // block_bytes
-        )
-        try:
-            num_kvcache_blocks = get_num_kvcache_blocks(config.gpu_memory_utilization)
-            assert num_kvcache_blocks > 0
-        except Exception:
-            gpu_memory_utilization = config.gpu_memory_utilization
-            while num_kvcache_blocks <= 200:
-                print(
-                    "Warning: GPU memory utilization "
-                    f"{gpu_memory_utilization} is too low to allocate kv cache. "
-                    "Automatically adding 0.05."
-                )
-                gpu_memory_utilization += 0.05
-                num_kvcache_blocks = get_num_kvcache_blocks(gpu_memory_utilization)
-            print(
-                f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} "
-                "to allocate kv cache."
-            )
-            config.gpu_memory_utilization = gpu_memory_utilization
-
-        config.num_kvcache_blocks = num_kvcache_blocks
-        print(
-            "Allocated {num_blocks} blocks of size {block_size} for kv cache on rank {rank}.".format(
-                num_blocks=config.num_kvcache_blocks,
-                block_size=self.block_size,
-                rank=self.rank,
-            )
-        )
-
-        if config.kv_cache_layout == "distinct":
-            x = config.k_cache_hdim_split_factor_x
-            self.k_cache = torch.zeros(
-                hf_config.num_hidden_layers,
-                config.num_kvcache_blocks,
-                num_kv_heads,
-                head_dim // x,
-                self.block_size,
-                x,
-            )
-            self.v_cache = torch.zeros(
-                hf_config.num_hidden_layers,
-                config.num_kvcache_blocks,
-                num_kv_heads,
-                head_dim,
-                self.block_size,
-            )
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = self.k_cache[layer_id]
-                    module.v_cache = self.v_cache[layer_id]
-                    layer_id += 1
-        elif config.kv_cache_layout == "unified":
-            self.kv_cache = torch.zeros(
-                2,
-                hf_config.num_hidden_layers,
-                config.num_kvcache_blocks,
-                self.block_size,
-                num_kv_heads,
-                head_dim,
-            )
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = self.kv_cache[0, layer_id]
-                    module.v_cache = self.kv_cache[1, layer_id]
-                    layer_id += 1
-        else:
-            raise ValueError(
-                "Unsupported kv_cache_layout: {layout}. Supported values are 'distinct' and 'unified'.".format(
-                    layout=config.kv_cache_layout
-                )
-            )
+        reset_warming_up()
 
     def prepare_prefill(self, seqs: list[D2FSequence]):
         input_ids: list[int] = []
@@ -236,6 +128,9 @@ class D2FModelRunner(ModelRunnerBase):
             kv_cache_layout=self.config.kv_cache_layout,
             seq_lens=seq_lens,
             seq_lens_ts=seq_lens_ts,
+            diffusion_block_size=self.diffusion_block_size,
+            decode_mode="varlen",
+            attn_type="full_attention",
         )
         return input_ids_tensor, positions_tensor
 
@@ -360,6 +255,9 @@ class D2FModelRunner(ModelRunnerBase):
             seq_lens_ts=seq_lens_ts,
             kv_cache_layout=self.config.kv_cache_layout,
             need_kv_cache_store=need_kv_cache_store,
+            diffusion_block_size=self.diffusion_block_size,
+            decode_mode="varlen",
+            attn_type="full_attention",
         )
         return input_ids_tensor, positions_tensor
 
@@ -381,23 +279,6 @@ class D2FModelRunner(ModelRunnerBase):
         graph_vars["block_tables"][:bs, : context.block_tables.size(1)] = context.block_tables
         graph.replay()
         return self.model.compute_logits(graph_vars["outputs"][:bs])
-
-    @torch.inference_mode()
-    def run_verbose(self, seqs: list[SequenceBase], is_prefill: bool) -> list[int]:
-        print("= =" * 20)
-        print(f"Running {'prefill' if is_prefill else 'decode'} for {len(seqs)} sequences on rank {self.rank}")
-        start = time.time()
-        input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
-        print(f"Prepared input in {time.time() - start:.2f} seconds")
-        start = time.time()
-        logits = self.run_model(input_ids, positions, is_prefill)
-        print(f"Ran model in {time.time() - start:.2f} seconds")
-        start = time.time()
-        sample_output = self.sampler(logits, temperatures) if self.rank == 0 else None
-        print(f"Sampled tokens in {time.time() - start:.2f} seconds")
-        reset_d2f_attn_metadata()
-        return sample_output
 
     def run(self, seqs: list[SequenceBase], is_prefill: bool) -> list[int]:
         input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)

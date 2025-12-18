@@ -43,6 +43,9 @@ def set_d2f_attn_metadata(
     seq_lens_ts: torch.Tensor | None = None,
     kv_cache_layout: str = "unified",
     need_kv_cache_store: bool = True,
+    diffusion_block_size: int = 32,
+    decode_mode: str = "varlen",
+    attn_type: str = "full_attention",
 ) -> None:
     global D2F_ATTN_METADATA
     D2F_ATTN_METADATA = D2FAttnMetaData(
@@ -59,6 +62,9 @@ def set_d2f_attn_metadata(
         seqs=seqs,
         kv_cache_layout=kv_cache_layout,
         need_kv_cache_store=need_kv_cache_store,
+        diffusion_block_size=diffusion_block_size,
+        decode_mode=decode_mode,
+        attn_type=attn_type,
     )
 
 def reset_d2f_attn_metadata() -> None:

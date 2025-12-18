@@ -1,4 +1,3 @@
-from .attn_impl import Attention
 from . import metadata
 from .metadata import set_fetch_fn_for_attn_metadata, AttnMetaDataBase
 
@@ -13,3 +12,13 @@ class _FetchAttnMetadataProxy:
         return repr(metadata.fetch_attn_metadata)
 
 fetch_attn_metadata = _FetchAttnMetadataProxy()
+
+
+def __getattr__(name):
+    """Lazy import to avoid circular deps during module init."""
+    if name == "Attention":
+        from .attn_impl import Attention
+        return Attention
+    if name == "fetch_attn_metadata":
+        return metadata.fetch_attn_metadata
+    raise AttributeError(f"module {__name__} has no attribute {name}")

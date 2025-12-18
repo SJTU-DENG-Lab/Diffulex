@@ -40,6 +40,22 @@ class BDDiffusionBlock:
     def __len__(self) -> int:
         return self.size
     
+    def to_cache(self) -> None:
+        if self.available_to_cache and not self.is_in_cache:
+            self.status = BDDiffusionBlockStatus.TO_CACHE
+    
+    def in_cache(self) -> None:
+        if self.is_to_cache:
+            self.status = BDDiffusionBlockStatus.IN_CACHE
+            
+    def modify_token(self, local_token_id: int, modified_to: int) -> None:
+        if self.seq is None:
+            raise RuntimeError("Diffusion block is not attached to a sequence.")
+        target_id = local_token_id + self.global_start_id
+        assert self.seq.token_ids[target_id] == self.mask_token_id
+        self.seq.token_ids[target_id] = modified_to.item()  # type: ignore[assignment]
+        self.seq.new_tokens += 1
+    
     @property
     def token_ids(self) -> list[int]:
         return self.seq.token_ids[self.global_start_id: self.global_end_id]
@@ -71,6 +87,21 @@ class BDDiffusionBlock:
     @property
     def available_to_add_new_block(self) -> bool:
         return self.is_in_cache
+    
+    @property
+    def local_mask_tokens(self) -> list[bool]:
+        return [token_id == self.mask_token_id for token_id in self.token_ids]
+    
+    @property
+    def local_mask_token_ids(self) -> list[int]:
+        return [idx for idx, is_mask in enumerate(self.local_mask_tokens) if is_mask]
+    
+    @property
+    def global_mask_token_ids(self) -> list[int]:
+        if self.seq is None:
+            return []
+        offset = self.global_start_id - self.size * sum(block.is_to_cache for block in self.seq.diffusion_blocks)
+        return [mask_id + offset for mask_id in self.local_mask_token_ids]
     
 
 @AutoSequence.register("block_diffusion", is_default=True)
@@ -116,6 +147,25 @@ class BDSequence(SequenceBase):
     def num_blocks_in_active_diffusion_block(self) -> int:
         return self.diffusion_block_size // self.block_size
     
+    @property
+    def cached_num_tokens(self) -> int:
+        return sum(block.size for block in self.diffusion_blocks if block.is_in_cache)
+    
+    @property
+    def caching_num_tokens(self) -> int:
+        return sum(block.size for block in self.diffusion_blocks if block.is_to_cache)
+    
+    @property
+    def cached_or_caching_num_tokens(self) -> int:
+        return sum(block.size for block in self.diffusion_blocks if block.is_to_cache or block.is_in_cache)
+    
+    @property
+    def num_completion_tokens(self) -> int:
+        return self.num_tokens - self.num_prompt_tokens
+    
+    def reset_new_tokens(self) -> None:
+        self.new_tokens = 0
+    
     def diffusion_decoding_inputs(self) -> tuple[list[int], list[int], int]:
         return (
             self.active_block_token_ids,
@@ -133,9 +183,7 @@ class BDSequence(SequenceBase):
         
         # Calculate prefix blocks and padding
         num_prefix_blocks = self.prefix_len // block_size
-        self.pad_prefix_len = block_size - (self.prefix_len % block_size)
-        if self.prefix_len % block_size == 0:
-            self.pad_prefix_len = 0
+        self.pad_prefix_len = 0 if self.prefix_len % block_size == 0 else block_size - (self.prefix_len % block_size)
         
         # Add mask tokens for the last prefix block
         self.extend_mask_tokens(self.pad_prefix_len)
@@ -185,3 +233,16 @@ class BDSequence(SequenceBase):
                     seq=self,
                 )
             )
+            
+    def post_process(self) -> None:
+        for block in self.diffusion_blocks:
+            block.cursor = 0
+            if block.is_in_cache:
+                continue
+            if block.is_to_cache:
+                block.in_cache()
+            elif block.is_active:
+                if block.available_to_cache:
+                    block.to_cache()
+                else:
+                    break

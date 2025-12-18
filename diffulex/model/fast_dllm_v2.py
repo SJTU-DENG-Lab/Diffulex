@@ -83,7 +83,6 @@ class FastdLLMV2Attention(nn.Module):
             self.head_dim,
             self.scaling,
             self.num_kv_heads,
-            "diffusion_lm",  # Dream uses full attention
         )
 
     def forward(

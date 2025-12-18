@@ -14,7 +14,14 @@ class AttnMetaDataBase:
     slot_mapping: torch.Tensor | None = None
     context_lens: torch.Tensor | None = None
     block_tables: torch.Tensor | None = None
-
+    page_block_size: int = 32
+    attn_type: str = "block_attention"
+    diffusion_block_size: int = 32
+    decode_mode: str = "static"
+    
+    @property
+    def num_seqs(self) -> int:
+        return len(self.cu_seqlens_q) - 1
 
 FN_TYPE_AttnMetaDataFetch = Callable[[], AttnMetaDataBase]
 
@@ -23,3 +30,16 @@ fetch_attn_metadata: FN_TYPE_AttnMetaDataFetch = ...
 def set_fetch_fn_for_attn_metadata(fn: FN_TYPE_AttnMetaDataFetch) -> None:
     global fetch_attn_metadata
     fetch_attn_metadata = fn
+    
+WARMING_UP = False
+
+def set_warming_up(is_warming_up: bool) -> None:
+    global WARMING_UP
+    WARMING_UP = is_warming_up
+
+def is_warming_up() -> bool:
+    return WARMING_UP
+
+def reset_warming_up() -> None:
+    global WARMING_UP
+    WARMING_UP = False

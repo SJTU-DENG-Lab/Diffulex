@@ -58,7 +58,8 @@ if __name__ == "__main__":
         accept_threshold=0.95,
         complete_threshold=0.9,
         add_new_block_threshold=0.1,
-        kv_cache_layout="unified"
+        kv_cache_layout="unified",
+        decoding_strategy="d2f"
     )
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
@@ -85,6 +86,6 @@ if __name__ == "__main__":
           f"Avg TPS: {sum(len(o['token_ids']) for o in outputs) / (e - s):.2f} tok/s.\n"
           f"AVG Number of Diffusion Steps: {sum(o['n_diff_steps'] for o in outputs) / len(outputs):.2f}\n",
           "=*=" * 30)
-    # for idx, o in enumerate(outputs):
-    #     print("\n", "=*=" * 30)
-    #     print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")
+    for idx, o in enumerate(outputs):
+        print("\n", "=*=" * 30)
+        print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")

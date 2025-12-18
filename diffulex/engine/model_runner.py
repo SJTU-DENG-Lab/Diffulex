@@ -123,9 +123,115 @@ class ModelRunnerBase(ABC):
         """Model-specific warmup logic."""
         pass
 
-    @abstractmethod
     def allocate_kv_cache(self):
-        pass
+        config = self.config
+        hf_config = config.hf_config
+        free, total = torch.cuda.mem_get_info()
+        used = total - free
+        peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
+        current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+        num_kv_heads = getattr(
+            hf_config,
+            "num_key_value_heads",
+            getattr(hf_config, "n_kv_heads", None),
+        ) // self.world_size
+
+        if hasattr(hf_config, "head_dim"):
+            head_dim = hf_config.head_dim
+        elif hasattr(hf_config, "hidden_size") and hasattr(hf_config, "num_attention_heads"):
+            head_dim = hf_config.hidden_size // hf_config.num_attention_heads
+        else:
+            raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
+
+        dtype = (
+            hf_config.torch_dtype
+            if hasattr(hf_config, "torch_dtype") and hf_config.torch_dtype
+            else torch.bfloat16
+        )
+        block_bytes = (
+            2
+            * hf_config.num_hidden_layers
+            * self.block_size
+            * num_kv_heads
+            * head_dim
+            * dtype.itemsize
+        )
+        get_num_kvcache_blocks = (
+            lambda gpu_memory_utilization: int(total * gpu_memory_utilization - used - peak + current)
+            // block_bytes
+        )
+        try:
+            num_kvcache_blocks = get_num_kvcache_blocks(config.gpu_memory_utilization)
+            assert num_kvcache_blocks > 0
+        except Exception:
+            gpu_memory_utilization = config.gpu_memory_utilization
+            while num_kvcache_blocks <= 200:
+                print(
+                    "Warning: GPU memory utilization "
+                    f"{gpu_memory_utilization} is too low to allocate kv cache. "
+                    "Automatically adding 0.05."
+                )
+                gpu_memory_utilization += 0.05
+                num_kvcache_blocks = get_num_kvcache_blocks(gpu_memory_utilization)
+            print(
+                f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} "
+                "to allocate kv cache."
+            )
+            config.gpu_memory_utilization = gpu_memory_utilization
+
+        config.num_kvcache_blocks = num_kvcache_blocks
+        print(
+            "Allocated {num_blocks} blocks of size {block_size} for kv cache on rank {rank}.".format(
+                num_blocks=config.num_kvcache_blocks,
+                block_size=self.block_size,
+                rank=self.rank,
+            )
+        )
+
+        if config.kv_cache_layout == "distinct":
+            x = config.k_cache_hdim_split_factor_x
+            self.k_cache = torch.zeros(
+                hf_config.num_hidden_layers,
+                config.num_kvcache_blocks,
+                num_kv_heads,
+                head_dim // x,
+                self.block_size,
+                x,
+            )
+            self.v_cache = torch.zeros(
+                hf_config.num_hidden_layers,
+                config.num_kvcache_blocks,
+                num_kv_heads,
+                head_dim,
+                self.block_size,
+            )
+            layer_id = 0
+            for module in self.model.modules():
+                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                    module.k_cache = self.k_cache[layer_id]
+                    module.v_cache = self.v_cache[layer_id]
+                    layer_id += 1
+        elif config.kv_cache_layout == "unified":
+            self.kv_cache = torch.zeros(
+                2,
+                hf_config.num_hidden_layers,
+                config.num_kvcache_blocks,
+                self.block_size,
+                num_kv_heads,
+                head_dim,
+            )
+            layer_id = 0
+            for module in self.model.modules():
+                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                    module.k_cache = self.kv_cache[0, layer_id]
+                    module.v_cache = self.kv_cache[1, layer_id]
+                    layer_id += 1
+        else:
+            raise ValueError(
+                "Unsupported kv_cache_layout: {layout}. Supported values are 'distinct' and 'unified'.".format(
+                    layout=config.kv_cache_layout
+                )
+            )
 
     def prepare_block_tables(self, seqs: list[SequenceBase]):
         max_len = max(len(seq.block_table) for seq in seqs)

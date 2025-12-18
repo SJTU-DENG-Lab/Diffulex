@@ -9,7 +9,7 @@ from diffulex.strategy.block_diffusion.engine.sequence import BDSequence
 
 @dataclass
 class BDAttnMetaData(AttnMetaDataBase):
-    diffusion_block_size: int = 32,
+    seqs: List[BDSequence] = None
     kv_cache_layout: str = "unified"
     need_kv_cache_store: bool = True
     
@@ -32,7 +32,10 @@ def set_bd_attn_metadata(
     slot_mapping: torch.Tensor | None = None,
     context_lens: torch.Tensor | None = None,
     block_tables: torch.Tensor | None = None,
+    page_block_size: int = 32,
     diffusion_block_size: int = 32,
+    decode_mode: str = "static",
+    attn_type: str = "full_attention",
     kv_cache_layout: str = "unified",
     need_kv_cache_store: bool = True,
 ) -> None:
@@ -46,9 +49,12 @@ def set_bd_attn_metadata(
         slot_mapping=slot_mapping,
         context_lens=context_lens,
         block_tables=block_tables,
+        page_block_size=page_block_size,
         diffusion_block_size=diffusion_block_size,
         kv_cache_layout=kv_cache_layout,
         need_kv_cache_store=need_kv_cache_store,
+        decode_mode=decode_mode,
+        attn_type=attn_type,
     )
 
 def reset_bd_attn_metadata() -> None:

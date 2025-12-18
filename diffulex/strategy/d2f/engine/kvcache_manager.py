@@ -15,8 +15,7 @@ class D2FKVCacheManager(KVCacheManagerBase):
         super().__init__(config)
 
     def can_append(self, seq: "D2FSequence") -> bool:
-        required = 1 if seq.cached_or_caching_num_tokens % self.block_size == 1 else 0
-        return len(self.free_block_ids) >= required
+        return len(self.free_block_ids) >= (seq.cached_or_caching_num_tokens % self.block_size == 1)
 
     def may_append(self, seq: "D2FSequence") -> None:
         if seq.cached_or_caching_num_tokens == 0:

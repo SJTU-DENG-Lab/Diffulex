@@ -4,8 +4,8 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        
-
+    
+    
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
@@ -77,6 +77,18 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/examples/test_dream_dvllm_gsm8k.py",
+            "console": "integratedTerminal",
+            "env": {
+                // "TORCHINDUCTOR_DISABLE": "1",
+                // "TRITON_INTERPRET": "1",
+                // "CUDA_VISIBLE_DEVICES": "0,1"
+            }
+        },
+        {
+            "name": "PyDbg: `diffulex` Fast-DLLM-V2 `GSM8K`",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/test_fastdllmv2_diffulex_gsm8k.py",
             "console": "integratedTerminal",
             "env": {
                 // "TORCHINDUCTOR_DISABLE": "1",

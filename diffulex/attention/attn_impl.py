@@ -3,12 +3,11 @@ import torch
 
 import torch.nn as nn
 
-from flash_attn import flash_attn_varlen_func
-
-from diffulex.attention.ops import (
-    causal_lm_flash_decoding, diffusion_lm_flash_decoding, diffusion_lm_parallel_flash_decoding,
-    store_kvcache_unified_layout, store_kvcache_distinct_layout, load_kvcache,
-    CHECK_STORING, CHECK_LOADING, CHECK_ATTENTION
+from diffulex_kernel import (
+    store_kvcache_distinct_layout, 
+    store_kvcache_unified_layout, 
+    dllm_flash_attn_decode, 
+    dllm_flash_attn_prefill
 )
 from diffulex.attention.metadata import AttnMetaDataBase
 
@@ -55,42 +54,21 @@ class Attention(nn.Module):
 
         # Fast Store KV cache
         if k_cache.numel() and v_cache.numel():
-            if not (not attn_metadata.need_kv_cache_store):
+            if attn_metadata.need_kv_cache_store:
                 store_kvcache = store_kvcache_unified_layout if is_unified_layout else store_kvcache_distinct_layout
                 store_kvcache(k, v, k_cache, v_cache, attn_metadata.slot_mapping, attn_metadata)
-                # CHECK_STORING(k_cache, v_cache, k, v, context)
 
         # Prefill / Decode logic
         if attn_metadata.is_prefill:
-            # Block PK
             if attn_metadata.block_tables is not None:
                 # TODO: Implement Prefix Caching
                 pass
-            # Attention computation
-            o = flash_attn_varlen_func(q, k, v, 
-                                       attn_metadata.cu_seqlens_q, attn_metadata.cu_seqlens_k,
-                                       attn_metadata.max_seqlen_q, attn_metadata.max_seqlen_k,
-                                       softmax_scale=self.scale, block_table=None)
+            o = dllm_flash_attn_prefill(q, k, v, self.scale, attn_metadata)
         else:
-            config = attn_metadata.seqs[0].config
-            diffusion_block_size = config.diffusion_block_size
             if is_unified_layout:
-                k_comb, v_comb = load_kvcache(self.k_cache, self.v_cache, attn_metadata, k, v)
-                o = flash_attn_varlen_func(q, k_comb, v_comb, 
-                                            attn_metadata.cu_seqlens_q, attn_metadata.cu_seqlens_k,
-                                            attn_metadata.max_seqlen_q, attn_metadata.max_seqlen_k,
-                                            softmax_scale=self.scale, block_table=None)
+                o = dllm_flash_attn_decode(q, k, v, k_cache, v_cache, self.scale, attn_metadata)
             else:
-                # FIXME: Kernel not ok...
-                o = torch.empty_like(q).to(q.device).to(q.dtype)
-                q, k, o, k_cache, v_cache = map(lambda x: x.to(torch.float32), (q, k, o, k_cache, v_cache))
-                diffusion_lm_parallel_flash_decoding(
-                    q, k, v, o, str(k_cache.dtype), k_cache, v_cache, 
-                    attn_metadata.block_tables, attn_metadata.cu_seqlens_q, attn_metadata.total_lens,
-                    max(attn_metadata.total_lens), max(attn_metadata.seq_lens), 1.0, 1.0,
-                    diffusion_block_size, attn_metadata.block_mask
-                )
-                CHECK_ATTENTION(o, q, k, v, k_cache, v_cache, attn_metadata)
+                raise NotImplementedError("Distinct layout is not supported for decode mode")
             
         # Final reshape
         return o.view(-1, self.num_heads * self.head_dim).contiguous()

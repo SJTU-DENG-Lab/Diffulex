@@ -37,6 +37,7 @@ class SequenceBase:
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
         self.new_tokens = 0
+        self.meet_eos = False
     
     def __len__(self) -> int:
         return self.num_tokens
