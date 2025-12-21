@@ -141,8 +141,11 @@ class BDModelRunner(ModelRunnerBase):
             if seq.diffusion_blocks[-1].is_active:
                 slot_mapping.extend([-1] * self.diffusion_block_size)
             elif seq.diffusion_blocks[-1].is_to_cache:
-                for i in range(0, seq.num_blocks_in_active_diffusion_block):
-                    start = seq.block_table[i] * self.block_size
+                need_kv_cache_store = True
+                num_pages_storing = seq.num_page_blocks_in_active_diffusion_block
+                total_num_pages = len(seq.block_table)
+                for i in range(0, num_pages_storing):
+                    start = seq.block_table[total_num_pages - num_pages_storing + i] * self.block_size
                     end = start + self.block_size
                     slot_mapping.extend(range(start, end))
                 

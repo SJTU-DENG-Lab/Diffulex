@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import torch
-
 from enum import Enum, auto
 from dataclasses import dataclass
 
@@ -122,6 +120,11 @@ class BDSequence(SequenceBase):
         self.diffusion_blocks: list[BDDiffusionBlock] = []
         self.diffusion_block_size = config.diffusion_block_size
         self.mask_token_id = config.mask_token_id
+        self.n_steps = 0
+        
+    @property
+    def completion_token_ids(self) -> list[int]:
+        return self.token_ids[self.prefix_len : ]
         
     @property
     def prefix_len_with_padding(self) -> int:
@@ -144,7 +147,7 @@ class BDSequence(SequenceBase):
         return self.diffusion_blocks[-1].token_ids
     
     @property
-    def num_blocks_in_active_diffusion_block(self) -> int:
+    def num_page_blocks_in_active_diffusion_block(self) -> int:
         return self.diffusion_block_size // self.block_size
     
     @property
@@ -156,8 +159,24 @@ class BDSequence(SequenceBase):
         return sum(block.size for block in self.diffusion_blocks if block.is_to_cache)
     
     @property
+    def cached_or_caching_last_token_id(self) -> int:
+        return max(sum(block.size for block in self.diffusion_blocks if block.is_to_cache or block.is_in_cache) - 1, 0)
+    
+    @property
     def cached_or_caching_num_tokens(self) -> int:
-        return sum(block.size for block in self.diffusion_blocks if block.is_to_cache or block.is_in_cache)
+        return self.cached_or_caching_last_token_id + 1
+    
+    @property
+    def has_to_cache_block(self) -> bool:
+        return any(block.is_to_cache for block in self.diffusion_blocks)
+    
+    @property
+    def to_cache_last_token_id(self) -> int:
+        to_cache_num_tokens = 0
+        for block in self.diffusion_blocks:
+            if block.is_to_cache:
+                to_cache_num_tokens += block.size
+        return to_cache_num_tokens - 1
     
     @property
     def num_completion_tokens(self) -> int:
@@ -217,6 +236,7 @@ class BDSequence(SequenceBase):
             )
             self.diffusion_blocks.append(block)
             current_pos += block_size
+        self.n_steps += 1
     
     def next_diffusion_step(self) -> None:
         """Append new diffusion block if needed."""
@@ -226,13 +246,14 @@ class BDSequence(SequenceBase):
                 BDDiffusionBlock(
                     block_id=len(self.diffusion_blocks),
                     status=BDDiffusionBlockStatus.ACTIVE,
-                    global_start_id=self.num_tokens,
+                    global_start_id=self.num_tokens - self.diffusion_block_size,
                     size=self.diffusion_block_size,
                     mask_token_id=self.mask_token_id,
                     is_prompt=False,
                     seq=self,
                 )
             )
+        self.n_steps += 1
             
     def post_process(self) -> None:
         for block in self.diffusion_blocks:

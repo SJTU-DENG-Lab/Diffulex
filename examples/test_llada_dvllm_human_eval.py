@@ -8,7 +8,7 @@ from datasets import load_dataset
 from viztracer import VizTracer
 from transformers import AutoTokenizer
 
-from diffulex.legacy import LLM, SamplingParams
+from diffulex_legacy import LLM, SamplingParams
 
 
 def summarize_profiling(csv_path: str) -> dict:

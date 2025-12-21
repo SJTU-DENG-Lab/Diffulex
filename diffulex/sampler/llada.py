@@ -3,7 +3,7 @@ import torch
 from dataclasses import dataclass
 
 from diffulex.sampler.auto_sampler import AutoSampler
-from diffulex.sampler.base import SamplerBase, SampleOutputBase
+from diffulex.sampler.base import SamplerNoShiftLogits, SampleOutputBase
 
 
 @dataclass
@@ -12,7 +12,7 @@ class LLaDASampleOutputForDiffusionLM(SampleOutputBase):
 
 
 @AutoSampler.register("llada")
-class LLaDASamplerForDiffusionLM(SamplerBase):
+class LLaDASamplerForDiffusionLM(SamplerNoShiftLogits):
     def forward(self, logits: torch.Tensor, temperatures: torch.Tensor,
                 top_p=None, top_k=None, margin_confidence=False, neg_entropy=False):
         context = self.fetch_attn_metadata()

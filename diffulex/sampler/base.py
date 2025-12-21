@@ -6,6 +6,8 @@ import torch.distributions as dists
 from dataclasses import dataclass
 from easydict import EasyDict as edict
 
+from diffulex.engine.sequence import SequenceBase
+
 
 class SamplerBase(nn.Module):
     def __init__(self):
@@ -76,3 +78,32 @@ class SampleOutputBase:
         self.accepted_ids_map = edict(self.accepted_ids_map)
         self.sampled_tokens_map = edict(self.sampled_tokens_map)
         self.true_local_ids_map = edict(self.true_local_ids_map)
+        
+        
+class SamplerShiftLogits(SamplerBase):
+    def __init__(self):
+        super().__init__()
+        self.seq_last_logits_map: dict[str, torch.Tensor] = {}
+        
+    def _fetch_last_logits(self, logits: torch.Tensor, seq: SequenceBase) -> torch.Tensor:
+        if seq.has_to_cache_block:
+            last_logits = logits[seq.to_cache_last_token_id]
+            self.seq_last_logits_map[seq.seq_id] = last_logits
+        return self.seq_last_logits_map[seq.seq_id]
+    
+    def _shift_logits(self, logits, last_logit=None):
+        if logits.shape[1] == 0:
+            print("Warning: logits sequence length is 0, returning empty logits")
+            raise Exception("logits sequence length is 0")
+            
+        shifted_logits = torch.zeros_like(logits)
+        shifted_logits[1:, ...] = logits[:-1, ...]
+        if last_logit is not None:
+            shifted_logits[0, ...] = last_logit
+            return shifted_logits
+        shifted_logits[0, ...] = 1.0
+        return shifted_logits
+    
+
+class SamplerNoShiftLogits(SamplerBase):
+    pass

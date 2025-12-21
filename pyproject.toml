@@ -43,6 +43,7 @@ Repository = "https://zhijie-group.github.io/D2fEngine"
 include = [
     "diffulex",
     "diffulex_kernel",
+    "diffulex_legacy",
 ]
 
 [[tool.uv.index]]

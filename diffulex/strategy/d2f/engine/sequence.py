@@ -325,6 +325,18 @@ class D2FSequence(SequenceBase):
     @property
     def cached_num_tokens(self) -> int:
         return sum(block.size for block in self.diffusion_blocks if block.is_in_cache)
+    
+    @property
+    def has_to_cache_block(self) -> bool:
+        return any(block.is_to_cache for block in self.diffusion_blocks)
+    
+    @property
+    def to_cache_last_token_id(self) -> int:
+        to_cache_num_tokens = 0
+        for block in self.diffusion_blocks:
+            if block.is_to_cache:
+                to_cache_num_tokens += block.size
+        return to_cache_num_tokens - 1
 
     @property
     def num_cached_blocks(self) -> int:

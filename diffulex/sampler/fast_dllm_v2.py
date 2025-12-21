@@ -3,7 +3,7 @@ import torch
 from dataclasses import dataclass
 
 from diffulex.sampler.auto_sampler import AutoSampler
-from diffulex.sampler.base import SamplerBase, SampleOutputBase
+from diffulex.sampler.base import SamplerShiftLogits, SampleOutputBase
 from diffulex.engine.sequence import SequenceBase
 
 
@@ -13,25 +13,7 @@ class FastdLLMV2SampleOutputForDiffusionLM(SampleOutputBase):
 
 
 @AutoSampler.register("fast_dllm_v2")
-class FastdLLMV2SamplerForDiffusionLM(SamplerBase):
-    def _shift_logits(self, logits, last_logit=None):
-        """
-        Shift logits to align with Fast-dLLM's prediction pattern.
-        参考 generation_functions.py 中的 logits shift 逻辑（105, 112行）
-        """
-        if logits.shape[1] == 0:
-            print("Warning: logits sequence length is 0, returning empty logits")
-            raise Exception("logits sequence length is 0")
-            
-        # 对应 generation_functions.py: logits = torch.cat([logits[:, :1, :], logits[:, :-1, :]], dim=1)
-        shifted_logits = torch.zeros_like(logits)
-        shifted_logits[1:, ...] = logits[:-1, ...]
-        if last_logit is not None:
-            shifted_logits[0, ...] = last_logit
-            return shifted_logits
-        shifted_logits[0, ...] = 1.0
-        return shifted_logits
-    
+class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
     def forward(self, seqs: list[SequenceBase], logits: torch.Tensor, temperatures: torch.Tensor,
                 top_p=None, top_k=None, margin_confidence=False, neg_entropy=False, threshold=0.95):
         attn_metadata = self.fetch_attn_metadata()
@@ -43,13 +25,14 @@ class FastdLLMV2SamplerForDiffusionLM(SamplerBase):
         accepted_ids_map = {}
         sampled_tokens_map = {}
         true_local_ids_map = {}
-        
         for temperature, seq, seq_logits in zip(temperatures, seqs, split_logits):
             true_local_ids_sub_map = {}
             accepted_ids_sub_map = {}
             sampled_tokens_sub_map = {}
             
-            shifted_logits = self._shift_logits(seq_logits, seq.cached_or_caching_num_tokens - 1)
+            last_logits = self._fetch_last_logits(seq_logits, seq)
+            
+            shifted_logits = self._shift_logits(seq_logits, last_logits)
             
             for block_id, block in enumerate(seq.diffusion_blocks):
                 if not block.is_active or sum(block.local_mask_tokens) == 0:
@@ -58,7 +41,10 @@ class FastdLLMV2SamplerForDiffusionLM(SamplerBase):
                 if len(block.global_mask_token_ids) == 0:
                     continue
                 
-                mask_token_logits = shifted_logits[block.global_mask_token_ids, ...]
+                if attn_metadata.is_prefill:
+                    mask_token_logits = shifted_logits[block.global_mask_token_ids, ...]
+                else:
+                    mask_token_logits = shifted_logits[block.local_mask_token_ids, ...]
                 
                 confidence, sampled_tokens, initial_confidence = self.sample_tokens(
                     mask_token_logits, 

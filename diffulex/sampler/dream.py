@@ -3,7 +3,7 @@ import torch
 from dataclasses import dataclass
 
 from diffulex.sampler.auto_sampler import AutoSampler
-from diffulex.sampler.base import SamplerBase, SampleOutputBase
+from diffulex.sampler.base import SamplerShiftLogits, SampleOutputBase
 
 
 @dataclass
@@ -12,20 +12,7 @@ class DreamSampleOutputForDiffusionLM(SampleOutputBase):
 
 
 @AutoSampler.register("dream")
-class DreamSamplerForDiffusionLM(SamplerBase):
-    def _shift_logits(self, logits, last_logit=None):
-        if logits.shape[1] == 0:
-            print("Warning: logits sequence length is 0, returning empty logits")
-            raise Exception("logits sequence length is 0")
-            
-        shifted_logits = torch.zeros_like(logits)
-        shifted_logits[1:, ...] = logits[:-1, ...]
-        if last_logit is not None:
-            shifted_logits[0, ...] = last_logit
-            return shifted_logits
-        shifted_logits[0, ...] = 1.0
-        return shifted_logits
-    
+class DreamSamplerForDiffusionLM(SamplerShiftLogits):
     def forward(self, logits: torch.Tensor, temperatures: torch.Tensor,
                 top_p=None, top_k=None, margin_confidence=False, neg_entropy=False):
         context = self.fetch_attn_metadata()
@@ -38,7 +25,10 @@ class DreamSamplerForDiffusionLM(SamplerBase):
             true_local_ids_sub_map = {}
             accepted_ids_sub_map = {}
             sampled_tokens_sub_map = {}
-            shifted_logits = self._shift_logits(seq_logits, seq.cached_or_caching_last_token_id)
+            
+            last_logits = self._fetch_last_logits(seq_logits, seq)
+            
+            shifted_logits = self._shift_logits(seq_logits, last_logits)
             for block_id, block in enumerate(seq.diffusion_blocks):
                 if not block.is_active or sum(block.local_mask_tokens) == 0:
                     continue

@@ -4,8 +4,8 @@ import torch
 from peft import PeftModel, PeftConfig
 from lm_eval.models.utils import get_dtype
 
-from diffulex.legacy.config import Config
-from diffulex.legacy.engine.model_runner import AutoModelRunner
+from diffulex_legacy.config import Config
+from diffulex_legacy.engine.model_runner import AutoModelRunner
 
 from model_cache.dream.model_dream import DreamModel
 from model_cache.dream.configuration_dream import DreamConfig

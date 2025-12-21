@@ -1,7 +1,6 @@
-import os
 import torch
-
 import torch.nn as nn
+from einops import rearrange
 
 from diffulex_kernel import (
     store_kvcache_distinct_layout, 
@@ -26,16 +25,15 @@ class Attention(nn.Module):
         self.scale = scale
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
-        is_rtx_xx90 = lambda x: "4090" in x or "3090" in x
-        self.kernel_options = {
-            "BLOCK_M": 64,
-            "BLOCK_N": 64,
-            "BLOCK_M1": 32,
-            "BLOCK_N1": 64,
-            "BLOCK_M2": 64,
-            "BLOCK_N2": 32,
-        } if is_rtx_xx90(torch.cuda.get_device_name(0)) else None
         
+        self.q_shape = {
+            'nh': self.num_heads,
+            'hd': self.head_dim,
+        }
+        self.kv_shape = {
+            'nkvh': self.num_kv_heads,
+            'hd': self.head_dim,
+        }
         # Import the specified fetch function
         from diffulex.attention import fetch_attn_metadata
         self.fetch_attn_metadata = fetch_attn_metadata
@@ -44,9 +42,9 @@ class Attention(nn.Module):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                 mask: list[torch.Tensor] | None = None) -> torch.Tensor:
         # Reshape
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
+        q = rearrange(q, 's (nh hd) -> s nh hd', **self.q_shape)
+        k = rearrange(k, 's (nkvh hd) -> s nkvh hd', **self.kv_shape)
+        v = rearrange(v, 's (nkvh hd) -> s nkvh hd', **self.kv_shape)
 
         attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
         k_cache, v_cache = self.k_cache, self.v_cache
@@ -68,7 +66,7 @@ class Attention(nn.Module):
             if is_unified_layout:
                 o = dllm_flash_attn_decode(q, k, v, k_cache, v_cache, self.scale, attn_metadata)
             else:
-                raise NotImplementedError("Distinct layout is not supported for decode mode")
+                raise NotImplementedError("Distinct layout is not supported yet...")
             
         # Final reshape
-        return o.view(-1, self.num_heads * self.head_dim).contiguous()
+        return rearrange(o, 's nh hd -> s (nh hd)').contiguous()
