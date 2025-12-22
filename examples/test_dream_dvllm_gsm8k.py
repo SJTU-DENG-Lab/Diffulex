@@ -17,7 +17,7 @@ def summarize_profiling(csv_path: str) -> dict:
     total_nums = {}
     avgs = {}
     with open(csv_path, 'r', newline='') as f:
-        reader = csv.dictReader(f)
+        reader = csv.DictReader(f)
         for row in reader:
             for k, v in row.items():
                 try:

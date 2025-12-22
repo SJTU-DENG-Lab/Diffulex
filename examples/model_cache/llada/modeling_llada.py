@@ -1059,7 +1059,7 @@ class LLaDAModel(nn.Module):
         torch.backends.cuda.enable_flash_sdp(True)
         torch.backends.cuda.enable_mem_efficient_sdp(False)  # this is super slow so make sure torch won't use it
 
-        self.transformer = nn.Moduledict(
+        self.transformer = nn.ModuleDict(
             dict(
                 wte=nn.Embedding(
                     config.embedding_size or config.vocab_size, config.d_model, device=config.init_device
