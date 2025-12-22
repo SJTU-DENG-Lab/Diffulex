@@ -1,0 +1,1225 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+        <meta name="author" content="D2F Team (SJTU DENG Lab)">
+      
+      
+        <link rel="canonical" href="https://zhijie-group.github.io/d2fengine/impl/0_overview/">
+      
+      
+        <link rel="prev" href="../../user-guide/1_install/">
+      
+      
+        <link rel="next" href="../1_engine/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Overview - d2f_engine</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#nano-vllm-to-d2fengine" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="d2f_engine" class="md-header__button md-logo" aria-label="d2f_engine" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            d2f_engine
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Overview
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="d2f_engine" class="md-nav__button md-logo" aria-label="d2f_engine" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    d2f_engine
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/1_install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install from Source
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Implementation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Implementation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#nano-vllm-to-d2fengine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nano-vLLM to D2fEngine
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Nano-vLLM to D2fEngine">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#highlights" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Highlights
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Highlights">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#0x00-basic-vllm-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x00. Basic vLLM Features
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#0x01-fully-support-for-d2f-inference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x01. Fully Support for D2F Inference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#0x02-distinct-kv-cache-layout-more-efficient-developing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x02. Distinct KV Cache Layout (more efficient, developing)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#0x03-unified-kv-cache-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x03. Unified KV Cache Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#demo-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Demo Benchmark
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Demo Benchmark">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dream-v0-base-7b" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dream-v0-Base-7B
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dream-v0-Base-7B">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gsm8k-cot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GSM8K-CoT
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#humaneval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HumanEval
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../1_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2_scheduler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../3_kvcache_manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    KVCache Manager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../4_model_runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Runner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../5_model_registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../6_kernels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../license/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#nano-vllm-to-d2fengine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Nano-vLLM to D2fEngine
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Nano-vLLM to D2fEngine">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#highlights" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Highlights
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Highlights">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#0x00-basic-vllm-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x00. Basic vLLM Features
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#0x01-fully-support-for-d2f-inference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x01. Fully Support for D2F Inference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#0x02-distinct-kv-cache-layout-more-efficient-developing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x02. Distinct KV Cache Layout (more efficient, developing)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#0x03-unified-kv-cache-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0x03. Unified KV Cache Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#demo-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Demo Benchmark
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Demo Benchmark">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dream-v0-base-7b" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dream-v0-Base-7B
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dream-v0-Base-7B">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gsm8k-cot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GSM8K-CoT
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#humaneval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HumanEval
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+  <h1>Overview</h1>
+
+<h2 id="nano-vllm-to-d2fengine"><strong>Nano-vLLM to D2fEngine</strong></h2>
+<p><img alt="D2fEngine" src="../../assets/imgs/impl/0_overview/overview_of_d2f_engine.png" /></p>
+<h3 id="highlights">Highlights</h3>
+<h4 id="0x00-basic-vllm-features">0x00. Basic vLLM Features</h4>
+<ul>
+<li><strong>Paged Attention for dLLM</strong>: Supports PagedAttention for Diffusion LLM to handle long sequences efficiently.</li>
+<li><strong>Dynamic Batching</strong>: Supports dynamic batching with flexible sequence lengths.</li>
+<li><strong>Tensor Parallelism + Data Parallelism</strong>: Supports tensor parallelism and data parallelism for efficient inference.</li>
+</ul>
+<h4 id="0x01-fully-support-for-d2f-inference">0x01. Fully Support for D2F Inference</h4>
+<p>D2fEngine fully supports D2F inference: piplined block parallel decoding. Also, with proper configuration, it can support Block Diffusion inference without any training.</p>
+<h4 id="0x02-distinct-kv-cache-layout-more-efficient-developing">0x02. Distinct KV Cache Layout (more efficient, developing)</h4>
+<p><strong><em>1. Fused Varlen Parallel Decoding Kernel</em></strong></p>
+<p>The core algorithm the kernel comes from <strong>FlashAttention2</strong>. </p>
+<p><em>Major points:</em></p>
+<ul>
+<li>
+<p>Shapes of inputs:</p>
+<ul>
+<li><code>q</code>: [TotalSeqLen, NumHeads, HeadDim]</li>
+<li><code>k</code>, <code>v</code>: [TotalSeqLen, NumKvHeads, HeadDim]</li>
+<li><code>kcache</code>: [NumPages, NumKvHeads, HeadDim // x, PageSize, x]</li>
+<li><code>vcache</code>: [NumPages, NumKvHeads, HeadDim, PageSize]</li>
+<li><code>mask</code>: [TotalSeqLen, TotalSeqLen] (block diagonal mask, inner mask is block-wise causal)</li>
+</ul>
+</li>
+<li>
+<p>Other inputs:</p>
+<ul>
+<li><code>page/block_table</code>: [NumSeqs, MaxNumPages]</li>
+<li><code>cu_seqlens_q</code>: [NumSeqs + 1]</li>
+<li><code>ctxlens</code>: [NumSeqs]</li>
+<li><code>total_seqlens</code>: [NumSeqs]</li>
+<li><code>slot_mapping</code>: [TotalSeqLen]</li>
+</ul>
+</li>
+<li>
+<p>Three <strong>constexpr</strong> parameters: <code>BLOCK_M</code> (for <code>q</code> tiles), <code>BLOCK_N</code> (for <code>kv</code> tiles), and <code>PAGE_SIZE</code> (for <code>kvcache</code> tiles).</p>
+</li>
+<li>
+<p>Three accumulation registers: <code>acc</code> (outputs, [BLOCK_M, BLOCK_N]), <code>m_i</code> (rowise max elems for online-softmax, [BLOCK_M, ]), and <code>l_i</code> (rowise factors of online-softmax, [BLOCK_M, ]).</p>
+</li>
+</ul>
+<p><em>Kernel Pipeline:</em></p>
+<ul>
+<li>
+<p><strong>[STAGE 1] Attention Against KV Cache</strong>: Load <code>kvcache</code> and compute attention of <code>q</code> &amp; <code>kvcache</code> with fixed block size (tile size) equals to the <code>PAGE_SIZE</code> of <code>page/block_table</code>. Registering all the result of current block of q in <code>acc</code>, <code>m_i</code>, <code>l_i</code>.</p>
+</li>
+<li>
+<p><strong>[STAGE 2] Input QKV Self-Attention</strong>: Load <code>kv</code> and compute attention of <code>q</code> &amp; <code>kv</code> with fixed block size (tile size) equals to <code>BLOCK_N</code>, along with custom <code>mask</code> applying. Registering all the result of current block of q in <code>acc</code>, <code>m_i</code>, <code>l_i</code>. </p>
+</li>
+<li>
+<p><strong>[STAGE 3] Output</strong>: Store the result of <code>acc</code> to <code>out</code>.</p>
+</li>
+</ul>
+<p><strong><em>2. Parallel KV Cache Store Kernel (Distinct)</em></strong></p>
+<p><strong><em>Parallel KV Cache Store Kernel (Distinct)</em></strong> is designed to store the KV cache in a distinct layout, which is more efficient for D2fEngine. </p>
+<p>What should be noted is that because the input <code>kv</code> is not all being stored every time call the kernel, thus the <code>slot_mapping</code> preparation process is way different that of traditional vLLM designed specifically for Auto-Regressive LLMs.</p>
+<h4 id="0x03-unified-kv-cache-layout">0x03. Unified KV Cache Layout</h4>
+<p><strong><em>1. Parallel KV Cache Loading/Storing Kernels + FlexAttention Implemented Block Diagonal Attention</em></strong></p>
+<p><em>Major points:</em></p>
+<p>Except for the <code>kvcache</code> layout, the other inputs are the same to the <strong><em>Fused Varlen Parallel Decoding Kernel</em></strong>.</p>
+<ul>
+<li><code>kvcache</code>: [NumPages, PageSize, NumKvHeads, HeadDim] (same as the flash kv cache of vLLM, used for flash attention)</li>
+</ul>
+<p><em>Function Pipeline:</em></p>
+<p>The <strong><em>Parallel KV Cache Storing (Unified)</em></strong> is similar to the <strong><em>Parallel KV Cache Storing (Distinct)</em></strong> except for the fetching indices build-up procedure difference caused by the different <code>kvcache</code> layout.</p>
+<p>Generate in-sequence-masks from <code>Sequence</code> , which is a block-wise causal mask, then in the <code>Context</code> post-init, generate the block-diagonal mask for the whole batched input sequence.</p>
+<p>Using the block-diagonal mask, the <strong><em>FlexAttention Implemented Block Diagonal Attention</em></strong> can be used to compute the attention of <code>q</code> &amp; <code>kvcache</code> with block sparsity.</p>
+<h2 id="demo-benchmark"><strong>Demo Benchmark</strong></h2>
+<h3 id="configuration">Configuration</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>enforce_eager</td>
+<td>True</td>
+</tr>
+<tr>
+<td>data_parallel_size</td>
+<td>8</td>
+</tr>
+<tr>
+<td>tensor_parallel_size</td>
+<td>1</td>
+</tr>
+<tr>
+<td>gpu_memory_utilization</td>
+<td>0.3</td>
+</tr>
+<tr>
+<td>max_num_batched_tokens</td>
+<td>5120</td>
+</tr>
+<tr>
+<td>max_num_seqs</td>
+<td>20</td>
+</tr>
+<tr>
+<td>max_model_len</td>
+<td>5120</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Devices</strong>: 8x Nvidia H20-NVLink 96G </p>
+<h3 id="dream-v0-base-7b">Dream-v0-Base-7B</h3>
+<h4 id="gsm8k-cot">GSM8K-CoT</h4>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total Samples</td>
+<td>1319</td>
+</tr>
+<tr>
+<td>Total Tokens</td>
+<td>336429</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>D2fEngine</th>
+<th>D2F-Baseline</th>
+<th>Base Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total Time</td>
+<td>380.79 (92.8x)</td>
+<td>3693.20 (9.6x)</td>
+<td>35349.20 (1.0x)</td>
+</tr>
+<tr>
+<td>TPS</td>
+<td>883.51 (93.0x)</td>
+<td>91.2 (9.6x)</td>
+<td>9.5 (1.0x)</td>
+</tr>
+<tr>
+<td>AVG Latency</td>
+<td>0.29 (92.4x)</td>
+<td>2.8 (9.6x)</td>
+<td>26.8 (1.0x)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="humaneval">HumanEval</h4>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total Samples</td>
+<td>164</td>
+</tr>
+<tr>
+<td>Total Tokens</td>
+<td>36198</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>D2fEngine</th>
+<th>D2F-Baseline</th>
+<th>Base Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total Time</td>
+<td>49.27 (41.9x)</td>
+<td>508.40 (4.1x)</td>
+<td>2066.4 (1.0x)</td>
+</tr>
+<tr>
+<td>TPS</td>
+<td>734.68 (36.4x)</td>
+<td>73.2 (3.6x)</td>
+<td>20.2 (1.0x)</td>
+</tr>
+<tr>
+<td>AVG Latency</td>
+<td>0.30 (42.0x)</td>
+<td>3.1 (4.1x)</td>
+<td>12.6 (1.0x)</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": [], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
