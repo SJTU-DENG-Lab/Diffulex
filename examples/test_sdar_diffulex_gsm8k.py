@@ -48,7 +48,7 @@ if __name__ == "__main__":
         enforce_eager=True, 
         data_parallel_size=1,
         tensor_parallel_size=1,
-        gpu_memory_utilization=0.25,
+        gpu_memory_utilization=0.3,
         max_num_batched_tokens=2048,
         max_num_seqs=20,
         max_model_len=2048,

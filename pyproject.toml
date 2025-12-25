@@ -44,6 +44,7 @@ include = [
     "diffulex",
     "diffulex_kernel",
     "diffulex_legacy",
+    "test"
 ]
 
 [[tool.uv.index]]

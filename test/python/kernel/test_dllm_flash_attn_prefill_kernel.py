@@ -7,7 +7,7 @@ import tilelang.testing
 import torch.nn.functional as F
 from einops import rearrange
 
-from diffulex_kernel.python.dllm_flash_attn import dllm_flash_attn_prefill_kernel
+from diffulex_kernel.python.dllm_flash_attn_kernels import dllm_flash_attn_prefill_kernel
 
 
 def naive_sdpa_prefill(
