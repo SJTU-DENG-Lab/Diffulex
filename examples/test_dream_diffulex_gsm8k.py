@@ -86,6 +86,6 @@ if __name__ == "__main__":
           f"Avg TPS: {sum(len(o['token_ids']) for o in outputs) / (e - s):.2f} tok/s.\n"
           f"AVG Number of Diffusion Steps: {sum(o['n_diff_steps'] for o in outputs) / len(outputs):.2f}\n",
           "=*=" * 30)
-    # for idx, o in enumerate(outputs):
-    #     print("\n", "=*=" * 30)
-    #     print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")
+    for idx, o in enumerate(outputs):
+        print("\n", "=*=" * 30)
+        print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")

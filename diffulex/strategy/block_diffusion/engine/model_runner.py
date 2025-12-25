@@ -87,7 +87,6 @@ class BDModelRunner(ModelRunnerBase):
                     slot_mapping.extend([-1] * self.block_size)
 
         block_tables = self.prepare_block_tables(seqs)
-
         input_ids_tensor = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions_tensor = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
@@ -145,7 +144,7 @@ class BDModelRunner(ModelRunnerBase):
                 num_pages_storing = seq.num_page_blocks_in_active_diffusion_block
                 total_num_pages = len(seq.block_table)
                 for i in range(0, num_pages_storing):
-                    start = seq.block_table[total_num_pages - num_pages_storing + i] * self.block_size
+                    start = seq.block_table[(total_num_pages - 1) - num_pages_storing + i] * self.block_size
                     end = start + self.block_size
                     slot_mapping.extend(range(start, end))
                 

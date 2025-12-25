@@ -40,11 +40,11 @@ FEW_SHOTS = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_st
 
 if __name__ == "__main__":
     PROFILE = False
-    model = "/data1/ckpts/Efficient-Large-Model/Fast_dLLM_v2_7B"
+    model = "/data1/ckpts/JetLM/SDAR-1.7B-Chat-b32"
     LLM = Diffulex(
         model,
         use_lora=False,
-        model_name="fast_dllm_v2", 
+        model_name="sdar", 
         enforce_eager=True, 
         data_parallel_size=1,
         tensor_parallel_size=1,
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         max_model_len=2048,
         kv_cache_layout="unified",
         decoding_strategy="block_diffusion",
-        mask_token_id=151665,
+        mask_token_id=151669,
     )
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
