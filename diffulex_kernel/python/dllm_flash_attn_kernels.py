@@ -166,7 +166,7 @@ def dllm_flash_attn_prefill_kernel(
     out_idx=[-1], 
     pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,},
 )
-def dllm_flash_attn_decode_kernel(
+def dllm_flash_attn_decode_kernel_legacy(
     NUM_SEQS: int,
     NUM_GROUPS: int,
     NUM_PAGE_BLOCKS: int,
@@ -353,7 +353,7 @@ def dllm_flash_attn_decode_kernel(
     out_idx=[-1], 
     pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,},
 )
-def dllm_flash_attn_decode_kernel_legacy(
+def dllm_flash_attn_decode_kernel(
     NUM_SEQS: int,
     NUM_GROUPS: int,
     NUM_PAGE_BLOCKS: int,

@@ -40,7 +40,8 @@ FEW_SHOTS = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_st
 
 if __name__ == "__main__":
     PROFILE = False
-    model = "/data1/ckpts/JetLM/SDAR-1.7B-Chat-b32"
+    model = "/root/data/ckpts/JetLM/SDAR-1.7B-Chat-b32"
+    dataset = load_dataset("gsm8k", "main", split="test")["question"][:10]
     LLM = Diffulex(
         model,
         use_lora=False,
@@ -59,7 +60,6 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
     
-    dataset = load_dataset("gsm8k", "main", split="test")["question"][:10]
     prompts = [
         FEW_SHOTS + f"<|im_start|>user\nQuestion: {question}\nAnswer:<|im_end|>\n<|im_start|>assistant\n"
         for question in tqdm(dataset)
