@@ -10,7 +10,7 @@ from tqdm import tqdm
 from diffulex.config import Config
 from diffulex.engine.sequence import SequenceBase
 from diffulex.strategy.block_diffusion.engine.sequence import BDSequence
-from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
+from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata, set_warming_up, reset_warming_up
 from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
 from diffulex.strategy.block_diffusion.attention.metadata import fetch_bd_attn_metadata, set_bd_attn_metadata, reset_bd_attn_metadata
 
@@ -187,6 +187,7 @@ class BDModelRunner(ModelRunnerBase):
 
     @torch.inference_mode()
     def capture_cudagraph(self):
+        set_warming_up(True)
         config = self.config
         hf_config = config.hf_config
         max_num_seqs = min(self.config.max_num_seqs, 512)
@@ -216,7 +217,7 @@ class BDModelRunner(ModelRunnerBase):
             self.graph_bs.append(num_seqs * diffusion_block_size)
         self.graphs = {}
         self.graph_pool = None
-
+        
         for num_tokens in tqdm(reversed(self.graph_bs), desc="Capturing CUDA graphs"):
             num_seqs = num_tokens // diffusion_block_size
             graph = torch.cuda.CUDAGraph()
@@ -254,3 +255,4 @@ class BDModelRunner(ModelRunnerBase):
             block_tables=block_tables,
             outputs=outputs,
         )
+        reset_warming_up()
