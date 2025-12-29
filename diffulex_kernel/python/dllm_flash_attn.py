@@ -536,7 +536,7 @@ def dllm_flash_attn_decode_kernel_legacy(
     return kernel
 
 
-def dllm_flash_attn_prefill(
+def _dllm_flash_attn_prefill_bf16(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -596,7 +596,7 @@ def dllm_flash_attn_prefill(
             )
             
 
-def dllm_flash_attn_decode(
+def _dllm_flash_attn_decode_bf16(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -635,3 +635,101 @@ def dllm_flash_attn_decode(
                                       attn_metadata.cu_seqlens_q, attn_metadata.cu_seqlens_k,
                                       attn_metadata.max_seqlen_q, attn_metadata.max_seqlen_k,
                                       softmax_scale=scale, block_table=None)
+
+
+def dllm_flash_attn_prefill(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    scale: float,
+    attn_metadata: AttnMetaDataBase
+) -> torch.Tensor:
+    """
+    Prefill attention wrapper that dynamically selects kernel based on quantization strategy.
+    
+    Args:
+        q: Query tensor [Q_LEN, NUM_HEADS, HEAD_DIM]
+        k: Key tensor [KV_LEN, NUM_KV_HEADS, HEAD_DIM]
+        v: Value tensor [KV_LEN, NUM_KV_HEADS, HEAD_DIM]
+        scale: Attention scale factor
+        attn_metadata: Attention metadata
+    
+    Returns:
+        Output tensor [Q_LEN, NUM_HEADS, HEAD_DIM]
+    """
+    from diffulex.utils.quantization.context import get_kv_cache_strategy
+    from diffulex.utils.quantization.strategies import (
+        NoQuantizationStrategy,
+        KVCacheBF16Strategy,
+        KVCacheFP8RunningMaxStrategy,
+    )
+    
+    strategy = get_kv_cache_strategy()
+    if strategy is None:
+        strategy = NoQuantizationStrategy()
+    
+    # 根据策略类型选择kernel
+    if isinstance(strategy, (KVCacheBF16Strategy, NoQuantizationStrategy)):
+        # BF16路径：使用BF16 kernel
+        return _dllm_flash_attn_prefill_bf16(q, k, v, scale, attn_metadata)
+    elif isinstance(strategy, KVCacheFP8RunningMaxStrategy):
+        # FP8路径：暂时使用BF16 kernel（后续实现FP8 kernel）
+        # Note: FP8 prefill kernel will be implemented in the future
+        return _dllm_flash_attn_prefill_bf16(q, k, v, scale, attn_metadata)
+    else:
+        raise ValueError(f"Unsupported quantization strategy for prefill: {type(strategy)}")
+
+
+def dllm_flash_attn_decode(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    scale: float,
+    attn_metadata: AttnMetaDataBase
+) -> torch.Tensor:
+    """
+    Decode attention wrapper that dynamically selects kernel based on quantization strategy.
+    
+    Args:
+        q: Query tensor [Q_LEN, NUM_HEADS, HEAD_DIM]
+        k: Key tensor [KV_LEN, NUM_KV_HEADS, HEAD_DIM]
+        v: Value tensor [KV_LEN, NUM_KV_HEADS, HEAD_DIM]
+        k_cache: Key cache tensor (shape depends on layout)
+        v_cache: Value cache tensor (shape depends on layout)
+        scale: Attention scale factor
+        attn_metadata: Attention metadata
+    
+    Returns:
+        Output tensor [Q_LEN, NUM_HEADS, HEAD_DIM]
+    
+    Note:
+        For FP8 strategy:
+        - Unified layout static mode: dequantization is handled in attn_impl.py before calling this function
+        - Unified layout varlen mode: dequantization is handled by load_kvcache
+        - Distinct layout: dequantization is handled by load_kvcache
+        So FP8 strategy can temporarily use BF16 kernel.
+    """
+    from diffulex.utils.quantization.context import get_kv_cache_strategy
+    from diffulex.utils.quantization.strategies import (
+        NoQuantizationStrategy,
+        KVCacheBF16Strategy,
+        KVCacheFP8RunningMaxStrategy,
+    )
+    
+    strategy = get_kv_cache_strategy()
+    if strategy is None:
+        strategy = NoQuantizationStrategy()
+    
+    # 根据策略类型选择kernel
+    if isinstance(strategy, (KVCacheBF16Strategy, NoQuantizationStrategy)):
+        # BF16路径：使用BF16 kernel
+        return _dllm_flash_attn_decode_bf16(q, k, v, k_cache, v_cache, scale, attn_metadata)
+    elif isinstance(strategy, KVCacheFP8RunningMaxStrategy):
+        # FP8路径：暂时使用BF16 kernel（后续实现FP8 kernel）
+        # Note: For FP8, dequantization is handled before this function is called
+        # (in attn_impl.py for static mode, or in load_kvcache for varlen mode)
+        return _dllm_flash_attn_decode_bf16(q, k, v, k_cache, v_cache, scale, attn_metadata)
+    else:
+        raise ValueError(f"Unsupported quantization strategy for decode: {type(strategy)}")
