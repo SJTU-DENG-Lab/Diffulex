@@ -80,37 +80,21 @@ class Attention(nn.Module):
             o = dllm_flash_attn_prefill(q, k, v, self.scale, attn_metadata)
         else:
             if is_unified_layout:
-                # For FP8: pass scales to metadata for load_kvcache to handle dequantization
+                # For FP8: pass scales to metadata for kernel to handle dequantization
                 from diffulex.utils.quantization.context import get_kv_cache_strategy
                 from diffulex.utils.quantization.strategies import KVCacheFP8RunningMaxStrategy
                 
                 strategy = get_kv_cache_strategy()
                 if strategy is not None and isinstance(strategy, KVCacheFP8RunningMaxStrategy):
-                    # FP8 quantization: pass scales to metadata for load_kvcache to handle
+                    # FP8 quantization: pass scales to metadata
+                    # For static mode: FP8 kernel will handle dequantization internally
+                    # For varlen mode: load_kvcache will handle dequantization
                     if self.k_scale is None or self.v_scale is None:
                         raise ValueError("FP8 quantization requires k_scale and v_scale")
                     
-                    # Pass scale to metadata (load_kvcache will handle dequantization)
+                    # Pass scale to metadata (FP8 kernel or load_kvcache will handle dequantization)
                     attn_metadata.k_scale = self.k_scale
                     attn_metadata.v_scale = self.v_scale
-                    
-                    # For static mode: dequantize cache to BF16 before passing to decode kernel
-                    # For varlen mode: load_kvcache will handle dequantization
-                    if attn_metadata.decode_mode == "static":
-                        # Dequantize FP8 cache to BF16 for static mode
-                        # k_cache/v_cache shape for unified: [num_blocks, page_size, num_kv_heads, head_dim]
-                        # k_scale/v_scale shape: [num_kv_heads]
-                        # View uint8 as FP8 dtype
-                        k_cache_fp8 = k_cache.view(strategy.spec.fp8_view_dtype).float()
-                        v_cache_fp8 = v_cache.view(strategy.spec.fp8_view_dtype).float()
-                        
-                        # Broadcast scale: [num_kv_heads] -> [1, 1, num_kv_heads, 1]
-                        k_scale_broadcast = self.k_scale.view(1, 1, -1, 1)
-                        v_scale_broadcast = self.v_scale.view(1, 1, -1, 1)
-                        
-                        # Dequantize and convert to BF16, ensure contiguous
-                        k_cache = (k_cache_fp8 * k_scale_broadcast).to(torch.bfloat16).contiguous()
-                        v_cache = (v_cache_fp8 * v_scale_broadcast).to(torch.bfloat16).contiguous()
                 
                 o = dllm_flash_attn_decode(q, k, v, k_cache, v_cache, self.scale, attn_metadata)
             else:
