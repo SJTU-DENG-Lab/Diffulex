@@ -9,6 +9,7 @@ from diffulex.utils.quantization.strategies.attn_q_bf16 import AttnQBF16Strategy
 from diffulex.utils.quantization.strategies.attn_q_fp8_stub import AttnQFP8StubStrategy
 from diffulex.utils.quantization.strategies.linear_bf16 import LinearBF16Strategy
 from diffulex.utils.quantization.strategies.linear_stub import LinearStubStrategy
+from diffulex.utils.quantization.strategies.linear_int8_w8a16 import LinearInt8W8A16Strategy  # noqa: F401
 
 __all__ = [
     'NoQuantizationStrategy',
@@ -18,5 +19,6 @@ __all__ = [
     'AttnQFP8StubStrategy',
     'LinearBF16Strategy',
     'LinearStubStrategy',
+    'LinearInt8W8A16Strategy',
 ]
 
