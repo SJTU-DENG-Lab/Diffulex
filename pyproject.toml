@@ -54,5 +54,6 @@ include = [
     "diffulex_bench",
     "diffulex_kernel",
     "diffulex_legacy",
+    "diffulex_profiler",
     "test"
 ]
