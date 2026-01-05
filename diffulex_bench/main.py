@@ -5,7 +5,6 @@ Benchmark Main Entry - Main entry point for benchmark using lm-evaluation-harnes
 import sys
 import logging
 from pathlib import Path
-from typing import Optional
 
 from diffulex_bench.config import BenchmarkConfig, EngineConfig, EvalConfig
 from diffulex.logger import setup_logger, get_logger

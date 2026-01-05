@@ -26,7 +26,7 @@ def _dp_child_entry(config: Config, dp_idx: int, local_devices: list[int], conn)
             faulthandler.enable(all_threads=True)
         except Exception:
             pass
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in local_devices)
+        # os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(x) for x in local_devices)
         cfg = Config(
             model=config.model,
             lora_path=config.lora_path,
@@ -53,6 +53,7 @@ def _dp_child_entry(config: Config, dp_idx: int, local_devices: list[int], conn)
             kv_cache_layout=config.kv_cache_layout,
         )
         setattr(cfg, "device_start", 0)
+        setattr(cfg, "device_ids", local_devices)
 
         engine = DiffulexTPWorker(cfg.model, **{k: getattr(cfg, k) for k in cfg.__dataclass_fields__.keys() if k != "model"})
 

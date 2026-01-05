@@ -32,8 +32,8 @@ class ModelRunnerBase(ABC):
 
         # Initialize model, sampler, and kv cache
         init_method = f"tcp://{config.master_addr}:{config.master_port}"
-        dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank)
-        device_id = (getattr(config, "device_start", 0) or 0) + rank
+        dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank, device_id=config.device_ids[rank])
+        device_id = (getattr(config, "device_start", 0) or 0) + rank + config.device_ids[rank]
         assert 0 <= device_id < torch.cuda.device_count(), f"Invalid device_id {device_id}."
         torch.cuda.set_device(device_id)
         default_dtype = torch.get_default_dtype()

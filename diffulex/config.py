@@ -1,6 +1,6 @@
 import os
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from transformers import AutoConfig
 from diffulex.logger import get_logger
 
@@ -34,9 +34,10 @@ class Config:
     master_addr: str = "localhost"
     master_port: int = 2333
     # Shared memory segment name for intra-TP RPC; must be unique per DP group.
-    shm_name: str = "diffuserve_shm"
+    shm_name: str = "diffulex_shm"
     # Start device index for this TP group (set by DP launcher).
     device_start: int = 0
+    device_ids: list[int] = field(default_factory=lambda: [])
     
     enforce_eager: bool = False
     hf_config: AutoConfig | None = None

@@ -5,7 +5,6 @@ Supports common evaluation datasets such as GSM8K, HumanEval, etc.
 
 from typing import List, Dict, Any, Optional, Callable
 from datasets import load_dataset
-from transformers import AutoTokenizer
 
 
 def load_gsm8k(

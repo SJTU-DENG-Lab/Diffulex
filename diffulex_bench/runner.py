@@ -5,7 +5,6 @@ Provides a unified interface for benchmarking
 
 import time
 from typing import List, Dict, Any, Optional
-from tqdm import tqdm
 
 from diffulex import Diffulex, SamplingParams
 from transformers import AutoTokenizer
@@ -68,7 +67,7 @@ class BenchmarkRunner:
             # DP worker: wait for all child processes to be ready
             # by sending a lightweight command to each
             dp_size = getattr(self.llm, 'dp_size', 1)
-            self.logger.info(f"Waiting for {dp_size} DP worker(s) to be ready...")
+            self.logger.info(f"[DiffulexDPWorker (DP={dp_size})]: Waiting for {dp_size} DiffulexTPWorker subprocesses to be ready...")
             
             while time.time() - start_time < timeout:
                 try:
@@ -76,7 +75,7 @@ class BenchmarkRunner:
                     # Use is_finished as a lightweight check
                     for i in range(dp_size):
                         self.llm._ask(i, "is_finished")
-                    self.logger.success("All DP workers are ready")
+                    self.logger.success("All DiffulexTPWorker subprocesses are ready")
                     return
                 except (EOFError, RuntimeError, AttributeError, ConnectionError) as e:
                     # Process not ready yet, wait and retry

@@ -25,7 +25,7 @@ if __name__ == "__main__":
         use_lora=True,
         model_name="dream", 
         enforce_eager=True, 
-        data_parallel_size=1,
+        data_parallel_size=8,
         tensor_parallel_size=1,
         gpu_memory_utilization=0.25,
         max_num_batched_tokens=2048,
