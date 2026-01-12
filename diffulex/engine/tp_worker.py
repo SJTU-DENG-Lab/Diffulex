@@ -1,4 +1,6 @@
 import atexit
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import torch.multiprocessing as mp
 
@@ -63,6 +65,12 @@ class DiffulexTPWorker:
         # Return seq_id so caller can build a stable mapping
         return seq.seq_id
 
+    async def add_request_async(self, prompt: str | list[int], sampling_params: SamplingParams):
+        """Async version of add_request (currently synchronous but provided for API consistency)."""
+        # Tokenization and sequence creation are fast, but we make it async for consistency
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.add_request, prompt, sampling_params)
+
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
         sample_output = self.model_runner.call("run", seqs, is_prefill)
@@ -73,8 +81,32 @@ class DiffulexTPWorker:
         deltas = []
         return outputs, num_tokens, is_prefill, n_diff_steps, deltas
 
+    async def step_async(self):
+        """Async version of step that runs model inference in a thread pool."""
+        loop = asyncio.get_event_loop()
+        executor = getattr(self, '_step_executor', None)
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=1)
+            self._step_executor = executor
+        
+        def _step():
+            seqs, is_prefill = self.scheduler.schedule()
+            sample_output = self.model_runner.call("run", seqs, is_prefill)
+            n_diff_steps = self.scheduler.postprocess(seqs, sample_output)
+            outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+            num_tokens = sum(seq.num_tokens for seq in seqs) if is_prefill else sum(seq.new_tokens for seq in seqs)
+            deltas = []
+            return outputs, num_tokens, is_prefill, n_diff_steps, deltas
+        
+        return await loop.run_in_executor(executor, _step)
+
     def is_finished(self):
         return self.scheduler.is_finished()
+
+    async def is_finished_async(self):
+        """Async version of is_finished (currently synchronous but provided for API consistency)."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.is_finished)
 
     def generate(
         self,
@@ -120,6 +152,63 @@ class DiffulexTPWorker:
                     
         print(f"Finished in {n_steps} steps, prefill throughput: {prefill_throughput:.2f} tok/s, decode throughput: {decode_throughput:.2f} tok/s")
         # Ensure all outputs are present
+        assert all(toks is not None for toks in outputs), "Some sequences did not produce outputs"
+        outputs = [{
+            "text": self.tokenizer.decode(token_ids).split(self.tokenizer.eos_token)[0],
+            "token_ids": token_ids[:token_ids.index(self.config.eos)] if self.config.eos in token_ids else token_ids,
+            "n_diff_steps": n_diff_step,
+        } for token_ids, n_diff_step in zip(outputs, n_diff_steps)]
+        if use_tqdm:
+            pbar.close()
+        return outputs
+
+    async def generate_async(
+        self,
+        prompts: list[str] | list[list[int]],
+        sampling_params: SamplingParams | list[SamplingParams],
+        use_tqdm: bool = True,
+    ) -> list[str]:
+        """Async version of generate that allows concurrent request handling."""
+        if use_tqdm:
+            pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True)
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
+        # Map internal seq_id -> input index to keep output order stable
+        seqid_to_idx = {}
+        # Add requests synchronously to avoid race conditions with scheduler
+        # The actual async benefit comes from the inference steps, not request addition
+        for idx, (prompt, sp) in enumerate(zip(prompts, sampling_params)):
+            sid = self.add_request(prompt, sp)
+            seqid_to_idx[sid] = idx
+        outputs = [None] * len(prompts)
+        prefill_throughput = decode_throughput = 0.
+        n_steps = 0
+        n_diff_steps = [-1] * len(prompts)
+        while not await self.is_finished_async():
+            t = perf_counter()
+            n_steps += 1
+            output, num_tokens, is_prefill, cur_n_diff_steps, _ = await self.step_async()
+            if use_tqdm:
+                if is_prefill:
+                    prefill_throughput = num_tokens / (perf_counter() - t)
+                else:
+                    decode_throughput = num_tokens / (perf_counter() - t)
+                pbar.set_postfix({
+                    "Prefill": f"{int(prefill_throughput)}tok/s",
+                    "Decode": f"{int(decode_throughput)}tok/s",
+                })
+            if cur_n_diff_steps:
+                for seq_id, n_step in cur_n_diff_steps.items():
+                    if seq_id in seqid_to_idx and n_step >= 0:
+                        n_diff_steps[seqid_to_idx[seq_id]] = n_step
+            for seq_id, token_ids in output:
+                if seq_id in seqid_to_idx:
+                    outputs[seqid_to_idx[seq_id]] = token_ids
+                if use_tqdm:
+                    pbar.update(1)
+            await asyncio.sleep(0)
+                    
+        print(f"Finished in {n_steps} steps, prefill throughput: {prefill_throughput:.2f} tok/s, decode throughput: {decode_throughput:.2f} tok/s")
         assert all(toks is not None for toks in outputs), "Some sequences did not produce outputs"
         outputs = [{
             "text": self.tokenizer.decode(token_ids).split(self.tokenizer.eos_token)[0],

@@ -15,8 +15,16 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.platforms import current_platform
-from vllm.platforms.rocm import use_rocm_custom_paged_attention
-from vllm.triton_utils import tl, triton
+# from vllm.platforms.rocm import use_rocm_custom_paged_attention
+try:
+    from vllm.platforms.rocm import use_rocm_custom_paged_attention  # vLLM newer
+except Exception:
+    # vLLM older / CUDA-only env: treat as disabled
+    def use_rocm_custom_paged_attention() -> bool:
+        return False
+
+import triton
+import triton.language as tl
 
 from diffulex_legacy.layers.attention.ops.prefix_prefill import context_attention_fwd
 

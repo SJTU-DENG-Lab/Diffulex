@@ -40,6 +40,7 @@ FEW_SHOTS = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
 
 if __name__ == "__main__":
     model = "/data1/ckpts/Efficient-Large-Model/Fast_dLLM_v2_7B"
+    local_data_path = "/data1/LargeData/gsm8k"
     LLM = Diffulex(
         model,
         use_lora=False,
@@ -49,7 +50,7 @@ if __name__ == "__main__":
         tensor_parallel_size=1,
         gpu_memory_utilization=0.25,
         max_num_batched_tokens=2048,
-        max_num_seqs=20,
+        max_num_seqs=1,
         max_model_len=2048,
         kv_cache_layout="unified",
         decoding_strategy="block_diffusion",
@@ -58,13 +59,14 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
     
-    dataset = load_dataset("gsm8k", "main", split="test")["question"][:10]
+    # dataset = load_dataset("gsm8k", "main", split="test")["question"][:10]
+    dataset = load_dataset(local_data_path, "main", split="test", trust_remote_code=True)["question"][:10]
     prompts = [
         FEW_SHOTS + f"<|im_start|>user\nQuestion: {question}\nAnswer:<|im_end|>\n<|im_start|>assistant\n"
         for question in tqdm(dataset)
     ]
     
-    output_file = "log/profiles/perf_dvllm_dream_7B.json"
+    output_file = "log/profiles/perf_dvllm_fastdllmv2_7B.json"
     if os.path.exists(output_file):
         os.remove(output_file)
     # with VizTracer(output_file=output_file, file_info=True) as tracer:

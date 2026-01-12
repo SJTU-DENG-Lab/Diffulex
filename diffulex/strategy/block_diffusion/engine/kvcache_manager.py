@@ -28,7 +28,7 @@ class BDKVCacheManager(KVCacheManagerBase):
             if last_block.hash == -1:
                 prev_end_token = seq.cached_or_caching_num_tokens - seq.caching_num_tokens - 1
                 prev_block_idx = prev_end_token // self.block_size
-                if prev_block_idx < seq.num_blocks:
+                if 0 <= prev_block_idx < seq.num_blocks:
                     token_ids: list[int] = seq.block(prev_block_idx)
                     prefix = self.blocks[block_table[-2]].hash if len(block_table) > 1 else -1
                     h = self.compute_hash(token_ids, prefix)

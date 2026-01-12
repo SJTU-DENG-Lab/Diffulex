@@ -1,5 +1,7 @@
 import torch
 import pickle
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import torch.distributed as dist
 
@@ -72,6 +74,9 @@ class ModelRunnerBase(ABC):
                 self.shm.unlink()
         if not self.enforce_eager:
             del self.graphs, self.graph_pool
+        # Clean up executor if it exists
+        if hasattr(self, '_executor'):
+            self._executor.shutdown(wait=True)
         torch.cuda.synchronize()
         dist.destroy_process_group()
 
@@ -109,6 +114,16 @@ class ModelRunnerBase(ABC):
             self.write_shm(method_name, *args)
         method = getattr(self, method_name, None)
         return method(*args)
+
+    async def call_async(self, method_name, *args):
+        """Async version of call that runs in a thread pool executor."""
+        loop = asyncio.get_event_loop()
+        # Use default executor or create one if needed
+        executor = getattr(self, '_executor', None)
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=1)
+            self._executor = executor
+        return await loop.run_in_executor(executor, self.call, method_name, *args)
 
     def load_model(self, config: Config):
         """Instantiate the underlying model; override to customize."""

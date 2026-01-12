@@ -131,7 +131,7 @@ def dllm_flash_attn_prefill_kernel(
                 for i in T.Parallel(BLOCK_M):
                     scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
                 
-                for i in T.parallel(BLOCK_M):
+                for i in T.Parallel(BLOCK_M):
                     scores_scale[i] = T.exp2(scores_max_prev[i] * SCALE - scores_max[i] * SCALE)
                     
                 for i, j in T.Parallel(BLOCK_M, BLOCK_N):
