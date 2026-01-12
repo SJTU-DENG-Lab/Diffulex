@@ -11,7 +11,6 @@ from transformers import AutoTokenizer
 from diffulex import Diffulex, SamplingParams
 
 
-# Ensure we import Diffulex from THIS repo, not an installed copy.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -52,7 +51,7 @@ def main() -> None:
     parser.add_argument(
         "--num-prompts",
         type=int,
-        default=3,
+        default=10,
         help="Number of prompts to test (will duplicate the prompt)",
     )
     parser.add_argument(
@@ -95,7 +94,6 @@ def main() -> None:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, use_fast=True)
 
-    # Prepare prompts (can be multiple for batch async inference)
     prompts = [args.prompt] * args.num_prompts
     sampling_params = SamplingParams(temperature=args.temperature, max_tokens=args.max_tokens)
 
@@ -120,7 +118,7 @@ def main() -> None:
         print(f"Average TPS: {total_tokens / elapsed_time:.2f} tok/s")
         if outputs and 'n_diff_steps' in outputs[0]:
             avg_diff_steps = sum(o['n_diff_steps'] for o in outputs) / len(outputs)
-            print(f"Average diffusion steps: {avg_diff_steps:.2f}")
+            print(f"Average steps: {avg_diff_steps:.2f}")
 
         print("\n" + "=" * 80)
         print("[Individual Results]")
@@ -130,7 +128,7 @@ def main() -> None:
             print(f"Text: {output['text']}")
             print(f"Token IDs length: {len(output['token_ids'])}")
             if 'n_diff_steps' in output:
-                print(f"Diffusion steps: {output['n_diff_steps']}")
+                print(f"Number of steps: {output['n_diff_steps']}")
             print("-" * 80)
 
     except Exception as e:
@@ -146,6 +144,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    # Avoid tokenizer parallel warnings in multi-proc.
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     main()

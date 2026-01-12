@@ -83,15 +83,12 @@ class DiffulexTPWorker:
 
     async def step_async(self):
         """Async version of step that runs model inference in a thread pool."""
-        # Schedule and postprocess must run in the same thread to avoid race conditions
-        # Run the entire step in executor to ensure scheduler operations are thread-safe
         loop = asyncio.get_event_loop()
         executor = getattr(self, '_step_executor', None)
         if executor is None:
             executor = ThreadPoolExecutor(max_workers=1)
             self._step_executor = executor
         
-        # Run the entire step in executor to ensure scheduler operations are thread-safe
         def _step():
             seqs, is_prefill = self.scheduler.schedule()
             sample_output = self.model_runner.call("run", seqs, is_prefill)
@@ -108,7 +105,6 @@ class DiffulexTPWorker:
 
     async def is_finished_async(self):
         """Async version of is_finished (currently synchronous but provided for API consistency)."""
-        # Scheduler check is fast, but we make it async for consistency
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.is_finished)
 
@@ -210,11 +206,9 @@ class DiffulexTPWorker:
                     outputs[seqid_to_idx[seq_id]] = token_ids
                 if use_tqdm:
                     pbar.update(1)
-            # Yield control to allow other async tasks to run
             await asyncio.sleep(0)
                     
         print(f"Finished in {n_steps} steps, prefill throughput: {prefill_throughput:.2f} tok/s, decode throughput: {decode_throughput:.2f} tok/s")
-        # Ensure all outputs are present
         assert all(toks is not None for toks in outputs), "Some sequences did not produce outputs"
         outputs = [{
             "text": self.tokenizer.decode(token_ids).split(self.tokenizer.eos_token)[0],
