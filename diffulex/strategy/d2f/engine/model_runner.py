@@ -25,23 +25,26 @@ class D2FModelRunner(ModelRunnerBase):
         
         super().__init__(config, rank, event)
 
-    def warmup_model(self):
-        print("Warming up model...")
-        set_warming_up(True)
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        max_num_batched_tokens, max_model_len = (
-            self.config.max_num_batched_tokens,
-            self.config.max_model_len,
-        )
-        num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
-        test_input_ids = [0] * max_model_len
-        seqs = [D2FSequence(test_input_ids, config=self.config) for _ in range(num_seqs)]
-        self.run(seqs, True)
-        for seq in seqs:
-            seq.post_process()
-        torch.cuda.empty_cache()
-        reset_warming_up()
+    def _get_decode_mode(self) -> str:
+        """
+        统一选择 decode_mode 的逻辑：
+        1. 如果 config.decode_mode 已设置，优先使用 config 的值
+        2. 否则，如果 kv_cache_dtype 是 FP8，自动切换到 "static"
+        3. 否则，默认使用 "varlen"
+        """
+        if self.config.decode_mode is not None:
+            return self.config.decode_mode
+        
+        # Auto-select based on kv_cache_dtype
+        decode_mode = "varlen"
+        try:
+            from diffulex.utils.kv_cache_dtype import parse_kv_cache_dtype
+            if parse_kv_cache_dtype(getattr(self.config, "kv_cache_dtype", "bf16")).is_fp8:
+                decode_mode = "static"
+        except Exception:
+            decode_mode = "varlen"
+        
+        return decode_mode
 
     def prepare_prefill(self, seqs: list[D2FSequence]):
         input_ids: list[int] = []
@@ -115,6 +118,7 @@ class D2FModelRunner(ModelRunnerBase):
             )
         )
 
+        decode_mode = self._get_decode_mode()
         set_d2f_attn_metadata(
             True,
             cu_seqlens_q=cu_seqlens_q_tensor,
@@ -129,7 +133,7 @@ class D2FModelRunner(ModelRunnerBase):
             seq_lens=seq_lens,
             seq_lens_ts=seq_lens_ts,
             diffusion_block_size=self.diffusion_block_size,
-            decode_mode="varlen",
+            decode_mode=decode_mode,
             attn_type="full_attention",
         )
         return input_ids_tensor, positions_tensor
@@ -198,6 +202,21 @@ class D2FModelRunner(ModelRunnerBase):
                         cur_diffusion_block_start = 0
                         cur_diffusion_block_end = step
                         start_idx += step
+                        # IMPORTANT:
+                        # We must have a KV-cache block allocated for this mem_block_idx.
+                        # If not, this is almost always due to insufficient KV cache blocks
+                        # (e.g. higher model/weight memory footprint leaves too few blocks).
+                        if mem_block_idx >= len(seq.block_table):
+                            raise RuntimeError(
+                                "KV cache block allocation is insufficient during decode: "
+                                f"mem_block_idx={mem_block_idx} requires block_table length >= {mem_block_idx + 1}, "
+                                f"but got len(block_table)={len(seq.block_table)} (seq.num_blocks={seq.num_blocks}). "
+                                "This usually means GPU memory utilization is too low to allocate enough KV cache "
+                                f"blocks for this run (num_kvcache_blocks={getattr(self.config, 'num_kvcache_blocks', None)}, "
+                                f"gpu_memory_utilization={getattr(self.config, 'gpu_memory_utilization', None)}). "
+                                "Try increasing gpu_memory_utilization, reducing max_model_len/max_tokens/max_num_seqs, "
+                                "or using a lower-memory weight quantization (e.g. int4)."
+                            )
                         mem_block_start = (
                             seq.block_table[mem_block_idx] * self.block_size
                             + context_len % seq.block_size
@@ -241,6 +260,14 @@ class D2FModelRunner(ModelRunnerBase):
         slot_mapping_tensor = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         context_lens_tensor = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         block_tables = self.prepare_block_tables(seqs)
+        # NOTE:
+        # - d2f decode supports "varlen" and "static" modes (see config.decode_mode).
+        # - For FP8 KV, the (varlen/distinct-layout) path uses `load_kvcache` which is expected to
+        #   handle FP8 dequantization / scale application inside the fused operator (no Python-level dequant).
+        # - Performance can still differ between modes/kernels; when FP8 KV is enabled, prefer the
+        #   best-supported kernel path on your stack (often "static"/unified-layout) and validate with profiling.
+        # - Allow manual override via config.decode_mode if specified.
+        decode_mode = self._get_decode_mode()
         set_d2f_attn_metadata(
             False,
             slot_mapping=slot_mapping_tensor,
@@ -256,7 +283,7 @@ class D2FModelRunner(ModelRunnerBase):
             kv_cache_layout=self.config.kv_cache_layout,
             need_kv_cache_store=need_kv_cache_store,
             diffusion_block_size=self.diffusion_block_size,
-            decode_mode="varlen",
+            decode_mode=decode_mode,
             attn_type="full_attention",
         )
         return input_ids_tensor, positions_tensor

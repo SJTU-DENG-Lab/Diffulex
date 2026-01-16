@@ -55,21 +55,25 @@ class LLaDAAttention(nn.Module):
             hidden_size,
             self.total_num_heads * self.head_dim,
             bias=qkv_bias,
+            quant_kind="attn",
         )
         self.k_proj = ColumnParallelLinear(
             hidden_size,
             self.total_num_kv_heads * self.head_dim,
             bias=qkv_bias,
+            quant_kind="attn",
         )
         self.v_proj = ColumnParallelLinear(
             hidden_size,
             self.total_num_kv_heads * self.head_dim,
             bias=qkv_bias,
+            quant_kind="attn",
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
+            quant_kind="attn",
         )
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -115,16 +119,19 @@ class LLaDAMLP(nn.Module):
             hidden_size,
             intermediate_size,
             bias=False,
+            quant_kind="mlp",
         )
         self.up_proj = ColumnParallelLinear(
             hidden_size,
             intermediate_size,
             bias=False,
+            quant_kind="mlp",
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
+            quant_kind="mlp",
         )
         assert hidden_act == "silu"
         self.act_fn = SiluAndMul()

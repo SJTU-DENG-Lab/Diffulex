@@ -8,8 +8,8 @@ from typing import Optional
 
 from diffulex.utils.quantization.context import QuantizationContext
 from diffulex.utils.quantization.config import QuantizationConfig
-from diffulex.utils.quantization.registry import create_attn_q_strategy as _create_attn_q_strategy
 from diffulex.utils.quantization.registry import create_kv_cache_strategy as _create_kv_cache_strategy
+from diffulex.utils.quantization.registry import create_linear_strategy as _create_linear_strategy
 from diffulex.utils.quantization.strategy import KVCacheQuantizationStrategy
 
 # Ensure built-in strategies are imported so they can register themselves.
@@ -57,14 +57,23 @@ class QuantizationStrategyFactory:
         ctx = QuantizationContext.current()
         
         quant_cfg = QuantizationConfig.from_diffulex_config(config)
-
+        
         # KV Cache strategy
         strategy = QuantizationStrategyFactory.create_kv_cache_strategy(quant_cfg.kv_cache.dtype)
         ctx.set_strategy('kv_cache', strategy)
 
-        # Attention-Q strategy (activation)
-        attn_q_strategy = _create_attn_q_strategy(quant_cfg.activations.attn_q_dtype)
-        ctx.set_strategy('attn_q', attn_q_strategy)
+        # Linear strategies (weights + activations) by kind
+        linear_attn = _create_linear_strategy(
+            weight_dtype=quant_cfg.weights.linear_attn_dtype,
+            act_dtype=quant_cfg.activations.linear_attn_dtype,
+        )
+        ctx.set_linear_strategy("attn", linear_attn)
+
+        linear_mlp = _create_linear_strategy(
+            weight_dtype=quant_cfg.weights.linear_mlp_dtype,
+            act_dtype=quant_cfg.activations.linear_mlp_dtype,
+        )
+        ctx.set_linear_strategy("mlp", linear_mlp)
         
         # Future: Weight strategy
         # weight_dtype = getattr(config, 'weight_dtype', None)

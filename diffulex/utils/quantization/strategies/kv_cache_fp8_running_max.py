@@ -101,11 +101,16 @@ class KVCacheFP8RunningMaxStrategy(KVCacheQuantizationStrategy):
         """
         Update quantization scales using running max strategy.
         
+        This method follows vLLM's RunningMax approach:
+        1. Compute current batch's per-head absmax
+        2. Update running max (max of current running max and current absmax)
+        3. Convert running max to scale (absmax / fp8_max)
+        
         Args:
             k: Key tensor [seq_len, num_kv_heads, head_dim]
             v: Value tensor [seq_len, num_kv_heads, head_dim]
-            k_scale: Current K scale (None if first time)
-            v_scale: Current V scale (None if first time)
+            k_scale: Current K scale (None if first time) - shape [num_kv_heads]
+            v_scale: Current V scale (None if first time) - shape [num_kv_heads]
             num_kv_heads: Number of KV heads
             device: Target device
         
@@ -120,19 +125,27 @@ class KVCacheFP8RunningMaxStrategy(KVCacheQuantizationStrategy):
         v_absmax = v.to(torch.float32).abs().amax(dim=(0, 2))
         
         # Update running max
+        # Note: k_scale/v_scale are scales (already divided by fp8_max), so we need to
+        # convert them back to absmax before comparing with current absmax
         if k_scale is None:
-            k_scale = k_absmax.clone().detach()
+            k_absmax_running = k_absmax.clone().detach()
         else:
-            k_scale = torch.maximum(k_scale, k_absmax)
+            # Convert scale back to absmax for comparison
+            k_absmax_running = k_scale * fp8_max
+            # Update running max: take max of current running max and current batch absmax
+            k_absmax_running = torch.maximum(k_absmax_running, k_absmax)
         
         if v_scale is None:
-            v_scale = v_absmax.clone().detach()
+            v_absmax_running = v_absmax.clone().detach()
         else:
-            v_scale = torch.maximum(v_scale, v_absmax)
+            # Convert scale back to absmax for comparison
+            v_absmax_running = v_scale * fp8_max
+            # Update running max: take max of current running max and current batch absmax
+            v_absmax_running = torch.maximum(v_absmax_running, v_absmax)
         
-        # Compute scales from running max
-        k_scale = (k_scale / fp8_max).clamp_min(eps)
-        v_scale = (v_scale / fp8_max).clamp_min(eps)
+        # Compute scales from running max (absmax / fp8_max)
+        k_scale = (k_absmax_running / fp8_max).clamp_min(eps)
+        v_scale = (v_absmax_running / fp8_max).clamp_min(eps)
         
         return k_scale.to(device, dtype=torch.float32), v_scale.to(device, dtype=torch.float32)
     

@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional, Protocol
 
 import torch
+import torch.nn.functional as F
 
 
 class _AttnMetaDataLike(Protocol):
@@ -19,7 +20,6 @@ class _AttnMetaDataLike(Protocol):
 
     k_scale: Optional[torch.Tensor]
     v_scale: Optional[torch.Tensor]
-    q_scale: Optional[torch.Tensor]
 
 
 class QuantizationStrategy(ABC):
@@ -238,54 +238,73 @@ class WeightQuantizationStrategy(QuantizationStrategy):
         pass
 
 
-class AttnQQuantizationStrategy(QuantizationStrategy):
-    """Attention-Q quantization strategy interface (activation quantization)."""
+class LinearQuantizationStrategy(QuantizationStrategy):
+    """Linear layer quantization strategy interface (weights + activations).
+
+    This is an architecture hook: kernels/packed weights can be implemented later.
+    The runtime (Linear layers) should dispatch by `quant_kind` ("attn"/"mlp"/"other")
+    and use this strategy to compute the Linear output.
+    """
 
     @property
-    def attn_q_format(self) -> str:
-        """Small tag used for kernel dispatch.
+    def linear_weight_format(self) -> str:
+        """Small tag used for kernel dispatch for weights.
 
-        Known values:
-        - "bf16": Q remains BF16 (default)
-        - "fp8": Q is FP8 (kernel not implemented yet; placeholder)
+        Known values (initial set):
+        - "bf16": no weight quantization
+        - "int8"/"int4"/"fp8_e4m3"/"fp8_e5m2"/"gptq"/"awq": placeholders
         """
         return "bf16"
 
     @property
-    def requires_q_scales(self) -> bool:
-        return self.requires_runtime_scales
+    def linear_act_format(self) -> str:
+        """Small tag used for kernel dispatch for activations."""
+        return "bf16"
 
-    def maybe_set_attn_metadata_q_scale(
+    def quantize_weight_for_kernel(
         self,
-        attn_metadata: _AttnMetaDataLike,
+        weight: torch.Tensor,
         *,
-        q_scale: Optional[torch.Tensor],
-    ) -> None:
-        """Populate `attn_metadata.q_scale` when needed."""
-        if not self.requires_q_scales:
-            return
-        if q_scale is None:
-            raise ValueError(f"{self.name} requires q_scale but got None")
-        attn_metadata.q_scale = q_scale
+        device: torch.device | None = None,
+        **_: Any,
+    ) -> tuple[torch.Tensor, Any]:
+        """Optionally quantize/pack weight for kernel consumption.
 
-    def maybe_compute_q_scale(
-        self,
-        q: torch.Tensor,
-        *,
-        device: torch.device,
-    ) -> Optional[torch.Tensor]:
-        """Optionally compute Q scale tensor for the current call."""
-        return None
-
-    def quantize_q_for_kernel(
-        self,
-        q: torch.Tensor,
-        *,
-        q_scale: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        """Return a Q tensor to be consumed by the chosen attention kernel.
-
-        Default behavior: no-op (returns BF16/FP16/FP32 Q as-is).
+        Default behavior: no-op, returns (weight, None).
         """
-        return q
+        if device is not None:
+            weight = weight.to(device=device)
+        return weight, None
+
+    def quantize_act_for_kernel(
+        self,
+        x: torch.Tensor,
+        *,
+        device: torch.device | None = None,
+        **_: Any,
+    ) -> tuple[torch.Tensor, Any]:
+        """Optionally quantize activations for kernel consumption.
+
+        Default behavior: no-op, returns (x, None).
+        """
+        if device is not None:
+            x = x.to(device=device)
+        return x, None
+
+    def linear_forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+        *,
+        quant_kind: str,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        """Compute Linear output for a given kind.
+
+        Default behavior: `F.linear(x, weight, bias)` (no quantization).
+        Quantized strategies may override this to call custom kernels.
+        """
+        _ = quant_kind, kwargs
+        return F.linear(x, weight, bias)
 

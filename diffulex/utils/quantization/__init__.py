@@ -13,8 +13,6 @@ from diffulex.utils.quantization.context import (
     get_quantization_context,
     set_kv_cache_strategy,
     get_kv_cache_strategy,
-    set_attn_q_strategy,
-    get_attn_q_strategy,
 )
 from diffulex.utils.quantization.factory import QuantizationStrategyFactory
 from diffulex.utils.quantization.config import (
@@ -26,13 +24,10 @@ from diffulex.utils.quantization.config import (
 from diffulex.utils.quantization.registry import (
     create_kv_cache_strategy,
     registered_kv_cache_dtypes,
-    create_attn_q_strategy,
-    registered_attn_q_dtypes,
 )
 from diffulex.utils.quantization.strategy import (
     QuantizationStrategy,
     KVCacheQuantizationStrategy,
-    AttnQQuantizationStrategy,
     WeightQuantizationStrategy,
 )
 # Re-export kv_cache_dtype utilities for backward compatibility
@@ -50,8 +45,6 @@ __all__ = [
     'get_quantization_context',
     'set_kv_cache_strategy',
     'get_kv_cache_strategy',
-    'set_attn_q_strategy',
-    'get_attn_q_strategy',
     # Factory
     'QuantizationStrategyFactory',
     # Config
@@ -62,12 +55,9 @@ __all__ = [
     # Registry
     'create_kv_cache_strategy',
     'registered_kv_cache_dtypes',
-    'create_attn_q_strategy',
-    'registered_attn_q_dtypes',
     # Strategy interfaces
     'QuantizationStrategy',
     'KVCacheQuantizationStrategy',
-    'AttnQQuantizationStrategy',
     'WeightQuantizationStrategy',
     # KV Cache dtype utilities (for backward compatibility)
     'KvCacheDType',
