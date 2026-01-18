@@ -84,10 +84,14 @@ def _normalize_linear_dtype(dtype: str) -> str:
         "e5m2": "fp8_e5m2",
         # Weight-only methods (placeholders)
         "gptq": "gptq",
+        "gptq_marlin": "gptq_marlin",
+        "gptq_marlin_24": "gptq_marlin_24",
         "awq": "awq",
+        "awq_marlin": "awq_marlin",
         "gptq_awq": "gptq_awq",
-        # vLLM-style fused W8A16 path (Diffulex vendored): user-facing alias "marlin"
-        # Normalized key is "marlin_int8" to avoid conflating with other quant methods.
+        # vLLM-style fused W8A16 path (AllSpark): keep user-facing alias "marlin"
+        # for backward compatibility. Normalized key is "marlin_int8" to avoid
+        # conflating with other quant methods.
         "marlin": "marlin_int8",
         "marlin_int8": "marlin_int8",
     }
@@ -150,6 +154,19 @@ def create_linear_strategy(*, weight_dtype: str, act_dtype: str) -> LinearQuanti
 def registered_linear_dtypes() -> list[str]:
     """Return the normalized dtype/method names accepted by `_normalize_linear_dtype`."""
     # Keep this list stable for CLI/help messages.
-    return ["bf16", "int8", "int4", "fp8_e4m3", "fp8_e5m2", "gptq", "awq", "gptq_awq", "marlin_int8"]
+    return [
+        "bf16",
+        "int8",
+        "int4",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        "gptq",
+        "gptq_marlin",
+        "gptq_marlin_24",
+        "awq",
+        "awq_marlin",
+        "gptq_awq",
+        "marlin_int8",
+    ]
 
 

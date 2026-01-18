@@ -36,7 +36,13 @@ class ModelRunnerBase(ABC):
         # Initialize model, sampler, and kv cache
         init_method = f"tcp://{config.master_addr}:{config.master_port}"
         dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank, device_id=config.device_ids[rank])
-        device_id = (getattr(config, "device_start", 0) or 0) + rank + config.device_ids[rank]
+        # Choose CUDA device for this TP rank.
+        # config.device_ids is already a list of logical CUDA device indices (respecting CUDA_VISIBLE_DEVICES).
+        # Do NOT add rank again, otherwise rank 1 with device_ids=[0,1] becomes device 2.
+        if getattr(config, "device_ids", None):
+            device_id = config.device_ids[rank]
+        else:
+            device_id = (getattr(config, "device_start", 0) or 0) + rank
         assert 0 <= device_id < torch.cuda.device_count(), f"Invalid device_id {device_id}."
         torch.cuda.set_device(device_id)
         default_dtype = torch.get_default_dtype()
@@ -211,6 +217,13 @@ class ModelRunnerBase(ABC):
             f"for kv cache on rank {self.rank}."
         )
 
+        # Cache the list of Attention-like modules once, to keep binding logic consistent
+        # across cache layout branches (and avoid duplicated traversal).
+        attn_modules = [
+            m for m in self.model.modules()
+            if hasattr(m, "k_cache") and hasattr(m, "v_cache")
+        ]
+
         if config.kv_cache_layout == "distinct":
             x = config.k_cache_hdim_split_factor_x
             self.k_cache = torch.zeros(
@@ -230,12 +243,9 @@ class ModelRunnerBase(ABC):
                 self.block_size,
                 dtype=storage_dtype,
             )
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = self.k_cache[layer_id]
-                    module.v_cache = self.v_cache[layer_id]
-                    layer_id += 1
+            for layer_id, module in enumerate(attn_modules):
+                module.k_cache = self.k_cache[layer_id]
+                module.v_cache = self.v_cache[layer_id]
         elif config.kv_cache_layout == "unified":
             self.kv_cache = torch.zeros(
                 2,
@@ -246,12 +256,9 @@ class ModelRunnerBase(ABC):
                 head_dim,
                 dtype=storage_dtype,
             )
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = self.kv_cache[0, layer_id]
-                    module.v_cache = self.kv_cache[1, layer_id]
-                    layer_id += 1
+            for layer_id, module in enumerate(attn_modules):
+                module.k_cache = self.kv_cache[0, layer_id]
+                module.v_cache = self.kv_cache[1, layer_id]
         else:
             raise ValueError(
                 "Unsupported kv_cache_layout: {layout}. Supported values are 'distinct' and 'unified'.".format(
@@ -281,12 +288,9 @@ class ModelRunnerBase(ABC):
             self.v_scale[:] = v_scale_init[None, :]
             
             # Bind scales to Attention modules
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_scale = self.k_scale[layer_id]
-                    module.v_scale = self.v_scale[layer_id]
-                    layer_id += 1
+            for layer_id, module in enumerate(attn_modules):
+                module.k_scale = self.k_scale[layer_id]
+                module.v_scale = self.v_scale[layer_id]
 
     def prepare_block_tables(self, seqs: list[SequenceBase]):
         max_len = max(len(seq.block_table) for seq in seqs)

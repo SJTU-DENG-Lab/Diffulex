@@ -89,20 +89,45 @@ class LinearBase(nn.Module):
         self.register_buffer("_weight_is_quantized", torch.tensor(False, dtype=torch.bool), persistent=False)
         
         # GPTQ/AWQ offline quantized weight storage (W4A16).
-        # GPTQ: qweight (packed int4), qzeros (packed int4), scales (per-group), g_idx (optional)
-        # AWQ: qweight (packed int4), qzeros (packed int4), scales (per-group)
-        self.register_buffer("gptq_qweight", torch.empty(0, dtype=torch.int8), persistent=False)
-        self.register_buffer("gptq_qzeros", torch.empty(0, dtype=torch.int8), persistent=False)
-        self.register_buffer("gptq_scales", torch.empty(0, dtype=torch.float32), persistent=False)
+        # NOTE(vLLM-format):
+        # - GPTQ: qweight int32 [K/pack, N], qzeros int32 [K/group, N/pack],
+        #         scales fp16 [K/group, N], g_idx optional (usually empty when desc_act=False)
+        # - AWQ : qweight int32 [K, N/pack], qzeros int32 [K/group, N/pack],
+        #         scales fp16 [K/group, N]
+        #
+        # Where pack = 32 / bits (bits=4 => pack=8), K=in_features, N=out_features.
+        self.register_buffer("gptq_qweight", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("gptq_qzeros", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("gptq_scales", torch.empty(0, dtype=torch.float16), persistent=False)
         self.register_buffer("gptq_g_idx", torch.empty(0, dtype=torch.int32), persistent=False)
-        self.register_buffer("awq_qweight", torch.empty(0, dtype=torch.int8), persistent=False)
-        self.register_buffer("awq_qzeros", torch.empty(0, dtype=torch.int8), persistent=False)
-        self.register_buffer("awq_scales", torch.empty(0, dtype=torch.float32), persistent=False)
+        self.register_buffer("awq_qweight", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("awq_qzeros", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("awq_scales", torch.empty(0, dtype=torch.float16), persistent=False)
         # Metadata for offline quantized weights
         self.register_buffer("_offline_quant_format", torch.empty(0, dtype=torch.int8), persistent=False)  # 0=none, 1=gptq, 2=awq
+        # Bits for offline GPTQ/AWQ weights (needed for marlin-exported layouts where
+        # we cannot infer bits from packed tensor shapes).
+        self.register_buffer("_offline_quant_bits", torch.tensor(0, dtype=torch.int32), persistent=False)
         self.register_buffer("_offline_quant_group_size", torch.tensor(128, dtype=torch.int32), persistent=False)
         self.register_buffer("_offline_quant_out_features", torch.tensor(0, dtype=torch.int32), persistent=False)
         self.register_buffer("_offline_quant_in_features", torch.tensor(0, dtype=torch.int32), persistent=False)
+        # GPTQ runtime prep state (vLLM requires gptq_shuffle before first gemm).
+        self.register_buffer("_gptq_is_shuffled", torch.tensor(False, dtype=torch.bool), persistent=False)
+
+        # ---- vLLM Marlin variants (GPTQ/AWQ) one-time repack cache ----
+        # These buffers are populated lazily when a *_marlin strategy is selected.
+        self.register_buffer("_gptq_marlin_is_prepared", torch.tensor(False, dtype=torch.bool), persistent=False)
+        self.register_buffer("gptq_marlin_qweight", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("gptq_marlin_scales", torch.empty(0, dtype=torch.float16), persistent=False)
+        self.register_buffer("gptq_marlin_zp", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("gptq_marlin_g_idx", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("gptq_marlin_g_idx_sort_indices", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("gptq_marlin_workspace", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("_awq_marlin_is_prepared", torch.tensor(False, dtype=torch.bool), persistent=False)
+        self.register_buffer("awq_marlin_qweight", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("awq_marlin_scales", torch.empty(0, dtype=torch.float16), persistent=False)
+        self.register_buffer("awq_marlin_zp", torch.empty(0, dtype=torch.int32), persistent=False)
+        self.register_buffer("awq_marlin_workspace", torch.empty(0, dtype=torch.int32), persistent=False)
 
     def has_quantized_weight(self) -> bool:
         return bool(self._weight_is_quantized.item()) and self.quant_weight_int8.numel() > 0 and self.quant_scales.numel() > 0
@@ -140,78 +165,429 @@ class LinearBase(nn.Module):
 
         Args:
             format: "gptq" or "awq"
-            qweight: int8 packed int4 weights [out_features, (in_features + 1) // 2]
-            qzeros: int8 packed int4 zeros [num_groups, (in_features + 1) // 2]
-            scales: float32 per-group scales [num_groups, in_features] or [num_groups]
+            qweight/qzeros/scales: vLLM standard tensors (see notes above).
             out_features: Output features (N)
             in_features: Input features (K)
             group_size: Group size for quantization (default: 128)
-            g_idx: Optional int32 tensor [out_features] for GPTQ group indices (GPTQ only)
+            g_idx: Optional int32 tensor [in_features] for act-order (GPTQ only; usually empty)
         """
+        # NOTE: Offline quantized weights are typically loaded from safetensors on CPU.
+        # In Diffulex, the engine may move modules to CUDA before calling this method,
+        # so we must ensure tensors are moved to the module device here.
+        def _infer_module_device() -> torch.device:
+            w = getattr(self, "weight", None)
+            if isinstance(w, torch.Tensor):
+                return w.device
+            for p in self.parameters(recurse=False):
+                return p.device
+            for b in self.buffers(recurse=False):
+                return b.device
+            return torch.device("cpu")
+
+        module_device = _infer_module_device()
+
         format = format.strip().lower()
         if format not in ("gptq", "awq"):
             raise ValueError(f"Unsupported offline quant format: {format}. Supported: 'gptq', 'awq'")
 
-        if qweight.dtype != torch.int8:
-            raise TypeError(f"qweight must be int8, got {qweight.dtype}")
-        if qzeros.dtype != torch.int8:
-            raise TypeError(f"qzeros must be int8, got {qzeros.dtype}")
-        if scales.dtype != torch.float32:
-            scales = scales.to(dtype=torch.float32)
+        # Infer bits/pack_factor from packed tensor shapes to support GPTQ W2/W4/W8.
+        # vLLM packing convention:
+        # - GPTQ: qweight [K/pack, N], qzeros [K/group, N/pack]
+        # -  AWQ: qweight [K,      N/pack], qzeros [K/group, N/pack]
+        # where pack = 32 / bits and bits must divide 32.
+        if format == "gptq":
+            if int(qweight.shape[0]) <= 0 or in_features % int(qweight.shape[0]) != 0:
+                raise ValueError(
+                    "Cannot infer GPTQ pack_factor from qweight shape: "
+                    f"in_features={in_features}, qweight.shape={tuple(qweight.shape)}"
+                )
+            pack_factor = in_features // int(qweight.shape[0])
+        else:  # awq
+            if int(qweight.shape[1]) <= 0 or out_features % int(qweight.shape[1]) != 0:
+                raise ValueError(
+                    "Cannot infer AWQ pack_factor from qweight shape: "
+                    f"out_features={out_features}, qweight.shape={tuple(qweight.shape)}"
+                )
+            pack_factor = out_features // int(qweight.shape[1])
+        if 32 % pack_factor != 0:
+            raise ValueError(
+                f"Unsupported pack_factor={pack_factor} (requires 32%pack_factor==0) "
+                f"for offline format={format}. "
+                f"in_features={in_features}, out_features={out_features}, "
+                f"qweight.shape={tuple(qweight.shape)}, qzeros.shape={tuple(qzeros.shape)}, scales.shape={tuple(scales.shape)}"
+            )
+        bits = 32 // pack_factor
+        if format == "awq" and bits != 4:
+            raise ValueError(f"AWQ 目前仅支持 4-bit（pack_factor=8），当前推断 bits={bits} (pack_factor={pack_factor})")
+        # Record bits for downstream kernels (esp. marlin path).
+        self._offline_quant_bits = torch.tensor(bits, dtype=torch.int32, device=module_device)
 
-        num_groups = (out_features + group_size - 1) // group_size
-        expected_qweight_shape = (out_features, (in_features + 1) // 2)
-        expected_qzeros_shape = (num_groups, (in_features + 1) // 2)
+        if qweight.dtype != torch.int32:
+            raise TypeError(f"qweight must be int32 (vLLM format), got {qweight.dtype}")
+        if qzeros.dtype != torch.int32:
+            raise TypeError(f"qzeros must be int32 (vLLM format), got {qzeros.dtype}")
+        if scales.dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise TypeError(
+                f"scales must be float16/bfloat16/float32 (vLLM format), got {scales.dtype}"
+            )
+        if scales.dtype != torch.float16:
+            scales = scales.to(dtype=torch.float16)
+
+        # Move to module device before validation/assignment.
+        if qweight.device != module_device:
+            qweight = qweight.to(device=module_device)
+        if qzeros.device != module_device:
+            qzeros = qzeros.to(device=module_device)
+        if scales.device != module_device:
+            scales = scales.to(device=module_device)
+        if g_idx is not None and g_idx.device != module_device:
+            g_idx = g_idx.to(device=module_device)
+
+        # group_size == -1 means channelwise in some ecosystems; vLLM normalizes -1 to K.
+        group_size_norm = in_features if group_size == -1 else group_size
+        if group_size_norm <= 0 or (in_features % group_size_norm != 0):
+            raise ValueError(
+                f"Invalid group_size={group_size} for in_features={in_features}. "
+                "Expected group_size == -1 or a positive divisor of in_features."
+            )
+        num_groups = in_features // group_size_norm
+
+        if format == "gptq":
+            expected_qweight_shape = (in_features // pack_factor, out_features)
+            expected_qzeros_shape = (num_groups, out_features // pack_factor)
+            expected_scales_shape = (num_groups, out_features)
+        else:  # awq
+            expected_qweight_shape = (in_features, out_features // pack_factor)
+            expected_qzeros_shape = (num_groups, out_features // pack_factor)
+            expected_scales_shape = (num_groups, out_features)
 
         if qweight.shape != expected_qweight_shape:
             raise ValueError(
-                f"qweight shape mismatch: got {qweight.shape}, expected {expected_qweight_shape}"
+                f"qweight shape mismatch: got {tuple(qweight.shape)}, expected {expected_qweight_shape}"
             )
         if qzeros.shape != expected_qzeros_shape:
             raise ValueError(
-                f"qzeros shape mismatch: got {qzeros.shape}, expected {expected_qzeros_shape}"
+                f"qzeros shape mismatch: got {tuple(qzeros.shape)}, expected {expected_qzeros_shape}"
+            )
+        if scales.shape != expected_scales_shape:
+            raise ValueError(
+                f"scales shape mismatch: got {tuple(scales.shape)}, expected {expected_scales_shape}"
             )
 
         if format == "gptq":
             self.gptq_qweight = qweight
             self.gptq_qzeros = qzeros
             self.gptq_scales = scales
+            if g_idx is not None and getattr(g_idx, "numel", lambda: 1)() == 0:
+                g_idx = None
             if g_idx is not None:
-                if g_idx.shape != (out_features,):
+                if g_idx.shape != (in_features,):
                     raise ValueError(
-                        f"g_idx shape mismatch: got {g_idx.shape}, expected ({out_features},)"
+                        f"g_idx shape mismatch: got {g_idx.shape}, expected ({in_features},)"
                     )
                 if g_idx.dtype != torch.int32:
                     g_idx = g_idx.to(dtype=torch.int32)
                 self.gptq_g_idx = g_idx
             else:
                 # Clear g_idx if not provided
-                self.gptq_g_idx = torch.empty(0, dtype=torch.int32)
-            self._offline_quant_format = torch.tensor(1, dtype=torch.int8)
+                self.gptq_g_idx = torch.empty(0, dtype=torch.int32, device=module_device)
+            self._offline_quant_format = torch.tensor(1, dtype=torch.int8, device=module_device)
+            self._gptq_is_shuffled = torch.tensor(False, dtype=torch.bool, device=module_device)
         else:  # AWQ
             self.awq_qweight = qweight
             self.awq_qzeros = qzeros
             self.awq_scales = scales
             # AWQ doesn't use g_idx, clear it
-            self.gptq_qweight = torch.empty(0, dtype=torch.int8)
-            self.gptq_qzeros = torch.empty(0, dtype=torch.int8)
-            self.gptq_scales = torch.empty(0, dtype=torch.float32)
-            self.gptq_g_idx = torch.empty(0, dtype=torch.int32)
-            self._offline_quant_format = torch.tensor(2, dtype=torch.int8)
+            self.gptq_qweight = torch.empty(0, dtype=torch.int32, device=module_device)
+            self.gptq_qzeros = torch.empty(0, dtype=torch.int32, device=module_device)
+            self.gptq_scales = torch.empty(0, dtype=torch.float16, device=module_device)
+            self.gptq_g_idx = torch.empty(0, dtype=torch.int32, device=module_device)
+            self._offline_quant_format = torch.tensor(2, dtype=torch.int8, device=module_device)
+            self._gptq_is_shuffled = torch.tensor(False, dtype=torch.bool, device=module_device)
 
-        self._offline_quant_group_size = torch.tensor(group_size, dtype=torch.int32)
-        self._offline_quant_out_features = torch.tensor(out_features, dtype=torch.int32)
-        self._offline_quant_in_features = torch.tensor(in_features, dtype=torch.int32)
+        # Reset marlin-prep caches (weights may have changed / moved).
+        self._gptq_marlin_is_prepared = torch.tensor(False, dtype=torch.bool, device=module_device)
+        self.gptq_marlin_qweight = torch.empty(0, dtype=torch.int32, device=module_device)
+        self.gptq_marlin_scales = torch.empty(0, dtype=torch.float16, device=module_device)
+        self.gptq_marlin_zp = torch.empty(0, dtype=torch.int32, device=module_device)
+        self.gptq_marlin_g_idx = torch.empty(0, dtype=torch.int32, device=module_device)
+        self.gptq_marlin_g_idx_sort_indices = torch.empty(0, dtype=torch.int32, device=module_device)
+        self.gptq_marlin_workspace = torch.empty(0, dtype=torch.int32, device=module_device)
+        self._awq_marlin_is_prepared = torch.tensor(False, dtype=torch.bool, device=module_device)
+        self.awq_marlin_qweight = torch.empty(0, dtype=torch.int32, device=module_device)
+        self.awq_marlin_scales = torch.empty(0, dtype=torch.float16, device=module_device)
+        self.awq_marlin_zp = torch.empty(0, dtype=torch.int32, device=module_device)
+        self.awq_marlin_workspace = torch.empty(0, dtype=torch.int32, device=module_device)
+
+        self._offline_quant_group_size = torch.tensor(group_size, dtype=torch.int32, device=module_device)
+        self._offline_quant_out_features = torch.tensor(out_features, dtype=torch.int32, device=module_device)
+        self._offline_quant_in_features = torch.tensor(in_features, dtype=torch.int32, device=module_device)
 
         # Drop bf16 weight Parameter if present (to free memory)
         if "weight" in self._parameters:
             self._parameters.pop("weight", None)
             setattr(self, "weight", None)
 
+    def _maybe_prepare_offline_gptq(self, x: torch.Tensor) -> None:
+        """Prepare vLLM GPTQ weights on first use (required gptq_shuffle)."""
+        if self._offline_quant_format.numel() == 0:
+            return
+        if int(self._offline_quant_format.item()) != 1:
+            return
+        if self.gptq_qweight.numel() == 0:
+            return
+        if self._gptq_is_shuffled.numel() > 0 and bool(self._gptq_is_shuffled.item()):
+            return
+
+        # Lazy import to avoid pulling vLLM unless GPTQ offline weights are used.
+        try:
+            from vllm import _custom_ops as ops  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(
+                "GPTQ offline 权重已加载，但无法导入 vLLM CUDA custom ops（vllm._custom_ops）。"
+            ) from e
+
+        # vLLM uses torch.int for g_idx (can be empty when desc_act=False).
+        if self.gptq_g_idx.numel() == 0:
+            g_idx = torch.empty((0,), device=x.device, dtype=torch.int)
+        else:
+            g_idx = self.gptq_g_idx.to(device=x.device, dtype=torch.int)
+
+        if self.gptq_qweight.device != x.device:
+            raise RuntimeError(
+                f"GPTQ qweight device mismatch: qweight on {self.gptq_qweight.device}, x on {x.device}. "
+                "请确保模型与输入在同一设备。"
+            )
+
+        # Infer weight_bits from packed qweight shape to support GPTQ W2/W4/W8.
+        # qweight: [K/pack_factor, N], where pack_factor = 32 / weight_bits.
+        in_features = int(self._offline_quant_in_features.item()) if self._offline_quant_in_features.numel() > 0 else None
+        if in_features is None or in_features <= 0:
+            raise RuntimeError("GPTQ offline 权重已加载，但无法推断 in_features 以计算 weight_bits。")
+        if self.gptq_qweight.shape[0] <= 0 or in_features % int(self.gptq_qweight.shape[0]) != 0:
+            raise RuntimeError(
+                f"GPTQ qweight shape 不合法，无法推断 weight_bits: "
+                f"in_features={in_features}, qweight.shape={tuple(self.gptq_qweight.shape)}"
+            )
+        pack_factor = in_features // int(self.gptq_qweight.shape[0])
+        if 32 % pack_factor != 0:
+            raise RuntimeError(
+                f"GPTQ pack_factor={pack_factor} 不支持（需要 32 % pack_factor == 0），"
+                f"in_features={in_features}, qweight.shape={tuple(self.gptq_qweight.shape)}"
+            )
+        weight_bits = 32 // pack_factor
+        ops.gptq_shuffle(self.gptq_qweight, g_idx, weight_bits)
+        self._gptq_is_shuffled = torch.tensor(True, dtype=torch.bool, device=x.device)
+
+    def _maybe_prepare_offline_gptq_marlin(self, x: torch.Tensor) -> None:
+        """Prepare vLLM GPTQ Marlin weights on first use (repack + permute scales/zp).
+
+        IMPORTANT: This path must NOT call `gptq_shuffle` (that is specific to gptq_gemm/exllama).
+        """
+        if self._offline_quant_format.numel() == 0:
+            return
+        if int(self._offline_quant_format.item()) != 1:
+            return
+        if self.gptq_qweight.numel() == 0:
+            return
+        if self._gptq_marlin_is_prepared.numel() > 0 and bool(self._gptq_marlin_is_prepared.item()):
+            return
+
+        try:
+            from vllm import _custom_ops as ops  # type: ignore
+            from vllm.model_executor.layers.quantization.utils.marlin_utils import (  # type: ignore
+                marlin_make_empty_g_idx,
+                marlin_make_workspace_new,
+                marlin_permute_scales,
+                marlin_sort_g_idx,
+            )
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(
+                "GPTQ Marlin 需要 vLLM CUDA custom ops + marlin_utils，但当前环境不可用。"
+            ) from e
+
+        device = x.device
+        if self.gptq_qweight.device != device:
+            raise RuntimeError(
+                f"GPTQ qweight device mismatch: qweight on {self.gptq_qweight.device}, x on {device}. "
+                "请确保模型与输入在同一设备。"
+            )
+
+        in_features = int(self._offline_quant_in_features.item()) if self._offline_quant_in_features.numel() > 0 else 0
+        out_features = int(self._offline_quant_out_features.item()) if self._offline_quant_out_features.numel() > 0 else 0
+        group_size = int(self._offline_quant_group_size.item()) if self._offline_quant_group_size.numel() > 0 else 128
+        if in_features <= 0 or out_features <= 0:
+            raise RuntimeError(
+                f"GPTQ Marlin: invalid feature sizes: in_features={in_features}, out_features={out_features}"
+            )
+
+        # Determine weight_bits.
+        # - Standard GPTQ layout: infer from qweight K packing.
+        # - Marlin-exported layout: bits cannot be inferred from qweight shape; use recorded bits.
+        weight_bits = int(self._offline_quant_bits.item()) if self._offline_quant_bits.numel() > 0 else 0
+        if weight_bits <= 0:
+            if self.gptq_qweight.shape[0] <= 0 or in_features % int(self.gptq_qweight.shape[0]) != 0:
+                raise RuntimeError(
+                    "GPTQ Marlin: cannot infer pack_factor from qweight shape: "
+                    f"in_features={in_features}, qweight.shape={tuple(self.gptq_qweight.shape)}"
+                )
+            pack_factor = in_features // int(self.gptq_qweight.shape[0])
+            if 32 % pack_factor != 0:
+                raise RuntimeError(
+                    f"GPTQ Marlin: unsupported pack_factor={pack_factor} (requires 32%pack_factor==0)"
+                )
+            weight_bits = 32 // pack_factor
+        if weight_bits not in (4, 8):
+            raise RuntimeError(
+                f"GPTQ Marlin: only 4/8-bit are supported in this integration, got bits={weight_bits}"
+            )
+
+        # If loader already provided marlin-ready weights/scales (exported offline),
+        # skip repack/permute but still create workspace / g_idx metadata.
+        already_marlin_ready = (
+            self.gptq_marlin_qweight.numel() > 0
+            and self.gptq_marlin_scales.numel() > 0
+        )
+        if already_marlin_ready:
+            if self.gptq_marlin_qweight.device != device or self.gptq_marlin_scales.device != device:
+                raise RuntimeError(
+                    "GPTQ Marlin: prepacked marlin tensors device mismatch: "
+                    f"qweight on {self.gptq_marlin_qweight.device}, scales on {self.gptq_marlin_scales.device}, x on {device}."
+                )
+
+        # g_idx (act-order) handling: marlin expects sorted g_idx + sort indices; otherwise empty.
+        if self.gptq_g_idx.numel() > 0:
+            g_idx_sorted, g_idx_sort_indices = marlin_sort_g_idx(self.gptq_g_idx.to(device=device, dtype=torch.int32))
+            self.gptq_marlin_g_idx = g_idx_sorted
+            self.gptq_marlin_g_idx_sort_indices = g_idx_sort_indices
+        else:
+            self.gptq_marlin_g_idx = marlin_make_empty_g_idx(device)
+            self.gptq_marlin_g_idx_sort_indices = marlin_make_empty_g_idx(device)
+
+        # Workspace (internal locking mechanism).
+        self.gptq_marlin_workspace = marlin_make_workspace_new(device)
+
+        if not already_marlin_ready:
+            # Repack qweight to marlin format.
+            self.gptq_marlin_qweight = ops.gptq_marlin_repack(
+                self.gptq_qweight.contiguous(),
+                perm=self.gptq_marlin_g_idx_sort_indices,
+                size_k=in_features,
+                size_n=out_features,
+                num_bits=weight_bits,
+                is_a_8bit=False,
+            )
+
+            # Permute scales to marlin format.
+            self.gptq_marlin_scales = marlin_permute_scales(
+                self.gptq_scales.contiguous(),
+                size_k=in_features,
+                size_n=out_features,
+                group_size=group_size,
+                is_a_8bit=False,
+            )
+
+        # GPTQ Marlin only supports symmetric weights (no runtime zero-points).
+        # Use empty zp to keep has_zp=False in the kernel.
+        self.gptq_marlin_zp = marlin_make_empty_g_idx(device)
+
+        self._gptq_marlin_is_prepared = torch.tensor(True, dtype=torch.bool, device=device)
+
+    def _maybe_prepare_offline_awq_marlin(self, x: torch.Tensor) -> None:
+        """Prepare vLLM AWQ Marlin weights on first use (repack + permute scales/zp)."""
+        if self._offline_quant_format.numel() == 0:
+            return
+        if int(self._offline_quant_format.item()) != 2:
+            return
+        if self.awq_qweight.numel() == 0:
+            return
+        if self._awq_marlin_is_prepared.numel() > 0 and bool(self._awq_marlin_is_prepared.item()):
+            return
+
+        try:
+            from vllm import _custom_ops as ops  # type: ignore
+            from vllm.model_executor.layers.quantization.utils.marlin_utils import (  # type: ignore
+                awq_to_marlin_zero_points,
+                marlin_make_workspace_new,
+                marlin_permute_scales,
+            )
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(
+                "AWQ Marlin 需要 vLLM CUDA custom ops + marlin_utils，但当前环境不可用。"
+            ) from e
+
+        device = x.device
+        if self.awq_qweight.device != device:
+            raise RuntimeError(
+                f"AWQ qweight device mismatch: qweight on {self.awq_qweight.device}, x on {device}. "
+                "请确保模型与输入在同一设备。"
+            )
+
+        in_features = int(self._offline_quant_in_features.item()) if self._offline_quant_in_features.numel() > 0 else 0
+        out_features = int(self._offline_quant_out_features.item()) if self._offline_quant_out_features.numel() > 0 else 0
+        group_size = int(self._offline_quant_group_size.item()) if self._offline_quant_group_size.numel() > 0 else 128
+        if in_features <= 0 or out_features <= 0:
+            raise RuntimeError(
+                f"AWQ Marlin: invalid feature sizes: in_features={in_features}, out_features={out_features}"
+            )
+
+        # AWQ is 4-bit only.
+        pack_factor = out_features // int(self.awq_qweight.shape[1])
+        if pack_factor != 8:
+            raise RuntimeError(f"AWQ Marlin: expected pack_factor=8 (W4), got pack_factor={pack_factor}")
+        weight_bits = 4
+        num_groups = (in_features // (in_features if group_size == -1 else group_size))
+
+        self.awq_marlin_workspace = marlin_make_workspace_new(device)
+
+        # Repack qweight to marlin format.
+        self.awq_marlin_qweight = ops.awq_marlin_repack(
+            self.awq_qweight,
+            size_k=in_features,
+            size_n=out_features,
+            num_bits=weight_bits,
+            is_a_8bit=False,
+        )
+
+        # Permute scales to marlin format.
+        self.awq_marlin_scales = marlin_permute_scales(
+            self.awq_scales,
+            size_k=in_features,
+            size_n=out_features,
+            group_size=group_size,
+            is_a_8bit=False,
+        )
+
+        # Convert zero-points to marlin format.
+        self.awq_marlin_zp = awq_to_marlin_zero_points(
+            self.awq_qzeros,
+            size_k=num_groups,
+            size_n=out_features,
+            num_bits=weight_bits,
+            is_a_8bit=False,
+        )
+
+        self._awq_marlin_is_prepared = torch.tensor(True, dtype=torch.bool, device=device)
+
     def set_quantized_weight(self, quant_weight_int8: torch.Tensor, quant_scales: torch.Tensor) -> None:
-        # Support both int8 (for int8/int4 quantization) and uint8 (for FP8 quantization)
-        if quant_weight_int8.dtype not in (torch.int8, torch.uint8):
-            raise TypeError(f"quant_weight_int8 must be int8 or uint8, got {quant_weight_int8.dtype}")
+        # Support:
+        # - int8: int8/int4 weight-only quantization
+        # - float8: FP8 weight-only quantization (vLLM-aligned)
+        # - uint8: legacy FP8 storage (kept for backward compatibility)
+        fp8_dtypes: tuple[torch.dtype, ...] = tuple(
+            d
+            for d in (
+                getattr(torch, "float8_e4m3fn", None),
+                getattr(torch, "float8_e4m3fnuz", None),
+                getattr(torch, "float8_e5m2", None),
+                getattr(torch, "float8_e5m2fnuz", None),
+            )
+            if d is not None
+        )
+        if quant_weight_int8.dtype not in (torch.int8, torch.uint8, *fp8_dtypes):
+            raise TypeError(
+                f"quant_weight_int8 must be int8/uint8/float8, got {quant_weight_int8.dtype}"
+            )
         # Store scales dtype depends on strategy:
         # - W8A16/W4A16 kernels currently take bf16 scales.
         # - W8A8/W4A8 paths are more sensitive to scale precision; keep scales at fp16.
@@ -236,6 +612,43 @@ class LinearBase(nn.Module):
         self.quant_weight_int8 = quant_weight_int8
         self.quant_scales = quant_scales
         self._weight_is_quantized.fill_(True)
+
+    def _maybe_promote_weight_to_quantized_at_runtime(
+        self,
+        x: torch.Tensor,
+        strategy,
+        *,
+        expected_weight_formats: tuple[str, ...] = ("int8", "int4", "fp8_e4m3", "fp8_e5m2"),
+    ) -> None:
+        """Runtime safety net: if a Linear is configured for quantization but the bf16/fp16
+        weight Parameter was not quantized+removed at load-time (e.g., due to sharded load
+        ordering), quantize once on first forward and drop the bf16 weight Parameter.
+
+        This avoids keeping both bf16 weights and quantized weights resident on GPU.
+        """
+        if strategy is None:
+            return
+        if self.has_offline_quantized_weight() or self.has_quantized_weight():
+            return
+        weight_param = self._parameters.get("weight", None)
+        if weight_param is None:
+            return
+        weight_format = getattr(strategy, "linear_weight_format", None)
+        if weight_format not in expected_weight_formats:
+            return
+        if getattr(strategy, "name", "").startswith("linear_stub"):
+            return
+        w = getattr(self, "weight", None)
+        if w is None or getattr(w, "dtype", None) not in (torch.bfloat16, torch.float16):
+            return
+        try:
+            qweight, scales = strategy.quantize_weight_for_kernel(w.data, device=w.data.device)
+        except Exception:
+            return
+        self.set_quantized_weight(qweight, scales)
+        # Drop bf16 weight Parameter to free GPU memory.
+        self._parameters.pop("weight", None)
+        setattr(self, "weight", None)
 
     def _maybe_quantize_loaded_weight_param(
         self,
@@ -289,6 +702,168 @@ class LinearBase(nn.Module):
         # Keep attribute for compatibility, but ensure forward uses quant buffers.
         setattr(self, "weight", None)
 
+    def _get_linear_strategy(self):
+        """Return strategy for current `quant_kind` (or None).
+
+        NOTE: do not swallow TypeError here; a wrong strategy type should fail fast.
+        """
+        return get_linear_strategy(self.quant_kind)
+
+    def _offline_meta(self) -> tuple[int, int, int]:
+        """Return (out_features, in_features, group_size) for offline GPTQ/AWQ."""
+        return (
+            int(self._offline_quant_out_features.item()),
+            int(self._offline_quant_in_features.item()),
+            int(self._offline_quant_group_size.item()),
+        )
+
+    def _infer_gptq_weight_bits(self, *, in_features: int) -> int:
+        """Infer/return GPTQ weight bits for downstream kernels.
+
+        Priority:
+        - use recorded bits (e.g., marlin-exported layouts),
+        - otherwise infer from qweight packing.
+        """
+        bits = int(self._offline_quant_bits.item()) if self._offline_quant_bits.numel() > 0 else 0
+        if bits > 0:
+            return bits
+        if self.gptq_qweight.numel() == 0:
+            raise RuntimeError("GPTQ bits 推断失败：gptq_qweight 为空。")
+        if self.gptq_qweight.shape[0] <= 0 or in_features % int(self.gptq_qweight.shape[0]) != 0:
+            raise RuntimeError(
+                f"GPTQ bits 推断失败：in_features={in_features}, qweight.shape={tuple(self.gptq_qweight.shape)}"
+            )
+        pack_factor = in_features // int(self.gptq_qweight.shape[0])
+        if 32 % pack_factor != 0:
+            raise RuntimeError(f"GPTQ bits 推断失败：pack_factor={pack_factor} 不满足 32%pack_factor==0")
+        return 32 // pack_factor
+
+    def _maybe_int4_original_in_features_kwargs(self, strategy, x: torch.Tensor) -> dict:
+        """Some int4 kernels need original K (before packing)."""
+        if strategy is None:
+            return {}
+        if getattr(strategy, "linear_weight_format", None) == "int4":
+            return {"original_in_features": x.shape[1]}
+        return {}
+
+    def _build_offline_forward_kwargs(self, x: torch.Tensor, strategy) -> dict:
+        """Build kwargs for offline GPTQ/AWQ (including Marlin variants)."""
+        if strategy is None:
+            raise RuntimeError("Offline quantized weight is present but no linear strategy is configured.")
+
+        format_val = int(self._offline_quant_format.item())
+        weight_format = getattr(strategy, "linear_weight_format", None)
+        out_features, in_features, group_size = self._offline_meta()
+
+        meta = {
+            "out_features": out_features,
+            "in_features": in_features,
+            "group_size": group_size,
+        }
+
+        if format_val == 1:  # GPTQ
+            # IMPORTANT: only gptq_gemm needs gptq_shuffle; marlin variants require the original format.
+            if weight_format == "gptq":
+                self._maybe_prepare_offline_gptq(x)
+                return {
+                    **meta,
+                    "gptq_qweight": self.gptq_qweight,
+                    "gptq_qzeros": self.gptq_qzeros,
+                    "gptq_scales": self.gptq_scales,
+                    "gptq_group_size": group_size,
+                    # Always pass g_idx (can be empty). vLLM expects it for GPTQ kernels.
+                    "gptq_g_idx": self.gptq_g_idx,
+                }
+
+            if weight_format == "gptq_marlin":
+                self._maybe_prepare_offline_gptq_marlin(x)
+                bits = self._infer_gptq_weight_bits(in_features=in_features)
+                return {
+                    **meta,
+                    "gptq_weight_bits": bits,
+                    "gptq_marlin_qweight": self.gptq_marlin_qweight,
+                    "gptq_marlin_scales": self.gptq_marlin_scales,
+                    "gptq_marlin_zp": self.gptq_marlin_zp,
+                    "gptq_marlin_g_idx": self.gptq_marlin_g_idx,
+                    "gptq_marlin_g_idx_sort_indices": self.gptq_marlin_g_idx_sort_indices,
+                    "gptq_marlin_workspace": self.gptq_marlin_workspace,
+                }
+
+            raise RuntimeError(
+                f"Offline GPTQ weights are present, but current strategy weight_format={weight_format!r} is not compatible."
+            )
+
+        if format_val == 2:  # AWQ
+            if weight_format == "awq":
+                return {
+                    **meta,
+                    "awq_qweight": self.awq_qweight,
+                    "awq_qzeros": self.awq_qzeros,
+                    "awq_scales": self.awq_scales,
+                    "awq_group_size": group_size,
+                }
+
+            if weight_format == "awq_marlin":
+                self._maybe_prepare_offline_awq_marlin(x)
+                return {
+                    **meta,
+                    "awq_marlin_qweight": self.awq_marlin_qweight,
+                    "awq_marlin_scales": self.awq_marlin_scales,
+                    "awq_marlin_zp": self.awq_marlin_zp,
+                    "awq_marlin_workspace": self.awq_marlin_workspace,
+                    "awq_weight_bits": 4,
+                }
+
+            raise RuntimeError(
+                f"Offline AWQ weights are present, but current strategy weight_format={weight_format!r} is not compatible."
+            )
+
+        raise RuntimeError(f"Unknown offline quant format: {format_val}")
+
+    def _forward_base(self, x: torch.Tensor, bias: Optional[torch.Tensor]) -> torch.Tensor:
+        """Unified forward dispatcher for bf16 / online quant / offline GPTQ/AWQ."""
+        strategy = self._get_linear_strategy()
+        # Runtime safety net: ensure we don't keep bf16+quant weights both resident.
+        self._maybe_promote_weight_to_quantized_at_runtime(x, strategy)
+
+        # Offline quantized weights (GPTQ/AWQ) have higher priority.
+        if self.has_offline_quantized_weight():
+            if strategy is None:
+                raise RuntimeError("Offline quantized weight is present but no linear strategy is configured.")
+            kwargs = self._build_offline_forward_kwargs(x, strategy)
+            return strategy.linear_forward(
+                x,
+                None,  # weight not used for offline quantized weights
+                bias,
+                quant_kind=self.quant_kind,
+                **kwargs,
+            )
+
+        if self.has_quantized_weight():
+            if strategy is None:
+                raise RuntimeError("Quantized weight is present but no linear strategy is configured.")
+            kwargs = {"quant_scales": self.quant_scales}
+            kwargs.update(self._maybe_int4_original_in_features_kwargs(strategy, x))
+            return strategy.linear_forward(
+                x,
+                self.quant_weight_int8,
+                bias,
+                quant_kind=self.quant_kind,
+                **kwargs,
+            )
+
+        if strategy is None:
+            weight = getattr(self, "weight", None)
+            if weight is None:
+                raise RuntimeError("No strategy is configured and bf16 weight is missing.")
+            return F.linear(x, weight, bias)
+
+        weight = getattr(self, "weight", None)
+        if weight is None:
+            raise RuntimeError("Strategy is configured but weight is missing (expected bf16 weight).")
+        kwargs = self._maybe_int4_original_in_features_kwargs(strategy, x)
+        return strategy.linear_forward(x, weight, bias, quant_kind=self.quant_kind, **kwargs)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
@@ -321,73 +896,7 @@ class ReplicatedLinear(LinearBase, LoRAMixin):
         self._maybe_quantize_loaded_weight_param(param, loaded_shard_id=None, expected_shard_ids={None})
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        strategy = get_linear_strategy(self.quant_kind)
-        
-        # Check for offline quantized weights (GPTQ/AWQ) first
-        if self.has_offline_quantized_weight():
-            if strategy is None:
-                raise RuntimeError("Offline quantized weight is present but no linear strategy is configured.")
-            format_val = int(self._offline_quant_format.item())
-            out_features = int(self._offline_quant_out_features.item())
-            in_features = int(self._offline_quant_in_features.item())
-            group_size = int(self._offline_quant_group_size.item())
-            
-            kwargs = {
-                "out_features": out_features,
-                "in_features": in_features,
-                "group_size": group_size,
-            }
-            
-            if format_val == 1:  # GPTQ
-                kwargs.update({
-                    "gptq_qweight": self.gptq_qweight,
-                    "gptq_qzeros": self.gptq_qzeros,
-                    "gptq_scales": self.gptq_scales,
-                    "gptq_group_size": group_size,
-                })
-                if self.gptq_g_idx.numel() > 0:
-                    kwargs["gptq_g_idx"] = self.gptq_g_idx
-            elif format_val == 2:  # AWQ
-                kwargs.update({
-                    "awq_qweight": self.awq_qweight,
-                    "awq_qzeros": self.awq_qzeros,
-                    "awq_scales": self.awq_scales,
-                    "awq_group_size": group_size,
-                })
-            
-            base_out = strategy.linear_forward(
-                x,
-                None,  # weight not used for offline quantized weights
-                self.bias,
-                quant_kind=self.quant_kind,
-                **kwargs,
-            )
-        elif self.has_quantized_weight():
-            if strategy is None:
-                raise RuntimeError("Quantized weight is present but no linear strategy is configured.")
-            # For int4 (W4A16), we need to pass original_in_features
-            weight_format = getattr(strategy, "linear_weight_format", None)
-            kwargs = {"quant_scales": self.quant_scales}
-            if weight_format == "int4":
-                # For int4, packed weight shape is [out_features, (in_features + 1) // 2]
-                # We use x.shape[1] as the source of truth (it's the actual K dimension)
-                kwargs["original_in_features"] = x.shape[1]
-            base_out = strategy.linear_forward(
-                x,
-                self.quant_weight_int8,
-                self.bias,
-                quant_kind=self.quant_kind,
-                **kwargs,
-            )
-        elif strategy is None:
-            base_out = F.linear(x, self.weight, self.bias)
-        else:
-            # For int4 strategies (W4A16/W4A8), we need to pass original_in_features even when weight is not quantized yet
-            weight_format = getattr(strategy, "linear_weight_format", None)
-            kwargs = {}
-            if weight_format == "int4":
-                kwargs["original_in_features"] = x.shape[1]
-            base_out = strategy.linear_forward(x, self.weight, self.bias, quant_kind=self.quant_kind, **kwargs)
+        base_out = self._forward_base(x, self.bias)
         return self.lora_forward(x, base_out)
 
 
@@ -426,73 +935,7 @@ class ColumnParallelLinear(LinearBase, LoRAMixin):
         self._maybe_quantize_loaded_weight_param(param, loaded_shard_id=None, expected_shard_ids={None})
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        strategy = get_linear_strategy(self.quant_kind)
-        
-        # Check for offline quantized weights (GPTQ/AWQ) first
-        if self.has_offline_quantized_weight():
-            if strategy is None:
-                raise RuntimeError("Offline quantized weight is present but no linear strategy is configured.")
-            format_val = int(self._offline_quant_format.item())
-            out_features = int(self._offline_quant_out_features.item())
-            in_features = int(self._offline_quant_in_features.item())
-            group_size = int(self._offline_quant_group_size.item())
-            
-            kwargs = {
-                "out_features": out_features,
-                "in_features": in_features,
-                "group_size": group_size,
-            }
-            
-            if format_val == 1:  # GPTQ
-                kwargs.update({
-                    "gptq_qweight": self.gptq_qweight,
-                    "gptq_qzeros": self.gptq_qzeros,
-                    "gptq_scales": self.gptq_scales,
-                    "gptq_group_size": group_size,
-                })
-                if self.gptq_g_idx.numel() > 0:
-                    kwargs["gptq_g_idx"] = self.gptq_g_idx
-            elif format_val == 2:  # AWQ
-                kwargs.update({
-                    "awq_qweight": self.awq_qweight,
-                    "awq_qzeros": self.awq_qzeros,
-                    "awq_scales": self.awq_scales,
-                    "awq_group_size": group_size,
-                })
-            
-            base_out = strategy.linear_forward(
-                x,
-                None,  # weight not used for offline quantized weights
-                self.bias,
-                quant_kind=self.quant_kind,
-                **kwargs,
-            )
-        elif self.has_quantized_weight():
-            if strategy is None:
-                raise RuntimeError("Quantized weight is present but no linear strategy is configured.")
-            # For int4 (W4A16), we need to pass original_in_features
-            weight_format = getattr(strategy, "linear_weight_format", None)
-            kwargs = {"quant_scales": self.quant_scales}
-            if weight_format == "int4":
-                # For int4, packed weight shape is [out_features, (in_features + 1) // 2]
-                # We use x.shape[1] as the source of truth (it's the actual K dimension)
-                kwargs["original_in_features"] = x.shape[1]
-            base_out = strategy.linear_forward(
-                x,
-                self.quant_weight_int8,
-                self.bias,
-                quant_kind=self.quant_kind,
-                **kwargs,
-            )
-        elif strategy is None:
-            base_out = F.linear(x, self.weight, self.bias)
-        else:
-            # For int4 strategies (W4A16/W4A8), we need to pass original_in_features even when weight is not quantized yet
-            weight_format = getattr(strategy, "linear_weight_format", None)
-            kwargs = {}
-            if weight_format == "int4":
-                kwargs["original_in_features"] = x.shape[1]
-            base_out = strategy.linear_forward(x, self.weight, self.bias, quant_kind=self.quant_kind, **kwargs)
+        base_out = self._forward_base(x, self.bias)
         return self.lora_forward(x, base_out)
 
 
@@ -608,72 +1051,7 @@ class RowParallelLinear(LinearBase, LoRAMixin):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias if self.tp_rank == 0 else None
-        strategy = get_linear_strategy(self.quant_kind)
-        
-        # Check for offline quantized weights (GPTQ/AWQ) first
-        if self.has_offline_quantized_weight():
-            if strategy is None:
-                raise RuntimeError("Offline quantized weight is present but no linear strategy is configured.")
-            format_val = int(self._offline_quant_format.item())
-            out_features = int(self._offline_quant_out_features.item())
-            in_features = int(self._offline_quant_in_features.item())
-            group_size = int(self._offline_quant_group_size.item())
-            
-            kwargs = {
-                "out_features": out_features,
-                "in_features": in_features,
-                "group_size": group_size,
-            }
-            
-            if format_val == 1:  # GPTQ
-                kwargs.update({
-                    "gptq_qweight": self.gptq_qweight,
-                    "gptq_qzeros": self.gptq_qzeros,
-                    "gptq_scales": self.gptq_scales,
-                    "gptq_group_size": group_size,
-                })
-                if self.gptq_g_idx.numel() > 0:
-                    kwargs["gptq_g_idx"] = self.gptq_g_idx
-            elif format_val == 2:  # AWQ
-                kwargs.update({
-                    "awq_qweight": self.awq_qweight,
-                    "awq_qzeros": self.awq_qzeros,
-                    "awq_scales": self.awq_scales,
-                    "awq_group_size": group_size,
-                })
-            
-            y = strategy.linear_forward(
-                x,
-                None,  # weight not used for offline quantized weights
-                bias,
-                quant_kind=self.quant_kind,
-                **kwargs,
-            )
-        elif self.has_quantized_weight():
-            if strategy is None:
-                raise RuntimeError("Quantized weight is present but no linear strategy is configured.")
-            # For int4 (W4A16), we must pass original_in_features to disambiguate packed K.
-            weight_format = getattr(strategy, "linear_weight_format", None)
-            kwargs = {"quant_scales": self.quant_scales}
-            if weight_format == "int4":
-                # Use activation K as the source of truth (it's the actual K dimension).
-                kwargs["original_in_features"] = x.shape[1]
-            y = strategy.linear_forward(
-                x,
-                self.quant_weight_int8,
-                bias,
-                quant_kind=self.quant_kind,
-                **kwargs,
-            )
-        elif strategy is None:
-            y = F.linear(x, self.weight, bias)
-        else:
-            # For int4 strategies (W4A16/W4A8), we need to pass original_in_features even when weight is not quantized yet
-            weight_format = getattr(strategy, "linear_weight_format", None)
-            kwargs = {}
-            if weight_format == "int4":
-                kwargs["original_in_features"] = x.shape[1]
-            y = strategy.linear_forward(x, self.weight, bias, quant_kind=self.quant_kind, **kwargs)
+        y = self._forward_base(x, bias)
         if self.tp_size > 1:
             dist.all_reduce(y)
         return self.lora_forward(x, y)
