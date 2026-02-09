@@ -40,9 +40,14 @@ class BenchmarkRunner:
         self.tokenizer_path = tokenizer_path or model_path
         self.logger = get_logger(__name__)
 
-        # Initialize Diffulex engine
+        # Initialize Diffulex engine (pass trust_remote_code/revision so Config uses them)
         self.logger.info("Initializing Diffulex engine...")
-        self.llm = Diffulex(model_path, **diffulex_kwargs)
+        kwargs_for_diffulex = dict(diffulex_kwargs)
+        if trust_remote_code:
+            kwargs_for_diffulex["trust_remote_code"] = True
+        if revision is not None:
+            kwargs_for_diffulex["revision"] = revision
+        self.llm = Diffulex(model_path, **kwargs_for_diffulex)
 
         # Wait for engine to be ready if requested
         if wait_ready:

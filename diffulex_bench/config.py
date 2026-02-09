@@ -44,6 +44,9 @@ class EngineConfig:
     add_new_block_threshold: float = 0.1
     diffusion_block_size: int = 32
     
+    # Model loading (opt-in for custom code)
+    trust_remote_code: bool = False
+
     # Quantization configuration
     kv_cache_dtype: Optional[str] = None  # "bf16", "fp16", "fp32", "fp8_e4m3", "fp8_e5m2"
     decode_mode: Optional[str] = None  # "static" or "varlen"
@@ -169,7 +172,7 @@ class BenchmarkConfig:
                 'mask_token_id', 'use_lora', 'lora_path', 'tensor_parallel_size',
                 'data_parallel_size', 'gpu_memory_utilization', 'max_model_len',
                 'max_num_batched_tokens', 'max_num_seqs', 'enforce_eager',
-                'kv_cache_layout', 'accept_threshold', 'complete_threshold',
+                'kv_cache_layout', 'trust_remote_code', 'accept_threshold', 'complete_threshold',
                 'add_new_block_threshold', 'diffusion_block_size',
                 'kv_cache_dtype', 'decode_mode', 'linear_attn_weight_dtype',
                 'linear_mlp_weight_dtype', 'linear_attn_act_dtype', 'linear_mlp_act_dtype'

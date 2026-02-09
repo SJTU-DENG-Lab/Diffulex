@@ -156,6 +156,7 @@ class D2FModelRunner(ModelRunnerBase):
             seq_id_to_queue_id[seq_id] = seq_idx_in_queue
             seq.next_diffusion_step()
             cur_input_ids, cur_positions, cur_context_len = seq.diffusion_decoding_inputs()
+            slot_mapping_start = len(slot_mapping)
 
             seq_lens.append(len(cur_input_ids))
             input_ids.extend(cur_input_ids)
@@ -233,12 +234,19 @@ class D2FModelRunner(ModelRunnerBase):
                         meet_active_block = True
 
                 if meet_active_block:
-                    active = seq.active_blocks
-                    first_active_idx = next((i for i, v in enumerate(active) if v), None)
-                    if first_active_idx is not None:
-                        num_blocks_to_pad = len(active) - first_active_idx
-                        slot_mapping.extend([-1] * (num_blocks_to_pad * seq.diffusion_block_size))
+                    # We stop walking mem blocks once we hit an active diffusion block.
+                    # Any remaining query tokens for this sequence should not be KV-stored,
+                    # so we will pad slot_mapping with -1 to match the number of query tokens.
                     break
+
+            # Ensure per-sequence alignment: slot_mapping must have one entry per query token
+            # produced by diffusion_decoding_inputs(). Use -1 to indicate "no KV store".
+            expected = len(cur_input_ids)
+            have = len(slot_mapping) - slot_mapping_start
+            if have < expected:
+                slot_mapping.extend([-1] * (expected - have))
+            elif have > expected:
+                del slot_mapping[slot_mapping_start + expected :]
             assert len(input_ids) == len(positions), (
                 "Input IDs length {len_ids} does not match positions length {len_pos}".format(
                     len_ids=len(input_ids),

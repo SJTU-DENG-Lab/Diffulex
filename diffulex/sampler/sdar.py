@@ -19,10 +19,17 @@ class SDARSamplerForDiffusionLM(SamplerShiftLogits):
         normalized_margin_confidence = margin_confidence is True or margin_confidence == "margin_confidence"
         normalized_neg_entropy = neg_entropy is True or neg_entropy == "neg_entropy"
         attn_metadata = self.fetch_attn_metadata()
-        split_logits = torch.split(
-            logits, [len(seq) for seq in seqs] if attn_metadata.is_prefill 
-            else [attn_metadata.diffusion_block_size] * len(seqs), dim=0
-        )
+        # Prefer query-length splits from cu_seqlens_q (handles cached-prefill correctly).
+        if getattr(attn_metadata, "cu_seqlens_q", None) is not None:
+            cu = attn_metadata.cu_seqlens_q
+            split_sizes = (cu[1:] - cu[:-1]).to(device="cpu").tolist()
+        else:
+            split_sizes = (
+                [len(seq) for seq in seqs]
+                if attn_metadata.is_prefill
+                else [attn_metadata.diffusion_block_size] * len(seqs)
+            )
+        split_logits = torch.split(logits, split_sizes, dim=0)
         
         accepted_ids_map = {}
         sampled_tokens_map = {}
@@ -34,8 +41,6 @@ class SDARSamplerForDiffusionLM(SamplerShiftLogits):
             
             last_logits = self._fetch_last_logits(seq_logits, seq)
             
-            shifted_logits = self._shift_logits(seq_logits, last_logits)
-            
             for block_id, block in enumerate(seq.diffusion_blocks):
                 if not block.is_active or sum(block.local_mask_tokens) == 0:
                     continue
@@ -43,10 +48,12 @@ class SDARSamplerForDiffusionLM(SamplerShiftLogits):
                 if len(block.global_mask_token_ids) == 0:
                     continue
                 
-                if attn_metadata.is_prefill:
-                    mask_token_logits = shifted_logits[block.global_mask_token_ids, ...]
-                else:
-                    mask_token_logits = shifted_logits[block.local_mask_token_ids, ...]
+                ids_to_gather = (
+                    block.global_mask_token_ids
+                    if attn_metadata.is_prefill
+                    else block.local_mask_token_ids
+                )
+                mask_token_logits = self._gather_shifted_logits_rows(seq_logits, ids_to_gather, last_logits)
                 
                 confidence, sampled_tokens, initial_confidence = self.sample_tokens(
                     mask_token_logits,

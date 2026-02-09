@@ -71,7 +71,9 @@ def config_to_model_args(config: BenchmarkConfig) -> str:
     
     if engine.use_lora and engine.lora_path:
         args_dict['lora_path'] = engine.lora_path
-    
+    if getattr(engine, 'trust_remote_code', False):
+        args_dict['trust_remote_code'] = True
+
     # Convert to string format: key1=value1,key2=value2
     args_list = [f"{k}={v}" for k, v in args_dict.items()]
     return ','.join(args_list)
@@ -202,37 +204,48 @@ def load_config_from_args(args) -> BenchmarkConfig:
             logger.error(f"Unsupported config file format: {config_path.suffix}")
             sys.exit(1)
         logger.info(f"Loaded configuration from: {config_path}")
-        
-        # Override with command line arguments if provided
-        if args.model_path:
+
+        # Override with command line arguments only when flags are explicitly provided.
+        # NOTE: Many argparse options have non-None defaults; checking only for "is not None"
+        # would unintentionally override values from the config file.
+        argv = sys.argv
+
+        def _cli_has(flag: str) -> bool:
+            return flag in argv
+
+        if _cli_has("--model-path") and args.model_path:
             config.engine.model_path = args.model_path
-        if getattr(args, "tokenizer_path", None):
+        if _cli_has("--tokenizer-path") and getattr(args, "tokenizer_path", None):
             config.engine.tokenizer_path = args.tokenizer_path
-        if args.dataset:
+
+        if _cli_has("--dataset") and args.dataset:
             config.eval.dataset_name = args.dataset
-        if args.dataset_limit is not None:
+        if _cli_has("--dataset-limit") and args.dataset_limit is not None:
             config.eval.dataset_limit = args.dataset_limit
-        if getattr(args, "max_tokens", None) is not None:
+        if _cli_has("--max-tokens") and getattr(args, "max_tokens", None) is not None:
             config.eval.max_tokens = args.max_tokens
-        if getattr(args, "temperature", None) is not None:
+        if _cli_has("--temperature") and getattr(args, "temperature", None) is not None:
             config.eval.temperature = args.temperature
-        if args.output_dir:
+        if _cli_has("--output-dir") and args.output_dir:
             config.eval.output_dir = args.output_dir
 
         # Engine overrides (make bench configs reusable for eager vs CUDA Graph comparisons)
         if getattr(args, "enforce_eager", None) is not None:
+            # enforce_eager is already defaulted to None (via set_defaults), so this is safe.
             config.engine.enforce_eager = bool(args.enforce_eager)
-        if getattr(args, "kv_cache_layout", None) is not None:
+        if _cli_has("--kv-cache-layout") and getattr(args, "kv_cache_layout", None) is not None:
             config.engine.kv_cache_layout = args.kv_cache_layout
-        if getattr(args, "decode_mode", None) is not None:
+        if _cli_has("--decode-mode") and getattr(args, "decode_mode", None) is not None:
             config.engine.decode_mode = args.decode_mode
-        if getattr(args, "kv_cache_dtype", None) is not None:
+        if _cli_has("--kv-cache-dtype") and getattr(args, "kv_cache_dtype", None) is not None:
             config.engine.kv_cache_dtype = args.kv_cache_dtype
-        if getattr(args, "max_model_len", None) is not None:
+        if _cli_has("--gpu-memory-utilization") and getattr(args, "gpu_memory_utilization", None) is not None:
+            config.engine.gpu_memory_utilization = args.gpu_memory_utilization
+        if _cli_has("--max-model-len") and getattr(args, "max_model_len", None) is not None:
             config.engine.max_model_len = args.max_model_len
-        if getattr(args, "max_num_seqs", None) is not None:
+        if _cli_has("--max-num-seqs") and getattr(args, "max_num_seqs", None) is not None:
             config.engine.max_num_seqs = args.max_num_seqs
-        if getattr(args, "max_num_batched_tokens", None) is not None:
+        if _cli_has("--max-num-batched-tokens") and getattr(args, "max_num_batched_tokens", None) is not None:
             config.engine.max_num_batched_tokens = args.max_num_batched_tokens
     else:
         if not args.model_path:

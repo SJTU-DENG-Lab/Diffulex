@@ -91,7 +91,17 @@ class SamplerShiftLogits(SamplerBase):
     def _fetch_last_logits(self, logits: torch.Tensor, seq: SequenceBase) -> torch.Tensor:
         seq_id_str = str(seq.seq_id)
         if seq.has_to_cache_block:
-            last_logits = logits[seq.to_cache_last_token_id]
+            # IMPORTANT: clone to avoid holding a view into a potentially huge logits tensor,
+            # which would keep the full tensor alive and inflate peak memory.
+            if logits.shape[0] == 0:
+                raise ValueError(f"Cannot fetch last logits for sequence {seq.seq_id}: empty logits tensor")
+            idx = int(getattr(seq, "to_cache_last_token_id", -1))
+            # Defensive: the sampler sees *query* logits for the current step, so the
+            # "to_cache_last_token_id" can be out of bounds (e.g., when cached-prefill is used).
+            # Fall back to the last available row in that case.
+            if idx < 0 or idx >= int(logits.shape[0]):
+                idx = int(logits.shape[0]) - 1
+            last_logits = logits[idx].detach().clone()
             self.seq_last_logits_map[seq_id_str] = last_logits
             return last_logits
         # If no cached block, return cached value if available, otherwise use last logit
@@ -100,10 +110,53 @@ class SamplerShiftLogits(SamplerBase):
         # Fallback: use last logit from current batch and cache it
         last_logits = logits[-1] if logits.shape[0] > 0 else None
         if last_logits is not None:
+            last_logits = last_logits.detach().clone()
             self.seq_last_logits_map[seq_id_str] = last_logits
             return last_logits
         raise ValueError(f"Cannot fetch last logits for sequence {seq.seq_id}: empty logits tensor")
     
+    def _gather_shifted_logits_rows(
+        self,
+        logits: torch.Tensor,
+        row_ids,
+        last_logit: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """
+        Gather a subset of "shifted logits" rows without materializing the full shifted tensor.
+
+        The shifted definition matches `_shift_logits`:
+        - shifted[1:] = logits[:-1]
+        - shifted[0]  = last_logit (or a constant row when last_logit is None)
+
+        Args:
+            logits: [T, V] logits tensor for a single sequence (T steps, V vocab).
+            row_ids: indices into the shifted logits (list[int] or torch.Tensor).
+            last_logit: [V] tensor for shifted row 0, or None.
+
+        Returns:
+            [len(row_ids), V] tensor.
+        """
+        if isinstance(row_ids, torch.Tensor):
+            ids = row_ids.to(device=logits.device, dtype=torch.long)
+        else:
+            ids = torch.tensor(row_ids, device=logits.device, dtype=torch.long)
+
+        if ids.numel() == 0:
+            return logits[:0]
+
+        # For ids > 0, shifted[id] == logits[id - 1].
+        # For ids == 0, we fill from last_logit (or a constant row).
+        src = (ids - 1).clamp_min(0)
+        out = torch.index_select(logits, 0, src)
+
+        is_zero = ids == 0
+        if bool(is_zero.any().item()):
+            if last_logit is not None:
+                out[is_zero] = last_logit
+            else:
+                out[is_zero].fill_(1.0)
+        return out
+
     def _shift_logits(self, logits, last_logit=None):
         if logits.shape[1] == 0:
             logger.warning("Logits sequence length is 0, returning empty logits")

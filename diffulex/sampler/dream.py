@@ -19,7 +19,14 @@ class DreamSamplerForDiffusionLM(SamplerShiftLogits):
         normalized_neg_entropy = neg_entropy is True or neg_entropy == "neg_entropy"
         context = self.fetch_attn_metadata()
         seqs = context.seqs
-        split_logits = torch.split(logits, [len(seq) for seq in seqs] if context.is_prefill else context.seq_lens, dim=0)
+        # Use query-length splits (cu_seqlens_q) when available. This is critical when
+        # prefill reuses cached tokens: logits only contains query tokens, not total tokens.
+        if getattr(context, "cu_seqlens_q", None) is not None:
+            cu = context.cu_seqlens_q
+            split_sizes = (cu[1:] - cu[:-1]).to(device="cpu").tolist()
+        else:
+            split_sizes = [len(seq) for seq in seqs] if context.is_prefill else context.seq_lens
+        split_logits = torch.split(logits, split_sizes, dim=0)
         accepted_ids_map = {}
         sampled_tokens_map = {}
         true_local_ids_map = {}
@@ -30,13 +37,14 @@ class DreamSamplerForDiffusionLM(SamplerShiftLogits):
             
             last_logits = self._fetch_last_logits(seq_logits, seq)
             
-            shifted_logits = self._shift_logits(seq_logits, last_logits)
             for block_id, block in enumerate(seq.diffusion_blocks):
                 if not block.is_active or sum(block.local_mask_tokens) == 0:
                     continue
                 
                 if len(block.global_mask_token_ids) > 0:
-                    mask_token_logits = shifted_logits[block.global_mask_token_ids, ...]
+                    mask_token_logits = self._gather_shifted_logits_rows(
+                        seq_logits, block.global_mask_token_ids, last_logits
+                    )
                     confidence, sampled_tokens, initial_confidence = self.sample_tokens(
                         mask_token_logits,
                         temperature,
