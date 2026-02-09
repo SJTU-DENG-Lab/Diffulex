@@ -117,7 +117,9 @@ class D2FDiffusionBlock:
             raise RuntimeError("Diffusion block is not attached to a sequence.")
         target_id = local_token_id + self.global_start_id
         assert self.seq.token_ids[target_id] == self.mask_token_id
-        self.seq.token_ids[target_id] = modified_to.item()  # type: ignore[assignment]
+        # Hot path: avoid per-token CUDA -> CPU sync via Tensor.item().
+        # `modified_to` should be a python int (or at least int-castable).
+        self.seq.token_ids[target_id] = int(modified_to)  # type: ignore[assignment]
         self.seq.new_tokens += 1
 
 

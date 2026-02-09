@@ -16,11 +16,20 @@ class FastdLLMV2SampleOutputForDiffusionLM(SampleOutputBase):
 class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
     def forward(self, seqs: list[SequenceBase], logits: torch.Tensor, temperatures: torch.Tensor,
                 top_p=None, top_k=None, margin_confidence=False, neg_entropy=False, threshold=0.95):
+        normalized_margin_confidence = margin_confidence is True or margin_confidence == "margin_confidence"
+        normalized_neg_entropy = neg_entropy is True or neg_entropy == "neg_entropy"
         attn_metadata = self.fetch_attn_metadata()
-        split_logits = torch.split(
-            logits, [len(seq) for seq in seqs] if attn_metadata.is_prefill 
-            else [attn_metadata.diffusion_block_size] * len(seqs), dim=0
-        )
+        # Prefer query-length splits from cu_seqlens_q (handles cached-prefill correctly).
+        if getattr(attn_metadata, "cu_seqlens_q", None) is not None:
+            cu = attn_metadata.cu_seqlens_q
+            split_sizes = (cu[1:] - cu[:-1]).to(device="cpu").tolist()
+        else:
+            split_sizes = (
+                [len(seq) for seq in seqs]
+                if attn_metadata.is_prefill
+                else [attn_metadata.diffusion_block_size] * len(seqs)
+            )
+        split_logits = torch.split(logits, split_sizes, dim=0)
         
         accepted_ids_map = {}
         sampled_tokens_map = {}
@@ -32,8 +41,6 @@ class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
             
             last_logits = self._fetch_last_logits(seq_logits, seq)
             
-            shifted_logits = self._shift_logits(seq_logits, last_logits)
-            
             for block_id, block in enumerate(seq.diffusion_blocks):
                 if not block.is_active or sum(block.local_mask_tokens) == 0:
                     continue
@@ -41,37 +48,35 @@ class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
                 if len(block.global_mask_token_ids) == 0:
                     continue
                 
-                if attn_metadata.is_prefill:
-                    mask_token_logits = shifted_logits[block.global_mask_token_ids, ...]
-                else:
-                    mask_token_logits = shifted_logits[block.local_mask_token_ids, ...]
+                ids_to_gather = (
+                    block.global_mask_token_ids
+                    if attn_metadata.is_prefill
+                    else block.local_mask_token_ids
+                )
+                mask_token_logits = self._gather_shifted_logits_rows(seq_logits, ids_to_gather, last_logits)
                 
                 confidence, sampled_tokens, initial_confidence = self.sample_tokens(
-                    mask_token_logits, 
-                    temperature, 
-                    top_p=top_p, 
-                    top_k=top_k, 
-                    neg_entropy=(neg_entropy == "neg_entropy"),
-                    margin_confidence=(margin_confidence == "margin_confidence")
+                    mask_token_logits,
+                    temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    neg_entropy=normalized_neg_entropy,
+                    margin_confidence=normalized_margin_confidence,
                 )
                 
                 high_conf_indices = torch.where(initial_confidence > threshold)[0]
                 
                 if len(high_conf_indices) == 0:
                     max_prob_idx = initial_confidence.argmax()
-                    accepted_ids = torch.tensor([max_prob_idx], device=sampled_tokens.device, dtype=torch.long)
+                    accepted_ids = max_prob_idx.view(1)
                 else:
                     max_prob_idx = initial_confidence.argmax()
-                    accepted_ids = torch.unique(torch.cat([
-                        high_conf_indices,
-                        torch.tensor([max_prob_idx], device=sampled_tokens.device, dtype=torch.long)
-                    ]))
+                    accepted_ids = torch.unique(torch.cat([high_conf_indices, max_prob_idx.view(1)]))
                 
-                true_local_ids_sub_map[str(block_id)] = [
-                    block.local_mask_token_ids[accepted_id] for accepted_id in accepted_ids.tolist()
-                ]
-                accepted_ids_sub_map[str(block_id)] = accepted_ids.tolist()
-                sampled_tokens_sub_map[str(block_id)] = sampled_tokens
+                accepted_ids_list = accepted_ids.to(device="cpu").tolist()
+                true_local_ids_sub_map[str(block_id)] = [block.local_mask_token_ids[i] for i in accepted_ids_list]
+                accepted_ids_sub_map[str(block_id)] = accepted_ids_list
+                sampled_tokens_sub_map[str(block_id)] = sampled_tokens.to(device="cpu").tolist()
             
             seq_idx = str(seq.seq_id)
             true_local_ids_map[seq_idx] = true_local_ids_sub_map
