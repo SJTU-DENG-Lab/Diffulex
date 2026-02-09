@@ -6,11 +6,6 @@ from diffulex.utils.quantization.registry import register_linear_strategy
 from diffulex.utils.quantization.strategy import LinearQuantizationStrategy
 
 
-@register_linear_strategy(weight_dtype="bf16", act_dtype="bf16")
-def _build_linear_bf16() -> LinearQuantizationStrategy:
-    return LinearBF16Strategy()
-
-
 class LinearBF16Strategy(LinearQuantizationStrategy):
     """Default Linear strategy: no quantization (bf16/bf16)."""
 
@@ -35,5 +30,6 @@ class LinearBF16Strategy(LinearQuantizationStrategy):
         return tuple()
 
 
-
-
+@register_linear_strategy(weight_dtype="bf16", act_dtype="bf16")
+def _build_linear_bf16() -> LinearQuantizationStrategy:
+    return LinearBF16Strategy()

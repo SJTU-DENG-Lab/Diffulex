@@ -15,6 +15,8 @@ class LLaDASampleOutputForDiffusionLM(SampleOutputBase):
 class LLaDASamplerForDiffusionLM(SamplerNoShiftLogits):
     def forward(self, logits: torch.Tensor, temperatures: torch.Tensor,
                 top_p=None, top_k=None, margin_confidence=False, neg_entropy=False):
+        normalized_margin_confidence = margin_confidence is True or margin_confidence == "margin_confidence"
+        normalized_neg_entropy = neg_entropy is True or neg_entropy == "neg_entropy"
         context = self.fetch_attn_metadata()
         seqs = context.seqs
         split_logits = torch.split(logits, [len(seq) for seq in seqs] if context.is_prefill else context.seq_lens, dim=0)
@@ -32,12 +34,12 @@ class LLaDASamplerForDiffusionLM(SamplerNoShiftLogits):
                 if len(block.global_mask_token_ids) > 0:
                     mask_token_logits = seq_logits[block.global_mask_token_ids, ...]
                     confidence, sampled_tokens, initial_confidence = self.sample_tokens(
-                        mask_token_logits, 
-                        temperature, 
-                        top_p=top_p, 
-                        top_k=top_k, 
-                        neg_entropy=(neg_entropy == "neg_entropy"),
-                        margin_confidence=(margin_confidence == "margin_confidence")
+                        mask_token_logits,
+                        temperature,
+                        top_p=top_p,
+                        top_k=top_k,
+                        neg_entropy=normalized_neg_entropy,
+                        margin_confidence=normalized_margin_confidence,
                     )
                     
                 if block.pre_block_complete:

@@ -502,9 +502,9 @@ def test_kv_cache_memory(kv_cache_dtype="bf16"):
             
             num_kv_heads = getattr(hf_config, 'num_key_value_heads', getattr(hf_config, 'num_attention_heads', 32))
             
-            spec = parse_kv_cache_dtype(kv_cache_dtype)
-            itemsize = 1 if spec.is_fp8 else (2 if kv_cache_dtype in ['bf16', 'fp16'] else 4)
-            
+            from diffulex.utils.quantization.factory import QuantizationStrategyFactory
+            strategy = QuantizationStrategyFactory.create_kv_cache_strategy(kv_cache_dtype)
+            _, itemsize = strategy.get_storage_dtype()
             elements_per_block = 2 * num_layers * block_size * num_kv_heads * head_dim
             size_per_block_mb = elements_per_block * itemsize / 1024**2
             

@@ -16,6 +16,8 @@ class FastdLLMV2SampleOutputForDiffusionLM(SampleOutputBase):
 class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
     def forward(self, seqs: list[SequenceBase], logits: torch.Tensor, temperatures: torch.Tensor,
                 top_p=None, top_k=None, margin_confidence=False, neg_entropy=False, threshold=0.95):
+        normalized_margin_confidence = margin_confidence is True or margin_confidence == "margin_confidence"
+        normalized_neg_entropy = neg_entropy is True or neg_entropy == "neg_entropy"
         attn_metadata = self.fetch_attn_metadata()
         split_logits = torch.split(
             logits, [len(seq) for seq in seqs] if attn_metadata.is_prefill 
@@ -47,12 +49,12 @@ class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
                     mask_token_logits = shifted_logits[block.local_mask_token_ids, ...]
                 
                 confidence, sampled_tokens, initial_confidence = self.sample_tokens(
-                    mask_token_logits, 
-                    temperature, 
-                    top_p=top_p, 
-                    top_k=top_k, 
-                    neg_entropy=(neg_entropy == "neg_entropy"),
-                    margin_confidence=(margin_confidence == "margin_confidence")
+                    mask_token_logits,
+                    temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    neg_entropy=normalized_neg_entropy,
+                    margin_confidence=normalized_margin_confidence,
                 )
                 
                 high_conf_indices = torch.where(initial_confidence > threshold)[0]

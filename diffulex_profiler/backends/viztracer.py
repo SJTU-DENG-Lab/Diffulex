@@ -56,6 +56,7 @@ class VizTracerBackend(ProfilerBackend):
             return None
         
         self.tracer.stop()
+        self.tracer.save()
         output_file = self.tracer.output_file
         
         result = {

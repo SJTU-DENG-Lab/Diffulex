@@ -15,6 +15,7 @@ class AttnMetaDataBase:
     context_lens: torch.Tensor | None = None
     block_tables: torch.Tensor | None = None
     page_block_size: int = 32
+    kv_cache_layout: str = "unified"
     attn_type: str = "block_attention"
     diffusion_block_size: int = 32
     decode_mode: str = "static"

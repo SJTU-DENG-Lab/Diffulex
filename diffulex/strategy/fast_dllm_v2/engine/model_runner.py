@@ -130,6 +130,9 @@ class FastDLLMV2ModelRunner(ModelRunnerBase):
                     start = seq.block_table[(total_num_pages - 1) - num_pages_storing + i] * self.block_size
                     end = start + self.block_size
                     slot_mapping.extend(range(start, end))
+            else:
+                # IN_CACHE: block already in cache, no store; keep slot_mapping aligned with input_ids
+                slot_mapping.extend([-1] * self.diffusion_block_size)
                 
         input_ids_tensor = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions_tensor = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)

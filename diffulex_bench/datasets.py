@@ -24,10 +24,8 @@ def load_gsm8k(
         List of dataset items, each containing 'prompt' and 'answer' fields
     """
     dataset = load_dataset("gsm8k", "main", split=split)
-    
-    if limit:
-        dataset = dataset[:limit]
-    
+    if limit is not None:
+        dataset = dataset.select(range(limit))
     results = []
     for item in dataset:
         question = item["question"]
@@ -63,10 +61,8 @@ def load_humaneval(
         List of dataset items, each containing 'prompt', 'test', 'entry_point' fields
     """
     dataset = load_dataset("openai/humaneval", split="test")
-    
-    if limit:
-        dataset = dataset[:limit]
-    
+    if limit is not None:
+        dataset = dataset.select(range(limit))
     results = []
     for item in dataset:
         prompt = item["prompt"]

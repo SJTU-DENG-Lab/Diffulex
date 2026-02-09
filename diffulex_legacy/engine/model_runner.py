@@ -22,26 +22,14 @@ from diffulex_legacy.utils.context import (
     get_context_diffusion_lm,
     reset_context_diffusion_lm
 )
-from diffulex.utils.kv_cache_dtype import parse_kv_cache_dtype
-
-
 def _get_kv_cache_storage_info(kv_cache_dtype: str) -> tuple[torch.dtype, int]:
     """
     Returns (storage_dtype, itemsize) for KV cache allocation.
-    - For FP8: returns (torch.uint8, 1) because FP8 uses uint8 storage
-    - For other dtypes: returns (torch.bfloat16/fp16/fp32, itemsize)
+    Uses the registered KV cache strategy so fp16/fp32 aliased to BF16 get correct itemsize.
     """
-    spec = parse_kv_cache_dtype(kv_cache_dtype)
-    if spec.is_fp8:
-        return torch.uint8, 1
-    elif spec.enum.value == 0:  # BF16
-        return torch.bfloat16, 2
-    elif spec.enum.value == 1:  # FP16
-        return torch.float16, 2
-    elif spec.enum.value == 2:  # FP32
-        return torch.float32, 4
-    else:
-        raise ValueError(f"Unsupported kv_cache_dtype: {kv_cache_dtype}")
+    from diffulex.utils.quantization.factory import QuantizationStrategyFactory
+    strategy = QuantizationStrategyFactory.create_kv_cache_strategy(kv_cache_dtype)
+    return strategy.get_storage_dtype()
 
 
 class ModelRunnerBase(ABC):
