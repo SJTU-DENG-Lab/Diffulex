@@ -104,10 +104,10 @@ class LinearMarlinInt8W8A16Strategy(LinearQuantizationStrategy):
 
     # ---- Required abstract methods (for registry/factory instantiation) ----
     def quantize(self, tensor: torch.Tensor, **kwargs: Any) -> tuple[torch.Tensor, Any]:
-        """Reference per-output-channel symmetric int8 quantization.
+        """Reference per-output-channel symmetric int8 quantization, stored as uint8 (bias+128).
 
         Returns:
-          quantized_int8: [N,K] int8
+          quantized_uint8: [N,K] uint8 (signed int8 + 128, clamped to [0,255])
           scales: [N] bf16
         """
         _ = kwargs
@@ -117,18 +117,21 @@ class LinearMarlinInt8W8A16Strategy(LinearQuantizationStrategy):
             tensor = tensor.to(dtype=torch.bfloat16)
         abs_max = torch.abs(tensor).max(dim=-1, keepdim=True)[0]  # [N,1]
         scales = (abs_max.clamp(min=1e-8) / 127.0).to(dtype=torch.bfloat16)  # [N,1]
-        q = torch.round(tensor.to(torch.float32) / scales.to(torch.float32)).clamp(-128, 127).to(torch.int8)
-        return q, scales.squeeze(-1)
+        q_signed = torch.round(tensor.to(torch.float32) / scales.to(torch.float32)).clamp(-128, 127).to(torch.int8)
+        q_uint8 = (q_signed.to(torch.int32) + 128).clamp(0, 255).to(torch.uint8)
+        return q_uint8, scales.squeeze(-1)
 
     def dequantize(self, quantized: torch.Tensor, scale_or_metadata: Any, **kwargs: Any) -> torch.Tensor:
-        """Reference dequantization back to bf16."""
+        """Reference dequantization from uint8 storage (bias+128) back to bf16."""
         _ = kwargs
         scales = scale_or_metadata.get("scales") if isinstance(scale_or_metadata, dict) else scale_or_metadata
         if scales is None:
             raise ValueError("scales required for dequantization")
         if scales.dim() == 1:
             scales = scales.unsqueeze(-1)
-        return (quantized.to(torch.float32) * scales.to(torch.float32)).to(torch.bfloat16)
+        # uint8 -> signed: subtract 128, then multiply by scales
+        signed_f32 = (quantized.to(torch.int32) - 128).to(torch.float32)
+        return (signed_f32 * scales.to(torch.float32)).to(torch.bfloat16)
 
     def get_scale_shape(self, original_shape: tuple[int, ...], **kwargs: Any) -> tuple[int, ...]:
         _ = kwargs

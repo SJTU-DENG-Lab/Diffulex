@@ -4,7 +4,7 @@ Provides a unified interface for benchmarking
 """
 
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from diffulex import Diffulex, SamplingParams
 from transformers import AutoTokenizer
@@ -21,34 +21,43 @@ class BenchmarkRunner:
         model_path: str,
         tokenizer_path: Optional[str] = None,
         wait_ready: bool = True,
+        trust_remote_code: bool = False,
+        revision: Optional[str] = None,
         **diffulex_kwargs
     ):
         """
         Initialize the benchmark runner
-        
+
         Args:
             model_path: Path to the model
             tokenizer_path: Path to the tokenizer, if None uses model_path
             wait_ready: Whether to wait for engine to be fully initialized before returning
+            trust_remote_code: Whether to trust remote code when loading the tokenizer (default False).
+            revision: Optional revision to pin tokenizer/model (e.g. commit hash).
             **diffulex_kwargs: Additional arguments to pass to Diffulex
         """
         self.model_path = model_path
         self.tokenizer_path = tokenizer_path or model_path
         self.logger = get_logger(__name__)
-        
+
         # Initialize Diffulex engine
         self.logger.info("Initializing Diffulex engine...")
         self.llm = Diffulex(model_path, **diffulex_kwargs)
-        
+
         # Wait for engine to be ready if requested
         if wait_ready:
             self._wait_for_ready()
-        
+
         # Load tokenizer
         self.logger.info("Loading tokenizer...")
+        from_pretrained_kwargs: dict = {}
+        if trust_remote_code:
+            from_pretrained_kwargs["trust_remote_code"] = True
+        if revision is not None:
+            from_pretrained_kwargs["revision"] = revision
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.tokenizer_path,
-            trust_remote_code=True
+            **from_pretrained_kwargs
         )
         self.logger.success("Tokenizer loaded successfully")
     
@@ -132,17 +141,17 @@ class BenchmarkRunner:
     def generate(
         self,
         prompts: List[str],
-        sampling_params: SamplingParams,
+        sampling_params: Union[SamplingParams, List[SamplingParams]],
         use_tqdm: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Generate text
-        
+
         Args:
             prompts: List of input prompts
-            sampling_params: Sampling parameters
+            sampling_params: Sampling parameters, or list of per-request sampling parameters
             use_tqdm: Whether to show progress bar
-            
+
         Returns:
             List of generation results, each containing text, token_ids, n_diff_steps
         """

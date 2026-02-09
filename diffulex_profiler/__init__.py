@@ -9,12 +9,15 @@ from diffulex_profiler.metrics import (
     collect_cpu_metrics,
     collect_memory_metrics,
 )
-from diffulex_profiler.backends import (
-    ProfilerBackend,
-    SimpleTimerBackend,
-    VizTracerBackend,
-    PyTorchProfilerBackend,
-)
+from diffulex_profiler.backends import ProfilerBackend, SimpleTimerBackend
+try:
+    from diffulex_profiler.backends import VizTracerBackend
+except (ImportError, AttributeError):
+    VizTracerBackend = None  # type: ignore[misc, assignment]
+try:
+    from diffulex_profiler.backends import PyTorchProfilerBackend
+except (ImportError, AttributeError):
+    PyTorchProfilerBackend = None  # type: ignore[misc, assignment]
 from diffulex_profiler.exporters import (
     ProfilerExporter,
     JSONExporter,
@@ -31,11 +34,13 @@ __all__ = [
     "collect_memory_metrics",
     "ProfilerBackend",
     "SimpleTimerBackend",
-    "VizTracerBackend",
-    "PyTorchProfilerBackend",
     "ProfilerExporter",
     "JSONExporter",
     "CSVExporter",
     "SummaryExporter",
 ]
+if VizTracerBackend is not None:
+    __all__.append("VizTracerBackend")
+if PyTorchProfilerBackend is not None:
+    __all__.append("PyTorchProfilerBackend")
 

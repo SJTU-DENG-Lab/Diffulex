@@ -34,7 +34,12 @@ class DiffulexTPWorker:
             self.ps.append(process)
             self.events.append(event)
         self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+        tokenizer_kwargs: dict = {"use_fast": True}
+        if getattr(config, "trust_remote_code", False):
+            tokenizer_kwargs["trust_remote_code"] = True
+        if getattr(config, "revision", None) is not None:
+            tokenizer_kwargs["revision"] = config.revision
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model, **tokenizer_kwargs)
         config.eos = self.tokenizer.eos_token_id
         self.scheduler: SchedulerBase = AutoScheduler.from_config(config)
         self._exited = False

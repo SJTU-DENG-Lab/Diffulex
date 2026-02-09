@@ -108,8 +108,9 @@ class BDScheduler(SchedulerBase):
                 for true_local_id, accepted_id in zip(true_local_ids, accepted_ids):
                     token = sampled_tokens[accepted_id]
                     diffusion_block.modify_token(true_local_id, token)
+                    token_val = int(token.item()) if hasattr(token, "item") else int(token)
                     if (
-                        (not seq.ignore_eos and token.item() == self.eos)
+                        (not seq.ignore_eos and token_val == self.eos)
                         or seq.num_completion_tokens >= seq.max_tokens
                     ):
                         seq.meet_eos = True

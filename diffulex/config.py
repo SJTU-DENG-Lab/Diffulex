@@ -1,6 +1,7 @@
 import os
 
 from dataclasses import dataclass, field
+from typing import Optional
 from transformers import AutoConfig
 from diffulex.logger import get_logger
 
@@ -64,6 +65,10 @@ class Config:
     linear_w8a16_quant_block_n: int = 256
     linear_w8a16_allspark_cublas_m_threshold: int = 256
 
+    # Tokenizer/model loading: opt-in for remote code; pin with revision when needed.
+    trust_remote_code: bool = False
+    revision: Optional[str] = None
+
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 16 == 0
@@ -79,7 +84,12 @@ class Config:
             if not os.path.exists(self.lora_path):
                 logger.warning(f"LoRA path {self.lora_path} does not exist")
 
-        self.hf_config = AutoConfig.from_pretrained(self.model, trust_remote_code=True)
+        from_pretrained_kwargs: dict = {}
+        if self.trust_remote_code:
+            from_pretrained_kwargs["trust_remote_code"] = True
+        if self.revision is not None:
+            from_pretrained_kwargs["revision"] = self.revision
+        self.hf_config = AutoConfig.from_pretrained(self.model, **from_pretrained_kwargs)
         cfg_max_model_len = self.hf_config.max_position_embeddings if hasattr(self.hf_config, "max_position_embeddings") else self.hf_config.max_sequence_length
         self.max_model_len = min(self.max_model_len, cfg_max_model_len)
         assert self.max_num_batched_tokens >= self.max_model_len

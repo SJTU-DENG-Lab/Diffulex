@@ -18,7 +18,6 @@ from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
 from diffulex.utils.quantization.factory import QuantizationStrategyFactory
 from diffulex.utils.quantization.context import get_kv_cache_strategy
-from diffulex.utils.quantization.strategies import NoQuantizationStrategy
 from diffulex.logger import get_logger
 
 logger = get_logger(__name__)
@@ -35,17 +34,15 @@ class ModelRunnerBase(ABC):
         self.rank = rank
         self.event = event
 
-        # Initialize model, sampler, and kv cache
-        init_method = f"tcp://{config.master_addr}:{config.master_port}"
-        dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank, device_id=config.device_ids[rank])
-        # Choose CUDA device for this TP rank.
-        # config.device_ids is already a list of logical CUDA device indices (respecting CUDA_VISIBLE_DEVICES).
-        # Do NOT add rank again, otherwise rank 1 with device_ids=[0,1] becomes device 2.
-        if getattr(config, "device_ids", None):
+        # Compute device_id before init so both init and set_device use the same value
+        if getattr(config, "device_ids", None) and rank < len(config.device_ids):
             device_id = config.device_ids[rank]
         else:
             device_id = (getattr(config, "device_start", 0) or 0) + rank
         assert 0 <= device_id < torch.cuda.device_count(), f"Invalid device_id {device_id}."
+        # Initialize model, sampler, and kv cache
+        init_method = f"tcp://{config.master_addr}:{config.master_port}"
+        dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank, device_id=device_id)
         torch.cuda.set_device(device_id)
         default_dtype = torch.get_default_dtype()
         default_dtype = (hf_config.torch_dtype if hasattr(hf_config, "torch_dtype") 
@@ -155,6 +152,12 @@ class ModelRunnerBase(ABC):
             self.config.max_model_len,
         )
         num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
+        if num_seqs == 0:
+            logger.info(
+                "Skipping prefill warmup: num_seqs=0 (max_num_batched_tokens=%s, max_model_len=%s).",
+                max_num_batched_tokens, max_model_len,
+            )
+            return
         test_input_ids = [0] * max_model_len
         seqs = [AutoSequence.create(config=self.config, token_ids=test_input_ids) for _ in range(num_seqs)]
         self.run(seqs, True)
@@ -165,10 +168,12 @@ class ModelRunnerBase(ABC):
     def warmup_model(self):
         logger.info("Warming up model...")
         set_warming_up(True)
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        self._prefill_warmup()
-        reset_warming_up()
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            self._prefill_warmup()
+        finally:
+            reset_warming_up()
 
     def allocate_kv_cache(self):
         config = self.config
@@ -190,10 +195,10 @@ class ModelRunnerBase(ABC):
         else:
             raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
 
-        # Get storage dtype and itemsize from quantization strategy
+        # Get storage dtype and itemsize from quantization strategy (default to BF16 for KV cache)
         strategy = get_kv_cache_strategy()
         if strategy is None:
-            strategy = NoQuantizationStrategy()
+            strategy = QuantizationStrategyFactory.create_kv_cache_strategy("bf16")
         storage_dtype, itemsize = strategy.get_storage_dtype()
         
         block_bytes = (
@@ -287,7 +292,11 @@ class ModelRunnerBase(ABC):
             device = self.k_cache.device
         else:  # unified
             device = self.kv_cache.device
-        k_scale_init, v_scale_init = strategy.init_scales(num_kv_heads, device)
+        init_scales = getattr(strategy, "init_scales", None)
+        if init_scales is not None:
+            k_scale_init, v_scale_init = init_scales(num_kv_heads, device)
+        else:
+            k_scale_init, v_scale_init = None, None
         if k_scale_init is not None and v_scale_init is not None:
             # Allocate scale tensors: [num_layers, num_kv_heads]
             self.k_scale = torch.zeros(

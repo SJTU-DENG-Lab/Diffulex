@@ -66,7 +66,7 @@ class EngineConfig:
     
     def get_diffulex_kwargs(self) -> Dict[str, Any]:
         """Get arguments to pass to Diffulex engine"""
-        return {
+        kwargs: Dict[str, Any] = {
             'model_name': self.model_name,
             'decoding_strategy': self.decoding_strategy,
             'mask_token_id': self.mask_token_id,
@@ -85,8 +85,6 @@ class EngineConfig:
             'add_new_block_threshold': self.add_new_block_threshold,
             'diffusion_block_size': self.diffusion_block_size,
         }
-        
-        # Add quantization parameters if specified
         if self.kv_cache_dtype is not None:
             kwargs['kv_cache_dtype'] = self.kv_cache_dtype
         if self.decode_mode is not None:
@@ -99,7 +97,6 @@ class EngineConfig:
             kwargs['linear_attn_act_dtype'] = self.linear_attn_act_dtype
         if self.linear_mlp_act_dtype is not None:
             kwargs['linear_mlp_act_dtype'] = self.linear_mlp_act_dtype
-        
         return kwargs
 
 

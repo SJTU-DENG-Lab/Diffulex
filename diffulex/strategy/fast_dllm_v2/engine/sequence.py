@@ -119,9 +119,11 @@ class FDV2Sequence(SequenceBase):
     def __init__(
         self,
         token_ids: list[int],
-        sampling_params: SamplingParams = SamplingParams(),
+        sampling_params: SamplingParams | None = None,
         config: Config | None = None,
     ):
+        if sampling_params is None:
+            sampling_params = SamplingParams()
         super().__init__(token_ids, sampling_params)
         if config is None:
             raise ValueError("BDSequence requires a Config instance.")

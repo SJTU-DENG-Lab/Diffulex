@@ -103,6 +103,8 @@ class DiffulexLM(LM):
             model_path=pretrained,
             tokenizer_path=pretrained,
             wait_ready=wait_ready,
+            trust_remote_code=trust_remote_code if trust_remote_code is not None else False,
+            revision=kwargs.get("revision") if kwargs else None,
             model_name=model_name,
             decoding_strategy=decoding_strategy,
             mask_token_id=mask_token_id,
@@ -216,22 +218,28 @@ class DiffulexLM(LM):
         """
         self.logger.info(f"Processing {len(requests)} generation requests...")
         
-        # Prepare prompts
+        # Prepare prompts and per-request sampling params from gen_args
         prompts = []
-        gen_args = []
-        
+        per_request_sampling_params_list: List[SamplingParams] = []
         for req in requests:
             prompt = req.arguments[0]
             if self.add_bos_token and self.tokenizer.bos_token:
                 prompt = self.tokenizer.bos_token + prompt
             prompts.append(prompt)
-            gen_args.append(req.arguments[1] if len(req.arguments) > 1 else {})
-        
-        # Run generation
+            gen_args = req.arguments[1] if len(req.arguments) > 1 else {}
+            max_tokens = gen_args.get("max_gen_toks", self.sampling_params.max_tokens)
+            sp = SamplingParams(
+                temperature=self.sampling_params.temperature,
+                max_tokens=max_tokens,
+                ignore_eos=self.sampling_params.ignore_eos,
+            )
+            per_request_sampling_params_list.append(sp)
+
+        # Run generation with per-request sampling params
         start_time = time.time()
         outputs = self.runner.generate(
             prompts,
-            self.sampling_params,
+            per_request_sampling_params_list,
             use_tqdm=not disable_tqdm,
         )
         end_time = time.time()

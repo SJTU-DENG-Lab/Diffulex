@@ -916,19 +916,29 @@ def store_kvcache_unified_layout(key: torch.Tensor, value: torch.Tensor,
     raise ValueError(f"Unsupported kv_cache_format={fmt!r} for unified layout (strategy={type(strategy)})")
 
 
-def store_kvcache_distinct_layout(key: torch.Tensor, value: torch.Tensor, 
-                                  k_cache: torch.Tensor, v_cache: torch.Tensor, 
+def store_kvcache_distinct_layout(key: torch.Tensor, value: torch.Tensor,
+                                  k_cache: torch.Tensor, v_cache: torch.Tensor,
                                   slot_mapping: torch.Tensor, attn_metadata: AttnMetaDataBase) -> None:
     """
     Store KV cache (distinct layout).
     Dynamically selects the appropriate kernel based on quantization strategy from context.
+    Trims slot_mapping to active token count for partial-prefill when slot_mapping is longer.
     """
     from diffulex.utils.quantization.context import get_kv_cache_strategy
+    N = key.shape[0]
+    if int(slot_mapping.numel()) != N:
+        if int(slot_mapping.numel()) > N:
+            slot_mapping = slot_mapping[:N]
+        else:
+            raise AssertionError(
+                f"slot_mapping is shorter than key/value tokens: "
+                f"N={N}, slot_mapping.numel()={int(slot_mapping.numel())}"
+            )
     strategy = get_kv_cache_strategy()
     if strategy is None:
         _store_kvcache_distinct_bf16(key, value, k_cache, v_cache, slot_mapping)
         return
-    
+
     fmt = getattr(strategy, "kv_cache_format", "bf16")
     if fmt == "bf16":
         _store_kvcache_distinct_bf16(key, value, k_cache, v_cache, slot_mapping)
