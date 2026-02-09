@@ -59,19 +59,15 @@ class FastdLLMV2SamplerForDiffusionLM(SamplerShiftLogits):
                 
                 if len(high_conf_indices) == 0:
                     max_prob_idx = initial_confidence.argmax()
-                    accepted_ids = torch.tensor([max_prob_idx], device=sampled_tokens.device, dtype=torch.long)
+                    accepted_ids = max_prob_idx.view(1)
                 else:
                     max_prob_idx = initial_confidence.argmax()
-                    accepted_ids = torch.unique(torch.cat([
-                        high_conf_indices,
-                        torch.tensor([max_prob_idx], device=sampled_tokens.device, dtype=torch.long)
-                    ]))
+                    accepted_ids = torch.unique(torch.cat([high_conf_indices, max_prob_idx.view(1)]))
                 
-                true_local_ids_sub_map[str(block_id)] = [
-                    block.local_mask_token_ids[accepted_id] for accepted_id in accepted_ids.tolist()
-                ]
-                accepted_ids_sub_map[str(block_id)] = accepted_ids.tolist()
-                sampled_tokens_sub_map[str(block_id)] = sampled_tokens
+                accepted_ids_list = accepted_ids.to(device="cpu").tolist()
+                true_local_ids_sub_map[str(block_id)] = [block.local_mask_token_ids[i] for i in accepted_ids_list]
+                accepted_ids_sub_map[str(block_id)] = accepted_ids_list
+                sampled_tokens_sub_map[str(block_id)] = sampled_tokens.to(device="cpu").tolist()
             
             seq_idx = str(seq.seq_id)
             true_local_ids_map[seq_idx] = true_local_ids_sub_map

@@ -50,21 +50,25 @@ class SDARAttention(nn.Module):
             config.hidden_size,
             self.total_num_heads * self.head_dim,
             bias=bias,
+            quant_kind="attn",
         )
         self.k_proj = ColumnParallelLinear(
             config.hidden_size,
             self.total_num_kv_heads * self.head_dim,
             bias=bias,
+            quant_kind="attn",
         )
         self.v_proj = ColumnParallelLinear(
             config.hidden_size,
             self.total_num_kv_heads * self.head_dim,
             bias=bias,
+            quant_kind="attn",
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             config.hidden_size,
             bias=bias,
+            quant_kind="attn",
         )
 
         # SDAR uses q/k per-head RMSNorm.
@@ -116,9 +120,24 @@ class SDARMLP(nn.Module):
 
     def __init__(self, config: SDARConfig) -> None:
         super().__init__()
-        self.gate_proj = ColumnParallelLinear(config.hidden_size, config.intermediate_size, bias=False)
-        self.up_proj = ColumnParallelLinear(config.hidden_size, config.intermediate_size, bias=False)
-        self.down_proj = RowParallelLinear(config.intermediate_size, config.hidden_size, bias=False)
+        self.gate_proj = ColumnParallelLinear(
+            config.hidden_size,
+            config.intermediate_size,
+            bias=False,
+            quant_kind="mlp",
+        )
+        self.up_proj = ColumnParallelLinear(
+            config.hidden_size,
+            config.intermediate_size,
+            bias=False,
+            quant_kind="mlp",
+        )
+        self.down_proj = RowParallelLinear(
+            config.intermediate_size,
+            config.hidden_size,
+            bias=False,
+            quant_kind="mlp",
+        )
         assert getattr(config, "hidden_act", "silu") == "silu"
         self.act_fn = SiluAndMul()
 

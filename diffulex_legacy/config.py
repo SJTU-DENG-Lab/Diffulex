@@ -42,6 +42,7 @@ class Config:
     num_kvcache_blocks: int = -1
     k_cache_hdim_split_factor_x: int = 8
     kv_cache_layout: str = "unified"  # "unified" or "distinct"
+    kv_cache_dtype: str = "bf16"  # "bf16", "fp16", "fp32", "fp8", "fp8_e4m3", "fp8_e5m2"
 
     def __post_init__(self):
         assert os.path.isdir(self.model)

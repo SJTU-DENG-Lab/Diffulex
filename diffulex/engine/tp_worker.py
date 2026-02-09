@@ -14,6 +14,9 @@ from diffulex.sampling_params import SamplingParams
 from diffulex.engine.sequence import AutoSequence
 from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
 from diffulex.engine.model_runner import AutoModelRunner
+from diffulex.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class DiffulexTPWorker:
@@ -72,6 +75,13 @@ class DiffulexTPWorker:
         return await loop.run_in_executor(None, self.add_request, prompt, sampling_params)
 
     def step(self):
+        # Clear step-local activation quant cache (W8A8/W4A8, etc.) so we only reuse within a single step.
+        try:
+            from diffulex.utils.quantization.context import clear_act_quant_cache
+            clear_act_quant_cache()
+        except Exception:
+            # Quantization context may not be initialized in some paths; ignore.
+            pass
         seqs, is_prefill = self.scheduler.schedule()
         sample_output = self.model_runner.call("run", seqs, is_prefill)
         n_diff_steps = self.scheduler.postprocess(seqs, sample_output)
@@ -124,21 +134,41 @@ class DiffulexTPWorker:
             sid = self.add_request(prompt, sp)
             seqid_to_idx[sid] = idx
         outputs = [None] * len(prompts)
-        prefill_throughput = decode_throughput = 0.
+        # Track token/time totals for correct average throughput reporting.
+        prefill_total_tokens = 0
+        decode_total_tokens = 0
+        prefill_total_time = 0.0
+        decode_total_time = 0.0
+        prefill_steps = 0
+        decode_steps = 0
         n_steps = 0
         n_diff_steps = [-1] * len(prompts)
         while not self.is_finished():
-            t = perf_counter()
             n_steps += 1
+            t = perf_counter()
             output, num_tokens, is_prefill, cur_n_diff_steps, _ = self.step()
+            dt = perf_counter() - t
+
+            # Accumulate totals to compute average throughput correctly.
+            if is_prefill:
+                prefill_steps += 1
+                prefill_total_tokens += int(num_tokens)
+                prefill_total_time += float(dt)
+            else:
+                decode_steps += 1
+                decode_total_tokens += int(num_tokens)
+                decode_total_time += float(dt)
+
             if use_tqdm:
-                if is_prefill:
-                    prefill_throughput = num_tokens / (perf_counter() - t)
-                else:
-                    decode_throughput = num_tokens / (perf_counter() - t)
+                avg_prefill_throughput = (
+                    prefill_total_tokens / prefill_total_time if prefill_total_time > 0 else 0.0
+                )
+                avg_decode_throughput = (
+                    decode_total_tokens / decode_total_time if decode_total_time > 0 else 0.0
+                )
                 pbar.set_postfix({
-                    "Prefill": f"{int(prefill_throughput)}tok/s",
-                    "Decode": f"{int(decode_throughput)}tok/s",
+                    "Prefill(avg)": f"{int(avg_prefill_throughput)}tok/s",
+                    "Decode(avg)": f"{int(avg_decode_throughput)}tok/s",
                 })
             if cur_n_diff_steps:
                 for seq_id, n_step in cur_n_diff_steps.items():
@@ -150,7 +180,34 @@ class DiffulexTPWorker:
                 if use_tqdm:
                     pbar.update(1)
                     
-        print(f"Finished in {n_steps} steps, prefill throughput: {prefill_throughput:.2f} tok/s, decode throughput: {decode_throughput:.2f} tok/s")
+        avg_prefill_throughput = (
+            prefill_total_tokens / prefill_total_time if prefill_total_time > 0 else 0.0
+        )
+        avg_decode_throughput = (
+            decode_total_tokens / decode_total_time if decode_total_time > 0 else 0.0
+        )
+        avg_prefill_step_ms = (
+            (prefill_total_time / prefill_steps) * 1000.0 if prefill_steps > 0 else 0.0
+        )
+        avg_decode_step_ms = (
+            (decode_total_time / decode_steps) * 1000.0 if decode_steps > 0 else 0.0
+        )
+        logger.info(
+            "Finished in %d steps (prefill=%d, decode=%d). "
+            "Prefill: %d tok in %.2fs (avg %.2f tok/s, %.2f ms/step). "
+            "Decode: %d tok in %.2fs (avg %.2f tok/s, %.2f ms/step).",
+            n_steps,
+            prefill_steps,
+            decode_steps,
+            prefill_total_tokens,
+            prefill_total_time,
+            avg_prefill_throughput,
+            avg_prefill_step_ms,
+            decode_total_tokens,
+            decode_total_time,
+            avg_decode_throughput,
+            avg_decode_step_ms,
+        )
         # Ensure all outputs are present
         assert all(toks is not None for toks in outputs), "Some sequences did not produce outputs"
         outputs = [{

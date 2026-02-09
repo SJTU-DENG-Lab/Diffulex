@@ -39,13 +39,14 @@ def summarize_profiling(csv_path: str) -> dict:
 FEW_SHOTS = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
 
 if __name__ == "__main__":
+    PROFILE = False
     model = "/data1/ckpts/Efficient-Large-Model/Fast_dLLM_v2_7B"
     local_data_path = "/data1/LargeData/gsm8k"
     LLM = Diffulex(
         model,
         use_lora=False,
         model_name="fast_dllm_v2", 
-        enforce_eager=True, 
+        enforce_eager=False, 
         data_parallel_size=1,
         tensor_parallel_size=1,
         gpu_memory_utilization=0.25,
@@ -59,21 +60,21 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
     
-    # dataset = load_dataset("gsm8k", "main", split="test")["question"][:10]
-    dataset = load_dataset(local_data_path, "main", split="test", trust_remote_code=True)["question"][:10]
+    dataset = load_dataset("gsm8k", "main", split="test")["question"][:15]
     prompts = [
         FEW_SHOTS + f"<|im_start|>user\nQuestion: {question}\nAnswer:<|im_end|>\n<|im_start|>assistant\n"
         for question in tqdm(dataset)
     ]
-    
-    output_file = "log/profiles/perf_dvllm_fastdllmv2_7B.json"
-    if os.path.exists(output_file):
-        os.remove(output_file)
-    # with VizTracer(output_file=output_file, file_info=True) as tracer:
-    #     outputs = llm.generate(prompts[:5], sampling_params)
-    # time.sleep(60)
     s = time.time()
-    outputs = LLM.generate(prompts, sampling_params)
+    if PROFILE:
+        output_file = "log/profiles/perf_dvllm_dream_7B.json"
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        
+        with VizTracer(output_file=output_file, file_info=True) as tracer:
+            outputs = LLM.generate(prompts, sampling_params)
+    else:
+        outputs = LLM.generate(prompts, sampling_params)
     e = time.time()
     print("=*=" * 30, 
           "\nProfiling Results\n", 
@@ -86,4 +87,5 @@ if __name__ == "__main__":
           "=*=" * 30)
     for idx, o in enumerate(outputs):
         print("\n", "=*=" * 30)
-        print(f"[Prompt {idx} Result] \n{prompts[idx] + "\n-----<Start-of-Response>-----\n" + o['text']}\n")
+        resp = prompts[idx] + "\n-----<Start-of-Response>-----\n" + o["text"]
+        print(f"[Prompt {idx} Result]\n{resp}\n")

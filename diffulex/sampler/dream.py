@@ -56,9 +56,11 @@ class DreamSamplerForDiffusionLM(SamplerShiftLogits):
                     high_conf_indices = torch.where(initial_confidence > block.accept_threshold)[0]
                     accepted_ids = high_conf_indices
 
-                true_local_ids_sub_map[str(block_id)] = [block.local_mask_token_ids[accepted_id] for accepted_id in accepted_ids.tolist()]
-                accepted_ids_sub_map[str(block_id)] = accepted_ids.tolist()
-                sampled_tokens_sub_map[str(block_id)] = sampled_tokens
+                # Avoid calling `.tolist()` on CUDA tensors directly (can trigger many per-element DtoH syncs).
+                accepted_ids_list = accepted_ids.to(device="cpu").tolist()
+                true_local_ids_sub_map[str(block_id)] = [block.local_mask_token_ids[i] for i in accepted_ids_list]
+                accepted_ids_sub_map[str(block_id)] = accepted_ids_list
+                sampled_tokens_sub_map[str(block_id)] = sampled_tokens.to(device="cpu").tolist()
             
             seq_idx = str(seq.seq_id)
             true_local_ids_map[seq_idx] = true_local_ids_sub_map

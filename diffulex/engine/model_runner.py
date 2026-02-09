@@ -12,9 +12,16 @@ from multiprocessing.shared_memory import SharedMemory
 
 from diffulex.config import Config
 from diffulex.sampler import AutoSampler
-from diffulex.engine.sequence import SequenceBase
+from diffulex.engine.sequence import AutoSequence, SequenceBase
+from diffulex.attention.metadata import set_warming_up, reset_warming_up
 from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
+from diffulex.utils.quantization.factory import QuantizationStrategyFactory
+from diffulex.utils.quantization.context import get_kv_cache_strategy
+from diffulex.utils.quantization.strategies import NoQuantizationStrategy
+from diffulex.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ModelRunnerBase(ABC):
@@ -30,8 +37,14 @@ class ModelRunnerBase(ABC):
 
         # Initialize model, sampler, and kv cache
         init_method = f"tcp://{config.master_addr}:{config.master_port}"
-        dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank)
-        device_id = (getattr(config, "device_start", 0) or 0) + rank
+        dist.init_process_group("nccl", init_method, world_size=self.world_size, rank=rank, device_id=config.device_ids[rank])
+        # Choose CUDA device for this TP rank.
+        # config.device_ids is already a list of logical CUDA device indices (respecting CUDA_VISIBLE_DEVICES).
+        # Do NOT add rank again, otherwise rank 1 with device_ids=[0,1] becomes device 2.
+        if getattr(config, "device_ids", None):
+            device_id = config.device_ids[rank]
+        else:
+            device_id = (getattr(config, "device_start", 0) or 0) + rank
         assert 0 <= device_id < torch.cuda.device_count(), f"Invalid device_id {device_id}."
         torch.cuda.set_device(device_id)
         default_dtype = torch.get_default_dtype()
@@ -41,8 +54,10 @@ class ModelRunnerBase(ABC):
         torch.set_default_device(f"cuda:{device_id}")
         self.model = self.load_model(config)
         self.sampler = self.load_sampler(config)
+        # Initialize quantization context
+        QuantizationStrategyFactory.create_from_config(config)
         self.warmup_model()
-        self.allocate_kv_cache()  # NOCHANGE
+        self.allocate_kv_cache()
         if not self.enforce_eager:
             self.capture_cudagraph()
 
@@ -132,11 +147,28 @@ class ModelRunnerBase(ABC):
     def load_sampler(self, config: Config):
         """Instantiate the sampler implementation; override to customize."""
         return AutoSampler.from_config(config)
+    
+    def _prefill_warmup(self):
+        logger.info("Warming up prefill...")
+        max_num_batched_tokens, max_model_len = (
+            self.config.max_num_batched_tokens,
+            self.config.max_model_len,
+        )
+        num_seqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_seqs)
+        test_input_ids = [0] * max_model_len
+        seqs = [AutoSequence.create(config=self.config, token_ids=test_input_ids) for _ in range(num_seqs)]
+        self.run(seqs, True)
+        for seq in seqs:
+            seq.post_process()
+        torch.cuda.empty_cache()
 
-    @abstractmethod
     def warmup_model(self):
-        """Model-specific warmup logic."""
-        pass
+        logger.info("Warming up model...")
+        set_warming_up(True)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        self._prefill_warmup()
+        reset_warming_up()
 
     def allocate_kv_cache(self):
         config = self.config
@@ -158,18 +190,19 @@ class ModelRunnerBase(ABC):
         else:
             raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
 
-        dtype = (
-            hf_config.torch_dtype
-            if hasattr(hf_config, "torch_dtype") and hf_config.torch_dtype
-            else torch.bfloat16
-        )
+        # Get storage dtype and itemsize from quantization strategy
+        strategy = get_kv_cache_strategy()
+        if strategy is None:
+            strategy = NoQuantizationStrategy()
+        storage_dtype, itemsize = strategy.get_storage_dtype()
+        
         block_bytes = (
             2
             * hf_config.num_hidden_layers
             * self.block_size
             * num_kv_heads
             * head_dim
-            * dtype.itemsize
+            * itemsize
         )
         get_num_kvcache_blocks = (
             lambda gpu_memory_utilization: int(total * gpu_memory_utilization - used - peak + current)
@@ -181,27 +214,30 @@ class ModelRunnerBase(ABC):
         except Exception:
             gpu_memory_utilization = config.gpu_memory_utilization
             while num_kvcache_blocks <= 200:
-                print(
-                    "Warning: GPU memory utilization "
-                    f"{gpu_memory_utilization} is too low to allocate kv cache. "
+                logger.warning(
+                    f"GPU memory utilization {gpu_memory_utilization} is too low to allocate kv cache. "
                     "Automatically adding 0.05."
                 )
                 gpu_memory_utilization += 0.05
                 num_kvcache_blocks = get_num_kvcache_blocks(gpu_memory_utilization)
-            print(
+            logger.info(
                 f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} "
                 "to allocate kv cache."
             )
             config.gpu_memory_utilization = gpu_memory_utilization
 
         config.num_kvcache_blocks = num_kvcache_blocks
-        print(
-            "Allocated {num_blocks} blocks of size {block_size} for kv cache on rank {rank}.".format(
-                num_blocks=config.num_kvcache_blocks,
-                block_size=self.block_size,
-                rank=self.rank,
-            )
+        logger.info(
+            f"Allocated {config.num_kvcache_blocks} blocks of size {self.block_size} "
+            f"for kv cache on rank {self.rank}."
         )
+
+        # Cache the list of Attention-like modules once, to keep binding logic consistent
+        # across cache layout branches (and avoid duplicated traversal).
+        attn_modules = [
+            m for m in self.model.modules()
+            if hasattr(m, "k_cache") and hasattr(m, "v_cache")
+        ]
 
         if config.kv_cache_layout == "distinct":
             x = config.k_cache_hdim_split_factor_x
@@ -212,6 +248,7 @@ class ModelRunnerBase(ABC):
                 head_dim // x,
                 self.block_size,
                 x,
+                dtype=storage_dtype,
             )
             self.v_cache = torch.zeros(
                 hf_config.num_hidden_layers,
@@ -219,13 +256,11 @@ class ModelRunnerBase(ABC):
                 num_kv_heads,
                 head_dim,
                 self.block_size,
+                dtype=storage_dtype,
             )
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = self.k_cache[layer_id]
-                    module.v_cache = self.v_cache[layer_id]
-                    layer_id += 1
+            for layer_id, module in enumerate(attn_modules):
+                module.k_cache = self.k_cache[layer_id]
+                module.v_cache = self.v_cache[layer_id]
         elif config.kv_cache_layout == "unified":
             self.kv_cache = torch.zeros(
                 2,
@@ -234,19 +269,43 @@ class ModelRunnerBase(ABC):
                 self.block_size,
                 num_kv_heads,
                 head_dim,
+                dtype=storage_dtype,
             )
-            layer_id = 0
-            for module in self.model.modules():
-                if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
-                    module.k_cache = self.kv_cache[0, layer_id]
-                    module.v_cache = self.kv_cache[1, layer_id]
-                    layer_id += 1
+            for layer_id, module in enumerate(attn_modules):
+                module.k_cache = self.kv_cache[0, layer_id]
+                module.v_cache = self.kv_cache[1, layer_id]
         else:
             raise ValueError(
                 "Unsupported kv_cache_layout: {layout}. Supported values are 'distinct' and 'unified'.".format(
                     layout=config.kv_cache_layout
                 )
             )
+        
+        # Allocate scale tensors if quantization strategy requires them
+        # Get device from cache (already allocated above)
+        if config.kv_cache_layout == "distinct":
+            device = self.k_cache.device
+        else:  # unified
+            device = self.kv_cache.device
+        k_scale_init, v_scale_init = strategy.init_scales(num_kv_heads, device)
+        if k_scale_init is not None and v_scale_init is not None:
+            # Allocate scale tensors: [num_layers, num_kv_heads]
+            self.k_scale = torch.zeros(
+                hf_config.num_hidden_layers, num_kv_heads,
+                dtype=torch.float32, device=device
+            )
+            self.v_scale = torch.zeros(
+                hf_config.num_hidden_layers, num_kv_heads,
+                dtype=torch.float32, device=device
+            )
+            # Initialize with strategy's initial scale values
+            self.k_scale[:] = k_scale_init[None, :]
+            self.v_scale[:] = v_scale_init[None, :]
+            
+            # Bind scales to Attention modules
+            for layer_id, module in enumerate(attn_modules):
+                module.k_scale = self.k_scale[layer_id]
+                module.v_scale = self.v_scale[layer_id]
 
     def prepare_block_tables(self, seqs: list[SequenceBase]):
         max_len = max(len(seq.block_table) for seq in seqs)
@@ -305,6 +364,16 @@ class AutoModelRunner(DiffulexStrategyRegistry):
 
     @classmethod
     def from_config(cls, config: Config, rank: int, event: Event | list[Event]):
+        # Ensure project root is in sys.path for spawn mode subprocesses
+        import sys
+        import os
+        if not any('diffulex_kernel' in p for p in sys.path):
+            # Try to find project root by locating diffulex package
+            diffulex_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if os.path.basename(diffulex_path) == 'diffulex':
+                project_root = os.path.dirname(diffulex_path)
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
         cls._MODULE_MAPPING: dict[str, RunnerFactory]
         candidates: list[str] = []
         for attr in ("decoding_strategy",):

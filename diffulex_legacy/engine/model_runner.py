@@ -22,6 +22,26 @@ from diffulex_legacy.utils.context import (
     get_context_diffusion_lm,
     reset_context_diffusion_lm
 )
+from diffulex.utils.kv_cache_dtype import parse_kv_cache_dtype
+
+
+def _get_kv_cache_storage_info(kv_cache_dtype: str) -> tuple[torch.dtype, int]:
+    """
+    Returns (storage_dtype, itemsize) for KV cache allocation.
+    - For FP8: returns (torch.uint8, 1) because FP8 uses uint8 storage
+    - For other dtypes: returns (torch.bfloat16/fp16/fp32, itemsize)
+    """
+    spec = parse_kv_cache_dtype(kv_cache_dtype)
+    if spec.is_fp8:
+        return torch.uint8, 1
+    elif spec.enum.value == 0:  # BF16
+        return torch.bfloat16, 2
+    elif spec.enum.value == 1:  # FP16
+        return torch.float16, 2
+    elif spec.enum.value == 2:  # FP32
+        return torch.float32, 4
+    else:
+        raise ValueError(f"Unsupported kv_cache_dtype: {kv_cache_dtype}")
 
 
 class ModelRunnerBase(ABC):
@@ -186,6 +206,7 @@ class ModelRunnerForCausalLM(ModelRunnerBase):
     def allocate_kv_cache(self):
         config = self.config
         hf_config = config.hf_config
+        storage_dtype, itemsize = _get_kv_cache_storage_info(config.kv_cache_dtype)
         free, total = torch.cuda.mem_get_info()
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
@@ -200,14 +221,14 @@ class ModelRunnerForCausalLM(ModelRunnerBase):
             raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
         
         block_bytes = (2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * 
-                       head_dim * hf_config.torch_dtype.itemsize)
+                       head_dim * itemsize)
         config.num_kvcache_blocks = int(total * config.gpu_memory_utilization - 
                                         used - peak + current) // block_bytes
         assert config.num_kvcache_blocks > 0
         # [kv_separated, layer_id, block_id, block_size(segmented seq_len), head, head_dim]
         self.kv_cache = torch.zeros(
             2, hf_config.num_hidden_layers, config.num_kvcache_blocks, 
-            self.block_size, num_kv_heads, head_dim)
+            self.block_size, num_kv_heads, head_dim, dtype=storage_dtype)
         layer_id = 0
         for module in self.model.modules():
             if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
@@ -250,7 +271,7 @@ class ModelRunnerForCausalLM(ModelRunnerBase):
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        set_context_causal_lm(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables)
+        set_context_causal_lm(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables, kv_cache_dtype=self.config.kv_cache_dtype)
         return input_ids, positions
 
     def prepare_decode(self, seqs: List[SequenceForCausalLM]):
@@ -271,7 +292,7 @@ class ModelRunnerForCausalLM(ModelRunnerBase):
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         block_tables = self.prepare_block_tables(seqs)
-        set_context_causal_lm(False, cu_seqlens_k=cu_seqlens_k, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables)
+        set_context_causal_lm(False, cu_seqlens_k=cu_seqlens_k, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables, kv_cache_dtype=self.config.kv_cache_dtype)
         return input_ids, positions
 
     @torch.inference_mode()
@@ -336,7 +357,7 @@ class ModelRunnerForCausalLM(ModelRunnerBase):
 
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
-            set_context_causal_lm(False, slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs])
+            set_context_causal_lm(False, slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs], kv_cache_dtype=self.config.kv_cache_dtype)
             outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
             with torch.cuda.graph(graph, self.graph_pool):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
@@ -381,6 +402,7 @@ class ModelRunnerForDiffusionLM(ModelRunnerBase):
     def allocate_kv_cache(self):
         config = self.config
         hf_config = config.hf_config
+        storage_dtype, itemsize = _get_kv_cache_storage_info(config.kv_cache_dtype)
         free, total = torch.cuda.mem_get_info()
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
@@ -394,8 +416,7 @@ class ModelRunnerForDiffusionLM(ModelRunnerBase):
         else:
             raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
         
-        dtype = hf_config.torch_dtype if hasattr(hf_config, "torch_dtype") and hf_config.torch_dtype else torch.bfloat16
-        block_bytes = (2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * dtype.itemsize)
+        block_bytes = (2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * itemsize)
         get_num_kvcache_blocks = lambda gpu_memory_utilization: int(total * gpu_memory_utilization -  # noqa: E731
                                                                     used - peak + current) // block_bytes
         try:
@@ -421,11 +442,11 @@ class ModelRunnerForDiffusionLM(ModelRunnerBase):
             
             self.k_cache = torch.zeros(
                 hf_config.num_hidden_layers, config.num_kvcache_blocks, 
-                num_kv_heads, head_dim // x, self.block_size, x
+                num_kv_heads, head_dim // x, self.block_size, x, dtype=storage_dtype
             )
             self.v_cache = torch.zeros(
                 hf_config.num_hidden_layers, config.num_kvcache_blocks, 
-                num_kv_heads, head_dim, self.block_size
+                num_kv_heads, head_dim, self.block_size, dtype=storage_dtype
             )
             layer_id = 0
             for module in self.model.modules():
@@ -437,7 +458,7 @@ class ModelRunnerForDiffusionLM(ModelRunnerBase):
             # [kv_separated, layer_id, block_id, block_size(segmented seq_len), head, head_dim]
             self.kv_cache = torch.zeros(
                 2, hf_config.num_hidden_layers, config.num_kvcache_blocks, 
-                self.block_size, num_kv_heads, head_dim)
+                self.block_size, num_kv_heads, head_dim, dtype=storage_dtype)
             layer_id = 0
             for module in self.model.modules():
                 if hasattr(module, "k_cache") and hasattr(module, "v_cache"):

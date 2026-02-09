@@ -5,6 +5,8 @@ from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
 from diffulex.engine.sequence import SequenceStatus
 from .sequence import D2FSequence
 
+import torch
+
 
 @AutoScheduler.register("d2f", is_default=True)
 class D2FScheduler(SchedulerBase):
@@ -104,12 +106,17 @@ class D2FScheduler(SchedulerBase):
                     continue
                 diffusion_block = seq.diffusion_blocks[int(block_id)]
                 sampled_tokens = sampled_tokens_map.get(block_id, [])
+                # `sampled_tokens` may be a CUDA Tensor (legacy behavior) or list[int].
+                # Converting per-token via `.item()` causes massive DtoH sync overhead.
+                # Convert once per block.
+                if isinstance(sampled_tokens, torch.Tensor):
+                    sampled_tokens = sampled_tokens.tolist()
                 true_local_ids = true_ids_map.get(block_id, [])
                 for true_local_id, accepted_id in zip(true_local_ids, accepted_ids):
-                    token = sampled_tokens[accepted_id]
+                    token = int(sampled_tokens[accepted_id])
                     diffusion_block.modify_token(true_local_id, token)
                     if (
-                        (not seq.ignore_eos and token.item() == self.eos)
+                        (not seq.ignore_eos and token == self.eos)
                         or seq.num_completion_tokens >= seq.max_tokens
                     ):
                         seq.meet_eos = True

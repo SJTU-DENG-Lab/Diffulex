@@ -3,7 +3,7 @@ import torch
 
 from einops import rearrange
 
-from diffulex_legacy.layers.attention.attention_v4 import store_kvcache_distinct_layout, store_kvcache_unified
+from diffulex_legacy.layers.attention.ops import store_kvcache_distinct_layout, store_kvcache_unified_layout
 
 
 if __name__ == "__main__":
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     
     # unified_layout
     s = time.time()
-    store_kvcache_unified(k, v, k_cache, v_cache, slot_mapping, model_type='diffusion_lm')
+    store_kvcache_unified_layout(k, v, k_cache, v_cache, slot_mapping, model_type='diffusion_lm')
     print(f"Unified layout KV cache stored in {time.time() - s:.4f} seconds.")
     
     start_idx = 0
