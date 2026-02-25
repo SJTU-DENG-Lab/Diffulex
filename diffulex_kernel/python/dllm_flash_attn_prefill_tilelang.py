@@ -208,7 +208,7 @@ def dllm_flash_attn_prefill_tilelang(
             ]
         ):
             prefill_kernel = dllm_flash_attn_prefill_kernel(
-                attn_metadata.num_seqs,
+                attn_metadata.num_reqs,
                 q.shape[1] // k.shape[1],
                 q.shape[0],
                 k.shape[0],
@@ -229,7 +229,7 @@ def dllm_flash_attn_prefill_tilelang(
 
     config_kwargs = kernel_config if kernel_config is not None else {}
     prefill_kernel = dllm_flash_attn_prefill_kernel(
-        attn_metadata.num_seqs,
+        attn_metadata.num_reqs,
         q.shape[1] // k.shape[1],
         q.shape[0],
         k.shape[0],
