@@ -62,7 +62,6 @@ def load_model(model: nn.Module, config: Config):
     for file in tqdm(glob(os.path.join(config.model, "*.safetensors")), desc="Loading base model"):
         with safe_open(file, "pt", "cpu") as f:
             for weight_name in f.keys():
-
                 for k in packed_modules_mapping:
                     if k in weight_name:
                         if config.model_name == "llada" and k == "ff_out" and "transformer.ff_out" in weight_name:

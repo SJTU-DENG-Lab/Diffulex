@@ -29,6 +29,7 @@ class ModelRunnerBase(
     ModelRunnerMultiBlockMixin,
 ):
     """Base class for model runners supporting different model types."""
+
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
         self.config = config
         hf_config = config.hf_config
@@ -260,7 +261,7 @@ class ModelRunnerBase(
             for layer_id, module in enumerate(attn_modules):
                 module.k_cache = self.k_cache[layer_id]
                 module.v_cache = self.v_cache[layer_id]
-                
+
         elif config.kv_cache_layout == "unified":
             self.kv_cache = torch.zeros(
                 2,
@@ -274,7 +275,7 @@ class ModelRunnerBase(
             for layer_id, module in enumerate(attn_modules):
                 module.k_cache = self.kv_cache[0, layer_id]
                 module.v_cache = self.kv_cache[1, layer_id]
-                
+
         else:
             raise ValueError(
                 "Unsupported kv_cache_layout: {layout}. Supported values are 'distinct' and 'unified'.".format(

@@ -13,12 +13,26 @@ from diffulex_kernel.python.chunked_prefill_triton import (
 # Kernel invocation (direct call, bypasses the incomplete Python wrapper)
 # ---------------------------------------------------------------------------
 
+
 def call_chunked_prefill_kernel(
-    q, k, v, k_cache, v_cache,
-    page_tables, status_table, context_lens, cu_seqlens_q, valid_slices,
-    prefix_lens, padded_prefix_lens,
-    softmax_scale, dllm_block_size, is_block_causal, is_prefix_full=False,
-    BLOCK_M=128, BLOCK_N=64,
+    q,
+    k,
+    v,
+    k_cache,
+    v_cache,
+    page_tables,
+    status_table,
+    context_lens,
+    cu_seqlens_q,
+    valid_slices,
+    prefix_lens,
+    padded_prefix_lens,
+    softmax_scale,
+    dllm_block_size,
+    is_block_causal,
+    is_prefix_full=False,
+    BLOCK_M=128,
+    BLOCK_N=64,
 ):
     o = torch.zeros_like(q)
     num_heads = q.shape[1]
@@ -35,18 +49,39 @@ def call_chunked_prefill_kernel(
     grid = (num_seqs, num_heads, triton.cdiv(max_seqlen_q, BLOCK_M))
 
     _chunked_prefill_attn_unified_kernel[grid](
-        q, k, v, o,
-        k_cache, v_cache,
-        page_tables, status_table,
-        context_lens, cu_seqlens_q, valid_slices,
-        prefix_lens, padded_prefix_lens,
+        q,
+        k,
+        v,
+        o,
+        k_cache,
+        v_cache,
+        page_tables,
+        status_table,
+        context_lens,
+        cu_seqlens_q,
+        valid_slices,
+        prefix_lens,
+        padded_prefix_lens,
         softmax_scale,
-        q.stride(0), q.stride(1), q.stride(2),
-        k.stride(0), k.stride(1), k.stride(2),
-        o.stride(0), o.stride(1), o.stride(2),
-        k_cache.stride(0), k_cache.stride(1), k_cache.stride(2), k_cache.stride(3),
-        v_cache.stride(0), v_cache.stride(1), v_cache.stride(2), v_cache.stride(3),
-        page_tables.stride(0), page_tables.stride(1),
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        o.stride(0),
+        o.stride(1),
+        o.stride(2),
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
+        k_cache.stride(3),
+        v_cache.stride(0),
+        v_cache.stride(1),
+        v_cache.stride(2),
+        v_cache.stride(3),
+        page_tables.stride(0),
+        page_tables.stride(1),
         NUM_GROUPS=num_groups,
         HEAD_DIM=head_dim,
         HEAD_DIM_PADDED=head_dim_padded,
@@ -64,12 +99,25 @@ def call_chunked_prefill_kernel(
 # Reference implementation
 # ---------------------------------------------------------------------------
 
+
 def naive_chunked_prefill_ref(
-    q, k, v,
-    k_cache, v_cache,
-    page_tables, statuses, context_lens, cu_seqlens_q, valid_slices,
-    prefix_lens_list, padded_prefix_lens_list,
-    scale, page_size, dllm_block_size, is_block_causal, is_prefix_full=False,
+    q,
+    k,
+    v,
+    k_cache,
+    v_cache,
+    page_tables,
+    statuses,
+    context_lens,
+    cu_seqlens_q,
+    valid_slices,
+    prefix_lens_list,
+    padded_prefix_lens_list,
+    scale,
+    page_size,
+    dllm_block_size,
+    is_block_causal,
+    is_prefix_full=False,
 ):
     """
     Per-request reference:
@@ -124,21 +172,18 @@ def naive_chunked_prefill_ref(
             kj = torch.arange(valid_q_len, device=q.device)
             if status == 0:
                 pure_prefix = (qi[:, None] < P) & (kj[None, :] < P)
-                padded_causal = (
-                    ((qi[:, None] >= P) & (qi[:, None] < P_prime))
-                    & (kj[None, :] < P_prime)
-                )
+                padded_causal = ((qi[:, None] >= P) & (qi[:, None] < P_prime)) & (kj[None, :] < P_prime)
                 block_ends = ((qi // dllm_block_size) + 1) * dllm_block_size
-                block_mask_extend = (
-                    (kj[None, :] < block_ends[:, None])
-                    & (qi[:, None] >= P_prime)
-                )
+                block_mask_extend = (kj[None, :] < block_ends[:, None]) & (qi[:, None] >= P_prime)
                 new_kv_mask = pure_prefix | padded_causal | block_mask_extend
             else:
                 block_ends = ((qi // dllm_block_size) + 1) * dllm_block_size
                 new_kv_mask = kj[None, :] < block_ends[:, None]
             cache_mask = torch.ones(
-                valid_q_len, ctx_len, dtype=torch.bool, device=q.device,
+                valid_q_len,
+                ctx_len,
+                dtype=torch.bool,
+                device=q.device,
             )
             mask = torch.cat([cache_mask, new_kv_mask], dim=1)
             mask = mask.unsqueeze(0).unsqueeze(0)
@@ -148,7 +193,10 @@ def naive_chunked_prefill_ref(
             block_ends = ((qi // dllm_block_size) + 1) * dllm_block_size
             new_kv_mask = kj[None, :] < block_ends[:, None]
             cache_mask = torch.ones(
-                valid_q_len, ctx_len, dtype=torch.bool, device=q.device,
+                valid_q_len,
+                ctx_len,
+                dtype=torch.bool,
+                device=q.device,
             )
             mask = torch.cat([cache_mask, new_kv_mask], dim=1)
             mask = mask.unsqueeze(0).unsqueeze(0)
@@ -158,16 +206,16 @@ def naive_chunked_prefill_ref(
         v_sdpa = rearrange(v_full, "s h d -> 1 h s d")
 
         attn_out = F.scaled_dot_product_attention(
-            q_sdpa, k_sdpa, v_sdpa,
+            q_sdpa,
+            k_sdpa,
+            v_sdpa,
             attn_mask=mask,
             dropout_p=0.0,
             is_causal=False,
             scale=scale,
             enable_gqa=True,
         )
-        output[q_start : q_start + valid_q_len] = rearrange(
-            attn_out, "1 h s d -> s h d"
-        ).to(output.dtype)
+        output[q_start : q_start + valid_q_len] = rearrange(attn_out, "1 h s d -> s h d").to(output.dtype)
 
     return output
 
@@ -212,10 +260,7 @@ def build_test_data(
     if prefix_lens is None:
         prefix_lens = [0] * num_seqs
     prefix_lens_t = torch.tensor(prefix_lens, dtype=torch.int32, device=device)
-    padded = [
-        ((p + dllm_block_size - 1) // dllm_block_size) * dllm_block_size
-        for p in prefix_lens
-    ]
+    padded = [((p + dllm_block_size - 1) // dllm_block_size) * dllm_block_size for p in prefix_lens]
     padded_prefix_lens_t = torch.tensor(padded, dtype=torch.int32, device=device)
 
     q = torch.randn(total_len, num_heads, head_dim, dtype=dtype, device=device)
@@ -227,12 +272,20 @@ def build_test_data(
     total_pages = max(sum(pages_per_seq), 1)
 
     k_cache = torch.randn(
-        total_pages, page_size, num_kv_heads, head_dim, dtype=dtype, device=device,
+        total_pages,
+        page_size,
+        num_kv_heads,
+        head_dim,
+        dtype=dtype,
+        device=device,
     )
     v_cache = torch.randn_like(k_cache)
 
     page_tables = torch.full(
-        (num_seqs, max_pages), -1, dtype=torch.int32, device=device,
+        (num_seqs, max_pages),
+        -1,
+        dtype=torch.int32,
+        device=device,
     )
     offset = 0
     for i in range(num_seqs):
@@ -241,15 +294,25 @@ def build_test_data(
         offset += pages_per_seq[i]
 
     return (
-        q, k, v, k_cache, v_cache,
-        page_tables, status_table, context_lens_t, cu_seqlens_q, valid_slices,
-        prefix_lens_t, padded_prefix_lens_t,
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        page_tables,
+        status_table,
+        context_lens_t,
+        cu_seqlens_q,
+        valid_slices,
+        prefix_lens_t,
+        padded_prefix_lens_t,
     )
 
 
 # ---------------------------------------------------------------------------
 # Shared runner
 # ---------------------------------------------------------------------------
+
 
 def _run_test(
     q_lens,
@@ -274,31 +337,59 @@ def _run_test(
         statuses = [0] * num_seqs
     if prefix_lens is None:
         prefix_lens = [0] * num_seqs
-    padded_prefix_lens = [
-        ((p + dllm_block_size - 1) // dllm_block_size) * dllm_block_size
-        for p in prefix_lens
-    ]
+    padded_prefix_lens = [((p + dllm_block_size - 1) // dllm_block_size) * dllm_block_size for p in prefix_lens]
 
     data = build_test_data(
-        q_lens, valid_q_lens, ctx_lens,
-        num_heads, num_kv_heads, head_dim, page_size,
-        statuses=statuses, prefix_lens=prefix_lens,
+        q_lens,
+        valid_q_lens,
+        ctx_lens,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        page_size,
+        statuses=statuses,
+        prefix_lens=prefix_lens,
         dllm_block_size=dllm_block_size,
     )
     q, k, v, k_cache, v_cache, pt, st, cl, cu, vs, pl, ppl = data
-    scale = 1.0 / head_dim ** 0.5
+    scale = 1.0 / head_dim**0.5
 
     out = call_chunked_prefill_kernel(
-        q, k, v, k_cache, v_cache, pt, st, cl, cu, vs, pl, ppl,
-        scale, dllm_block_size,
-        is_block_causal=is_block_causal, is_prefix_full=is_prefix_full,
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        pt,
+        st,
+        cl,
+        cu,
+        vs,
+        pl,
+        ppl,
+        scale,
+        dllm_block_size,
+        is_block_causal=is_block_causal,
+        is_prefix_full=is_prefix_full,
     )
     ref = naive_chunked_prefill_ref(
-        q, k, v, k_cache, v_cache, pt,
-        statuses, cl, cu, vs,
-        prefix_lens, padded_prefix_lens,
-        scale, page_size, dllm_block_size,
-        is_block_causal=is_block_causal, is_prefix_full=is_prefix_full,
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        pt,
+        statuses,
+        cl,
+        cu,
+        vs,
+        prefix_lens,
+        padded_prefix_lens,
+        scale,
+        page_size,
+        dllm_block_size,
+        is_block_causal=is_block_causal,
+        is_prefix_full=is_prefix_full,
     )
 
     for i, vql in enumerate(valid_q_lens):
@@ -314,6 +405,7 @@ def _run_test(
 
 # ========================= Case 1: Pure Prefill ==========================
 
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_pure_prefill_varlen():
     """No context, varlen, full attention (non-DLLM prefill)."""
@@ -321,8 +413,11 @@ def test_pure_prefill_varlen():
         q_lens=[128, 96, 64, 160],
         valid_q_lens=[128, 96, 64, 160],
         ctx_lens=[0, 0, 0, 0],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=False,
     )
 
@@ -334,8 +429,11 @@ def test_pure_prefill_varlen_block_causal():
         q_lens=[128, 96, 64, 160],
         valid_q_lens=[128, 96, 64, 160],
         ctx_lens=[0, 0, 0, 0],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
@@ -347,13 +445,17 @@ def test_pure_prefill_single_seq():
         q_lens=[256],
         valid_q_lens=[256],
         ctx_lens=[0],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=False,
     )
 
 
 # ===================== Case 2: Prefix Prefill =============================
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_prefix_prefill_varlen():
@@ -362,8 +464,11 @@ def test_prefix_prefill_varlen():
         q_lens=[128, 96, 64, 160],
         valid_q_lens=[128, 96, 64, 160],
         ctx_lens=[64, 128, 32, 96],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=False,
     )
 
@@ -375,8 +480,11 @@ def test_prefix_prefill_varlen_block_causal():
         q_lens=[128, 96, 64, 160],
         valid_q_lens=[128, 96, 64, 160],
         ctx_lens=[64, 128, 32, 96],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
@@ -388,13 +496,17 @@ def test_prefix_prefill_unaligned_context():
         q_lens=[128, 96, 64],
         valid_q_lens=[128, 96, 64],
         ctx_lens=[17, 55, 100],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=False,
     )
 
 
 # ====================== Case 3: Pure Decode ===============================
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_pure_decode_block_causal():
@@ -408,8 +520,11 @@ def test_pure_decode_block_causal():
         q_lens=[padded, padded, padded, padded],
         valid_q_lens=[96, 64, 128, 32],
         ctx_lens=[256, 128, 512, 64],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=dllm_block_size,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=dllm_block_size,
         is_block_causal=True,
     )
 
@@ -423,8 +538,11 @@ def test_pure_decode_block_causal_dbs64():
         q_lens=[padded, padded, padded, padded],
         valid_q_lens=[128, 64, 128, 64],
         ctx_lens=[128, 256, 64, 192],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=dllm_block_size,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=dllm_block_size,
         is_block_causal=True,
     )
 
@@ -436,13 +554,17 @@ def test_pure_decode_single_seq():
         q_lens=[128],
         valid_q_lens=[64],
         ctx_lens=[256],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
 
 # =================== Case 4: Chunked Prefill (Mixed) =====================
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_chunked_prefill_mixed():
@@ -454,8 +576,11 @@ def test_chunked_prefill_mixed():
         q_lens=[192, 128, 128, 128],
         valid_q_lens=[192, 128, 96, 64],
         ctx_lens=[0, 64, 256, 128],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
@@ -467,8 +592,11 @@ def test_chunked_prefill_mixed_all_have_cache():
         q_lens=[160, 128, 128, 128],
         valid_q_lens=[160, 128, 96, 32],
         ctx_lens=[32, 96, 256, 192],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
@@ -485,9 +613,7 @@ def test_chunked_prefill_mixed_all_have_cache():
         ([256, 32, 192, 128], [256, 32, 64, 32], [0, 64, 384, 512]),
     ],
 )
-def test_chunked_prefill_mixed_extended_strategies(
-    q_lens, valid_q_lens, ctx_lens
-):
+def test_chunked_prefill_mixed_extended_strategies(q_lens, valid_q_lens, ctx_lens):
     """
     Extended mixed-batch coverage:
       - longer sequence lengths,
@@ -498,13 +624,17 @@ def test_chunked_prefill_mixed_extended_strategies(
         q_lens=q_lens,
         valid_q_lens=valid_q_lens,
         ctx_lens=ctx_lens,
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
 
 # =================== Additional Coverage =================================
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_gqa_ratio_4():
@@ -513,8 +643,11 @@ def test_gqa_ratio_4():
         q_lens=[128, 96],
         valid_q_lens=[128, 64],
         ctx_lens=[0, 128],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
@@ -526,8 +659,11 @@ def test_gqa_ratio_8():
         q_lens=[128, 128],
         valid_q_lens=[128, 96],
         ctx_lens=[64, 192],
-        num_heads=32, num_kv_heads=4, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=4,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
@@ -539,13 +675,17 @@ def test_head_dim_64():
         q_lens=[128, 96],
         valid_q_lens=[128, 64],
         ctx_lens=[0, 96],
-        num_heads=32, num_kv_heads=8, head_dim=64,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=64,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
     )
 
 
 # =================== Case 5: Prefix Full =================================
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_prefix_full_pure_prefill_no_cache():
@@ -554,8 +694,11 @@ def test_prefix_full_pure_prefill_no_cache():
         q_lens=[128, 96, 64, 160],
         valid_q_lens=[128, 96, 64, 160],
         ctx_lens=[0, 0, 0, 0],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0, 0, 0],
@@ -570,8 +713,11 @@ def test_prefix_full_pure_prefill_aligned():
         q_lens=[128, 96, 64],
         valid_q_lens=[128, 96, 64],
         ctx_lens=[0, 0, 0],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0, 0],
@@ -586,8 +732,11 @@ def test_prefix_full_with_cache():
         q_lens=[128, 96, 64, 160],
         valid_q_lens=[128, 96, 64, 160],
         ctx_lens=[64, 128, 32, 96],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0, 0, 0],
@@ -602,8 +751,11 @@ def test_prefix_full_mixed_prefill_decode():
         q_lens=[192, 128, 128, 128],
         valid_q_lens=[192, 128, 96, 64],
         ctx_lens=[0, 64, 256, 128],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0, 1, 1],
@@ -618,8 +770,11 @@ def test_prefix_full_zero_prefix():
         q_lens=[128, 96],
         valid_q_lens=[128, 96],
         ctx_lens=[0, 64],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0],
@@ -634,8 +789,11 @@ def test_prefix_full_covers_entire_seq():
         q_lens=[128, 96],
         valid_q_lens=[128, 96],
         ctx_lens=[0, 64],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0],
@@ -650,8 +808,11 @@ def test_prefix_full_dbs64():
         q_lens=[128, 192],
         valid_q_lens=[128, 192],
         ctx_lens=[0, 64],
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=64, dllm_block_size=64,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=64,
+        dllm_block_size=64,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=[0, 0],
@@ -664,26 +825,30 @@ def test_prefix_full_dbs64():
     "q_lens,valid_q_lens,ctx_lens,statuses,prefix_lens",
     [
         # Mixed prefill/decode, unaligned prefix.
-        ([256, 128, 128, 128], [256, 128, 96, 64],
-         [0, 96, 256, 128], [0, 0, 1, 1], [48, 30, 0, 0]),
+        ([256, 128, 128, 128], [256, 128, 96, 64], [0, 96, 256, 128], [0, 0, 1, 1], [48, 30, 0, 0]),
         # All prefill, diverse prefix lengths.
-        ([128, 128, 64, 192], [128, 128, 64, 192],
-         [32, 0, 128, 64], [0, 0, 0, 0], [64, 17, 32, 100]),
+        ([128, 128, 64, 192], [128, 128, 64, 192], [32, 0, 128, 64], [0, 0, 0, 0], [64, 17, 32, 100]),
         # Mixed with deeper decode cache.
-        ([320, 160, 128, 128], [320, 160, 96, 32],
-         [64, 0, 256, 128], [0, 0, 1, 1], [55, 40, 0, 0]),
+        ([320, 160, 128, 128], [320, 160, 96, 32], [64, 0, 256, 128], [0, 0, 1, 1], [55, 40, 0, 0]),
     ],
 )
 def test_prefix_full_extended_strategies(
-    q_lens, valid_q_lens, ctx_lens, statuses, prefix_lens,
+    q_lens,
+    valid_q_lens,
+    ctx_lens,
+    statuses,
+    prefix_lens,
 ):
     """Extended prefix-full coverage with varied configurations."""
     _run_test(
         q_lens=q_lens,
         valid_q_lens=valid_q_lens,
         ctx_lens=ctx_lens,
-        num_heads=32, num_kv_heads=8, head_dim=128,
-        page_size=32, dllm_block_size=32,
+        num_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        page_size=32,
+        dllm_block_size=32,
         is_block_causal=True,
         is_prefix_full=True,
         statuses=statuses,

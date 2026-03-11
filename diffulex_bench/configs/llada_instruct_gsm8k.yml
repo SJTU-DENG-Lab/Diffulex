@@ -8,21 +8,21 @@ engine:
   model_name: "llada"
   decoding_strategy: "d2f"
   mask_token_id: 126336
-  
+
   use_lora: true
   lora_path: "SJTU-Deng-Lab/D2F_LLaDA_Instruct_8B_Lora"
   pre_merge_lora: true
-  
+
   tensor_parallel_size: 1
   data_parallel_size: 1
   gpu_memory_utilization: 0.9
   max_model_len: 2048
   max_num_batched_tokens: 4096
   max_num_reqs: 128
-  
+
   enforce_eager: true
   kv_cache_layout: "unified"
-  
+
   decoding_thresholds:
     add_block_threshold: 0.1
     semi_complete_threshold: 0.9

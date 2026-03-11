@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
+
 def divide(numerator, denominator):
     assert numerator % denominator == 0
     return numerator // denominator

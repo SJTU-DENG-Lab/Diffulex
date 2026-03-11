@@ -14,7 +14,7 @@ class MultiBlockKVCacheManagerMixin:
     def may_append_multi_block(self: KVCacheManagerBase, req: DllmReq) -> None:
         if req.cache_len == 0:
             return
-        
+
         page_table = req.page_table
         last_page = self.pages[page_table[-1]]
         allocate_num_pages = req.to_cache_len // self.page_size

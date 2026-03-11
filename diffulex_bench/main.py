@@ -58,7 +58,7 @@ def config_to_model_args(config: BenchmarkConfig) -> str:
     args_dict["add_block_threshold"] = dt["add_block_threshold"]
     args_dict["semi_complete_threshold"] = dt["semi_complete_threshold"]
     args_dict["decoding_threshold"] = dt["decoding_threshold"]
-    
+
     if engine.tokenizer_path:
         args_dict["tokenizer_path"] = engine.tokenizer_path
 

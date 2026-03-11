@@ -117,5 +117,5 @@ class DiffulexTPWorker(DiffulexTPWorkerAsyncMixin):
 
         outputs.log_summary()
         outputs.convert_to_text(self.tokenizer)
-        
+
         return outputs

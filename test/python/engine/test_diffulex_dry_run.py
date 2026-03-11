@@ -101,7 +101,7 @@ def _run_diffulex_test(
 ):
     """Shared runner for Diffulex dry-run tests."""
     from diffulex import Diffulex
-    
+
     common_kwargs = dict(ENGINE_KWARGS, buffer_size=buffer_size, decoding_thresholds=DECODING_THRESHOLDS)
     common_kwargs.update(kwargs)
 
@@ -128,9 +128,7 @@ def get_gsm8k_prompts(strategy_name: str):
     transformers = pytest.importorskip("transformers")
     dataset = datasets.load_dataset("gsm8k", "main")["test"]["question"][:GSM8K_NUM_SAMPLES]
     model_path = _ckpt(CHECKPOINT_RELS[strategy_name][0])
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_path, trust_remote_code=True
-    )
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     prefix = tokenizer.bos_token or ""
     _, _, _, _, _, few_shot, few_shot_type = _get_model_config(strategy_name)
     return build_prompts(dataset, prefix, few_shot, few_shot_type)
@@ -152,9 +150,14 @@ def test_d2f_llada(sampling_params, dry_run_output_dir, request):
     model, lora, _, dec, buf, _, _ = _get_model_config(name)
     prompts = get_gsm8k_prompts(name)
     _run_diffulex_test(
-        model, model_name=name, decoding_strategy=dec,
-        prompts=prompts, sampling_params=sampling_params,
-        use_lora=True, lora_path=lora, buffer_size=buf,
+        model,
+        model_name=name,
+        decoding_strategy=dec,
+        prompts=prompts,
+        sampling_params=sampling_params,
+        use_lora=True,
+        lora_path=lora,
+        buffer_size=buf,
         save_output_path=dry_run_output_dir / f"{request.node.name}.json",
         test_name=request.node.name,
     )
@@ -166,9 +169,14 @@ def test_d2f_dream(sampling_params, dry_run_output_dir, request):
     model, lora, _, dec, buf, _, _ = _get_model_config(name)
     prompts = get_gsm8k_prompts(name)
     _run_diffulex_test(
-        model, model_name=name, decoding_strategy=dec,
-        prompts=prompts, sampling_params=sampling_params,
-        use_lora=True, lora_path=lora, buffer_size=buf,
+        model,
+        model_name=name,
+        decoding_strategy=dec,
+        prompts=prompts,
+        sampling_params=sampling_params,
+        use_lora=True,
+        lora_path=lora,
+        buffer_size=buf,
         save_output_path=dry_run_output_dir / f"{request.node.name}.json",
         test_name=request.node.name,
     )
@@ -180,8 +188,11 @@ def test_sdar(sampling_params, dry_run_output_dir, request):
     model, lora, _, dec, buf, _, _ = _get_model_config(name)
     prompts = get_gsm8k_prompts(name)
     _run_diffulex_test(
-        model, model_name=name, decoding_strategy=dec,
-        prompts=prompts, sampling_params=sampling_params,
+        model,
+        model_name=name,
+        decoding_strategy=dec,
+        prompts=prompts,
+        sampling_params=sampling_params,
         buffer_size=buf,
         save_output_path=dry_run_output_dir / f"{request.node.name}.json",
         test_name=request.node.name,
@@ -194,8 +205,11 @@ def test_fastdllmv2(sampling_params, dry_run_output_dir, request):
     model, lora, _, dec, buf, _, _ = _get_model_config(name)
     prompts = get_gsm8k_prompts(name)
     _run_diffulex_test(
-        model, model_name=name, decoding_strategy=dec,
-        prompts=prompts, sampling_params=sampling_params,
+        model,
+        model_name=name,
+        decoding_strategy=dec,
+        prompts=prompts,
+        sampling_params=sampling_params,
         buffer_size=buf,
         save_output_path=dry_run_output_dir / f"{request.node.name}.json",
         test_name=request.node.name,
