@@ -32,7 +32,6 @@ class DllmReq(DllmReqMultiBlockMixin):
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
         self.new_tokens = 0
-        self.num_nfes = 0
         self.meet_eos = False
         self.is_multi_block = False
 

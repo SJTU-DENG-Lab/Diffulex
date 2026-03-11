@@ -6,13 +6,12 @@ from einops import rearrange
 from diffulex_kernel import (
     store_kv_cache_distinct_layout,
     store_kv_cache_unified_layout,
-    dllm_chunked_prefill,
+    chunked_prefill_attn_unified,
 )
 from diffulex.attention.metadata import AttnMetaDataBase
-from diffulex.mixin.quantization.attention.attn_impl import AttentionQuantizationMixin
 
 
-class Attention(nn.Module, AttentionQuantizationMixin):
+class Attention(nn.Module):
     def __init__(
         self,
         num_heads,
@@ -26,9 +25,6 @@ class Attention(nn.Module, AttentionQuantizationMixin):
         self.scale = scale
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
-        # Quantization scales (will be bound by ModelRunner if strategy requires them)
-        self.k_scale = None
-        self.v_scale = None
 
         self.q_shape = {
             "nh": self.num_heads,
@@ -62,38 +58,11 @@ class Attention(nn.Module, AttentionQuantizationMixin):
         # Fast Store KV cache
         if k_cache.numel() and v_cache.numel():
             if attn_metadata.need_kv_cache_store:
-                if self.use_quantization():
-                    self.maybe_update_scales(k, v, attn_metadata)
-                    self.maybe_set_attn_metadata_scales(attn_metadata)
-
                 store_kv_cache = store_kv_cache_unified_layout if is_unified_layout else store_kv_cache_distinct_layout
                 store_kv_cache(k, v, k_cache, v_cache, attn_metadata.slot_mapping, attn_metadata)
 
-        # # Prefill / Decode logic
-        # if attn_metadata.is_prefill:
-        #     if attn_metadata.page_tables is not None:
-        #         # TODO: Implement Prefix Caching
-        #         pass
-        #     o = dllm_flash_attn_prefill(q, k, v, self.scale, attn_metadata)
-        # else:
-        #     if is_unified_layout:
-        #         self.maybe_set_attn_metadata_scales(attn_metadata)
-
-        #         o = dllm_flash_attn_decode(q, k, v, k_cache, v_cache, self.scale, attn_metadata)
-        #     else:
-        #         self.maybe_set_attn_metadata_scales(attn_metadata)
-
-        #         # Distinct layout uses varlen mode
-        #         k_comb, v_comb = load_kv_cache(k_cache, v_cache, attn_metadata, k, v)
-        #         o = flash_attn_varlen_func(
-        #             q, k_comb, v_comb,
-        #             attn_metadata.cu_seqlens_q, attn_metadata.cu_seqlens_k,
-        #             attn_metadata.max_seqlen_q, attn_metadata.max_seqlen_k,
-        #             softmax_scale=self.scale, block_table=None
-        #         )
-
-        # Using a single unified kernel for prefill and decode
-        o = dllm_chunked_prefill(q, k, v, k_cache, v_cache, attn_metadata)
+        # Single unified chunked_prefill kernel for both prefill and decode
+        o = chunked_prefill_attn_unified(q, k, v, k_cache, v_cache, attn_metadata)
 
         # Final reshape
         return rearrange(o, "s nh hd -> s (nh hd)").contiguous()

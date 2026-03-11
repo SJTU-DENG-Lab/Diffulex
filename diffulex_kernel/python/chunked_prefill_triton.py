@@ -14,7 +14,7 @@ from diffulex_kernel.python.auto_tuner import build_chunked_prefill_configs
     key=["NUM_GROUPS", "HEAD_DIM", "IS_BLOCK_CAUSAL", "IS_PREFIX_FULL"],
 )
 @triton.jit
-def _chunked_prefill_attn_unified_bf16_cache_kernel(
+def _chunked_prefill_attn_unified_kernel(
     q_ptr,
     k_ptr,
     v_ptr,
@@ -228,7 +228,7 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
     )
 
 
-def chunked_prefill_attn_unified_bf16_cache(
+def chunked_prefill_attn_unified(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -248,7 +248,7 @@ def chunked_prefill_attn_unified_bf16_cache(
     num_reqs = attn_metadata.cu_seqlens_q.shape[0] - 1
 
     grid = lambda meta: (num_reqs, num_heads, triton.cdiv(int(attn_metadata.max_seqlen_q), meta["BLOCK_M"]))
-    _chunked_prefill_attn_unified_bf16_cache_kernel[grid](
+    _chunked_prefill_attn_unified_kernel[grid](
         q,
         k,
         v,

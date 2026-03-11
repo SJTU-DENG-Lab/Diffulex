@@ -58,21 +58,7 @@ def config_to_model_args(config: BenchmarkConfig) -> str:
     args_dict["add_block_threshold"] = dt["add_block_threshold"]
     args_dict["semi_complete_threshold"] = dt["semi_complete_threshold"]
     args_dict["decoding_threshold"] = dt["decoding_threshold"]
-
-    # Add quantization parameters if specified
-    if engine.kv_cache_dtype is not None:
-        args_dict["kv_cache_dtype"] = engine.kv_cache_dtype
-    if engine.decode_mode is not None:
-        args_dict["decode_mode"] = engine.decode_mode
-    if engine.linear_attn_weight_dtype is not None:
-        args_dict["linear_attn_weight_dtype"] = engine.linear_attn_weight_dtype
-    if engine.linear_mlp_weight_dtype is not None:
-        args_dict["linear_mlp_weight_dtype"] = engine.linear_mlp_weight_dtype
-    if engine.linear_attn_act_dtype is not None:
-        args_dict["linear_attn_act_dtype"] = engine.linear_attn_act_dtype
-    if engine.linear_mlp_act_dtype is not None:
-        args_dict["linear_mlp_act_dtype"] = engine.linear_mlp_act_dtype
-
+    
     if engine.tokenizer_path:
         args_dict["tokenizer_path"] = engine.tokenizer_path
 
@@ -140,51 +126,51 @@ def run_benchmark(config: BenchmarkConfig) -> None:
     # Prepare sys.argv for lm_eval
     original_argv = sys.argv.copy()
 
-    try:
-        sys.argv = [
-            "lm_eval",
-            "--model",
-            "diffulex",
-            "--model_args",
-            model_args,
-            "--tasks",
-            tasks,
-            "--batch_size",
-            "1",
-            "--output_path",
-            config.eval.output_dir,
-        ]
+    # try:
+    sys.argv = [
+        "lm_eval",
+        "--model",
+        "diffulex",
+        "--model_args",
+        model_args,
+        "--tasks",
+        tasks,
+        "--batch_size",
+        "1",
+        "--output_path",
+        config.eval.output_dir,
+    ]
 
-        if config.eval.dataset_limit:
-            sys.argv.extend(["--limit", str(config.eval.dataset_limit)])
+    if config.eval.dataset_limit:
+        sys.argv.extend(["--limit", str(config.eval.dataset_limit)])
 
-        if config.eval.save_results:
-            sys.argv.extend(["--log_samples"])
+    if config.eval.save_results:
+        sys.argv.extend(["--log_samples"])
 
-        # Add any additional lm_eval arguments from config if needed
-        # For now, we use default batch_size=1
+    # Add any additional lm_eval arguments from config if needed
+    # For now, we use default batch_size=1
 
-        lm_eval_info = [
-            "=" * 80,
-            "Starting lm-evaluation-harness evaluation...",
-            "=" * 80,
-            f"Model args: {model_args}",
-            f"Tasks: {tasks}",
-            "=" * 80,
-        ]
-        logger.info("\n".join(lm_eval_info))
+    lm_eval_info = [
+        "=" * 80,
+        "Starting lm-evaluation-harness evaluation...",
+        "=" * 80,
+        f"Model args: {model_args}",
+        f"Tasks: {tasks}",
+        "=" * 80,
+    ]
+    logger.info("\n".join(lm_eval_info))
 
-        # Run lm_eval
-        cli_evaluate()
+    # Run lm_eval
+    cli_evaluate()
 
-        logger.success("Evaluation completed successfully")
+    logger.success("Evaluation completed successfully")
 
-    except Exception as e:
-        logger.error(f"Evaluation failed: {e}", exc_info=True)
-        sys.exit(1)
-    finally:
-        # Restore original argv
-        sys.argv = original_argv
+    # except Exception as e:
+    #     logger.error(f"Evaluation failed: {e}", exc_info=True)
+    #     sys.exit(1)
+    # finally:
+    #     # Restore original argv
+    #     sys.argv = original_argv
 
 
 def load_config_from_args(args) -> BenchmarkConfig:
@@ -249,10 +235,6 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.enforce_eager = bool(args.enforce_eager)
         if getattr(args, "kv_cache_layout", None) is not None:
             config.engine.kv_cache_layout = args.kv_cache_layout
-        if getattr(args, "decode_mode", None) is not None:
-            config.engine.decode_mode = args.decode_mode
-        if getattr(args, "kv_cache_dtype", None) is not None:
-            config.engine.kv_cache_dtype = args.kv_cache_dtype
         if getattr(args, "max_model_len", None) is not None:
             config.engine.max_model_len = args.max_model_len
         if max_num_reqs is not None:
@@ -292,16 +274,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
             },
             block_size=(args.block_size if getattr(args, "block_size", None) is not None else 32),
             buffer_size=getattr(args, "buffer_size", 4),
-            kv_cache_dtype=getattr(args, "kv_cache_dtype", None),
-            decode_mode=getattr(args, "decode_mode", None),
-            # Force enforce_eager=True for varlen mode to avoid CUDA graph capture error
-            enforce_eager=True
-            if getattr(args, "decode_mode", None) == "varlen"
-            else (args.enforce_eager if hasattr(args, "enforce_eager") else False),
-            linear_attn_weight_dtype=getattr(args, "linear_attn_weight_dtype", None),
-            linear_mlp_weight_dtype=getattr(args, "linear_mlp_weight_dtype", None),
-            linear_attn_act_dtype=getattr(args, "linear_attn_act_dtype", None),
-            linear_mlp_act_dtype=getattr(args, "linear_mlp_act_dtype", None),
+            enforce_eager=args.enforce_eager if hasattr(args, "enforce_eager") else False,
         )
 
         eval_config = EvalConfig(

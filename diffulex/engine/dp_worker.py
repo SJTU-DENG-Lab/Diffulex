@@ -313,9 +313,11 @@ class DiffulexDPWorker(DiffulexDPWorkerAsyncMixin):
                 del pending[idx]
 
         # Restore to original order
+        # Each collected[i] is GenerationOutputs from tp_worker; convert to list of dicts
         restored = [None] * n
         for i, (s, e) in slices.items():
-            outs = collected.get(i, [])
+            payload = collected.get(i)
+            outs = payload.to_benchmark_format() if hasattr(payload, "to_benchmark_format") else (payload or [])
             # outs are aligned with shuffled order s:e
             for local_k, out in enumerate(outs):
                 global_pos = s + local_k

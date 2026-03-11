@@ -5,7 +5,7 @@ import triton
 from einops import rearrange
 
 from diffulex_kernel.python.chunked_prefill_triton import (
-    _chunked_prefill_attn_unified_bf16_cache_kernel,
+    _chunked_prefill_attn_unified_kernel,
 )
 
 
@@ -34,7 +34,7 @@ def call_chunked_prefill_kernel(
 
     grid = (num_seqs, num_heads, triton.cdiv(max_seqlen_q, BLOCK_M))
 
-    _chunked_prefill_attn_unified_bf16_cache_kernel[grid](
+    _chunked_prefill_attn_unified_kernel[grid](
         q, k, v, o,
         k_cache, v_cache,
         page_tables, status_table,

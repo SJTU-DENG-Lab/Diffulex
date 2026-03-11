@@ -16,7 +16,6 @@ class DiffulexTPWorkerAsyncMixin:
 
     async def step_async(self):
         """Async version of step that runs model inference in a thread pool."""
-        self.clear_step_act_quant_cache()
         loop = asyncio.get_running_loop()
         executor = getattr(self, "_step_executor", None)
         if executor is None:

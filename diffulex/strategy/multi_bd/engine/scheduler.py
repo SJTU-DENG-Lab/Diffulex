@@ -24,5 +24,5 @@ class MultiBDScheduler(SchedulerBase):
         self,
         reqs: list[DllmReq],
         sample_output,
-    ) -> dict[int, int]:
-        return self.postprocess_multi_block(reqs, sample_output)
+    ) -> None:
+        self.postprocess_multi_block(reqs, sample_output)

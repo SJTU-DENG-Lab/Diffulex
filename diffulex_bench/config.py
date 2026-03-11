@@ -47,14 +47,6 @@ class EngineConfig:
     block_size: int = 32  # Aligned with diffulex.config.Config.block_size
     buffer_size: int = 4
 
-    # Quantization configuration
-    kv_cache_dtype: Optional[str] = None  # "bf16", "fp16", "fp32", "fp8_e4m3", "fp8_e5m2"
-    decode_mode: Optional[str] = None  # "static" or "varlen"
-    linear_attn_weight_dtype: Optional[str] = None  # "bf16", "int8", "int4", "fp8_e4m3", etc.
-    linear_mlp_weight_dtype: Optional[str] = None
-    linear_attn_act_dtype: Optional[str] = None
-    linear_mlp_act_dtype: Optional[str] = None
-
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "EngineConfig":
         """Create engine configuration from dictionary (maps diffusion_block_size -> block_size for backward compat)"""
@@ -100,20 +92,6 @@ class EngineConfig:
             "decoding_threshold": 0.9,
         }
         kwargs["decoding_thresholds"] = dt
-
-        # Add quantization parameters if specified
-        if self.kv_cache_dtype is not None:
-            kwargs["kv_cache_dtype"] = self.kv_cache_dtype
-        if self.decode_mode is not None:
-            kwargs["decode_mode"] = self.decode_mode
-        if self.linear_attn_weight_dtype is not None:
-            kwargs["linear_attn_weight_dtype"] = self.linear_attn_weight_dtype
-        if self.linear_mlp_weight_dtype is not None:
-            kwargs["linear_mlp_weight_dtype"] = self.linear_mlp_weight_dtype
-        if self.linear_attn_act_dtype is not None:
-            kwargs["linear_attn_act_dtype"] = self.linear_attn_act_dtype
-        if self.linear_mlp_act_dtype is not None:
-            kwargs["linear_mlp_act_dtype"] = self.linear_mlp_act_dtype
 
         return kwargs
 
@@ -205,12 +183,6 @@ class BenchmarkConfig:
                 "decoding_thresholds",
                 "block_size",
                 "buffer_size",
-                "kv_cache_dtype",
-                "decode_mode",
-                "linear_attn_weight_dtype",
-                "linear_mlp_weight_dtype",
-                "linear_attn_act_dtype",
-                "linear_mlp_act_dtype",
             }
 
             engine_dict = {k: v for k, v in config_dict.items() if k in engine_fields}

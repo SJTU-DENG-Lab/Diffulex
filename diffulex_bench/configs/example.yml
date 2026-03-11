@@ -26,7 +26,7 @@ engine:
   max_num_reqs: 128
 
   # Engine behavior configuration
-  enforce_eager: true  # Set to true for varlen mode to avoid CUDA graph capture error
+  enforce_eager: true
   kv_cache_layout: "unified"  # Options: unified, distinct
 
   # D2F-specific configuration
@@ -37,14 +37,6 @@ engine:
 
   block_size: 32  # Aligned with diffulex Config.block_size
   buffer_size: 4
-
-  # Quantization configuration
-  kv_cache_dtype: null  # Options: bf16, fp16, fp32, fp8_e4m3, fp8_e5m2
-  decode_mode: "varlen"  # Options: static, varlen
-  linear_attn_weight_dtype: null  # Options: bf16, int8, int4, fp8_e4m3, fp8_e5m2, etc.
-  linear_mlp_weight_dtype: null
-  linear_attn_act_dtype: null
-  linear_mlp_act_dtype: null
 
 # Evaluation configuration - Parameters for benchmark evaluation
 eval:

@@ -29,7 +29,6 @@ def set_d2f_attn_metadata(
     page_tables: torch.Tensor | None = None,
     page_size: int = 32,
     block_size: int = 32,
-    decode_mode: str = "static",
     kv_cache_layout: str = "unified",
 ) -> None:
     global D2F_ATTN_METADATA
@@ -45,7 +44,6 @@ def set_d2f_attn_metadata(
         page_size=page_size,
         block_size=block_size,
         kv_cache_layout=kv_cache_layout,
-        decode_mode=decode_mode,
     )
 
 

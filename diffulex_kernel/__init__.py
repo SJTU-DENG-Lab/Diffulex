@@ -1,8 +1,7 @@
 """Diffulex CUDA kernel package.
 
 Keep this module lightweight: importing `diffulex_kernel` should not eagerly
-import optional heavy deps (e.g. TileLang) unless the corresponding kernels are
-actually used.
+import optional heavy deps unless the corresponding kernels are actually used.
 """
 
 from __future__ import annotations
@@ -10,10 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from diffulex_kernel.python.dllm_flash_attn_kernels import (  # noqa: F401
-        dllm_flash_attn_decode as dllm_flash_attn_decode,
-        dllm_flash_attn_prefill as dllm_flash_attn_prefill,
-        dllm_chunked_prefill as dllm_chunked_prefill,
+    from diffulex_kernel.python.chunked_prefill_triton import (  # noqa: F401
+        chunked_prefill_attn_unified as dllm_chunked_prefill,
     )
     from diffulex_kernel.python.kv_cache_kernels import (  # noqa: F401
         load_kv_cache as load_kv_cache,
@@ -23,34 +20,20 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str):
-    if name == "dllm_flash_attn_decode":
-        from diffulex_kernel.python.dllm_flash_attn_kernels import (
-            dllm_flash_attn_decode,
+    if name in ("dllm_chunked_prefill", "chunked_prefill_attn_unified"):
+        from diffulex_kernel.python.chunked_prefill_triton import (
+            chunked_prefill_attn_unified,
         )
 
-        return dllm_flash_attn_decode
-    if name == "dllm_flash_attn_prefill":
-        from diffulex_kernel.python.dllm_flash_attn_kernels import (
-            dllm_flash_attn_prefill,
-        )
-
-        return dllm_flash_attn_prefill
-    if name == "dllm_chunked_prefill":
-        from diffulex_kernel.python.dllm_flash_attn_kernels import dllm_chunked_prefill
-
-        return dllm_chunked_prefill
-    if name == "store_kv_cache_distinct_layout":
-        from diffulex_kernel.python.kv_cache_kernels import (
-            store_kv_cache_distinct_layout,
-        )
-
-        return store_kv_cache_distinct_layout
+        return chunked_prefill_attn_unified
     if name == "store_kv_cache_unified_layout":
-        from diffulex_kernel.python.kv_cache_kernels import (
-            store_kv_cache_unified_layout,
-        )
+        from diffulex_kernel.python.kv_cache_kernels import store_kv_cache_unified_layout
 
         return store_kv_cache_unified_layout
+    if name == "store_kv_cache_distinct_layout":
+        from diffulex_kernel.python.kv_cache_kernels import store_kv_cache_distinct_layout
+
+        return store_kv_cache_distinct_layout
     if name == "load_kv_cache":
         from diffulex_kernel.python.kv_cache_kernels import load_kv_cache
 
@@ -59,9 +42,9 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    "dllm_flash_attn_decode",
-    "dllm_flash_attn_prefill",
-    "store_kv_cache_distinct_layout",
+    "dllm_chunked_prefill",
+    "chunked_prefill_attn_unified",
     "store_kv_cache_unified_layout",
+    "store_kv_cache_distinct_layout",
     "load_kv_cache",
 ]

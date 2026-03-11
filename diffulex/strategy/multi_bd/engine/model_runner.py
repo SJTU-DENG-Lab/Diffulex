@@ -11,7 +11,7 @@ from diffulex.config import Config
 from diffulex.engine.request import DllmReq
 from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata, set_warming_up, reset_warming_up
 from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
-from diffulex.strategy.multi_block_diffusion.attention.metadata import (
+from diffulex.strategy.multi_bd.attention.metadata import (
     fetch_multi_bd_attn_metadata,
     set_multi_bd_attn_metadata,
     reset_multi_bd_attn_metadata,
@@ -28,6 +28,7 @@ class MultiBDModelRunner(ModelRunnerBase):
             set_multi_bd_attn_metadata, reset_multi_bd_attn_metadata, fetch_multi_bd_attn_metadata
         )
         self.mask_token_id = config.mask_token_id
+        self.is_prefix_full = False
 
         super().__init__(config, rank, event)
 

@@ -23,18 +23,25 @@ class SchedulerMultiBlockMixin:
 
         while self.waiting_reqs and num_reqs < self.max_num_reqs:
             req = self.waiting_reqs[0]
+            
             projected = len(req) + self.block_size
-            if num_batched_tokens + projected > self.max_num_batched_tokens or not self.kv_cache_manager.can_allocate(
-                req
+            if (
+                num_batched_tokens + projected > self.max_num_batched_tokens 
+                or not self.kv_cache_manager.can_allocate(req)
             ):
                 break
+            
             num_reqs += 1
             self.kv_cache_manager.allocate(req)
+            if req.is_preempted:
+                self.kv_cache_manager.may_append(req)
+            
             num_batched_tokens += projected - req.num_cached_tokens
             req.make_pending()
             self.waiting_reqs.popleft()
             self.running_reqs.append(req)
             scheduled.append(req)
+            
         if scheduled:
             return scheduled, True
 
@@ -78,12 +85,11 @@ class SchedulerMultiBlockMixin:
                 "MultiBlockScheduler: unable to schedule any req in decode; "
                 f"state={diag}; details={' | '.join(details)}"
             )
+            
         self.running_reqs.extendleft(reversed(scheduled))
         return scheduled, False
 
     def preempt_multi_block(self, req: DllmReq) -> None:
-        if req.req_id == 23:
-            pass
         req.preempt()
         self.kv_cache_manager.free(req)
         self.waiting_reqs.appendleft(req)
@@ -92,8 +98,7 @@ class SchedulerMultiBlockMixin:
         self,
         reqs: list[DllmReq],
         sample_output,
-    ) -> dict[int, int]:
-        num_nfes: dict[int, int] = {}
+    ) -> None:
         for req in reqs:
             req.reset_new_tokens()
 
@@ -110,6 +115,7 @@ class SchedulerMultiBlockMixin:
                 for true_local_id, accepted_id in zip(true_local_ids, accepted_ids):
                     token = sampled_tokens[accepted_id]
                     dllm_block.write_token(token, true_local_id)
+                req.new_tokens += len(accepted_ids)
 
             req.postprocess()
             if req.is_completed:
@@ -117,5 +123,3 @@ class SchedulerMultiBlockMixin:
                 self.kv_cache_manager.free(req)
                 if req in self.running_reqs:
                     self.running_reqs.remove(req)
-                num_nfes[req.req_id] = req.num_nfes
-        return num_nfes

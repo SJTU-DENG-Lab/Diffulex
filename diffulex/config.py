@@ -54,19 +54,6 @@ class Config:
     k_cache_hdim_split_factor_x: int = 8
     kv_cache_layout: str = "unified"  # "unified" or "distinct"
 
-    # NOTE: Quantization configuration (Unusable)
-    kv_cache_dtype: str = "bf16"  # "bf16", "fp16", "fp32", "fp8_e4m3", "fp8_e5m2"
-    decode_mode: str | None = None  # "static" or "varlen", None means auto-select based on kv_cache_dtype
-
-    attn_q_dtype: str = "bf16"
-    linear_attn_weight_dtype: str = "bf16"
-    linear_mlp_weight_dtype: str = "bf16"
-    linear_attn_act_dtype: str = "bf16"
-    linear_mlp_act_dtype: str = "bf16"
-
-    linear_w8a16_quant_block_n: int = 256
-    linear_w8a16_allspark_cublas_m_threshold: int = 256
-
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.page_size % 16 == 0

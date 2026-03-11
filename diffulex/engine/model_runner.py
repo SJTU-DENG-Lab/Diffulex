@@ -15,9 +15,7 @@ from diffulex.engine.status import DllmReqStatus
 from diffulex.attention.metadata import set_warming_up, reset_warming_up
 from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
-from diffulex.mixin.dual_cache.engine.model_runner import ModelRunnerDualCacheMixin
 from diffulex.mixin.multi_block.engine.model_runner import ModelRunnerMultiBlockMixin
-from diffulex.mixin.quantization.engine.model_runner import ModelRunnerQuantizationMixin
 from diffulex.mixin.async_engine.engine.model_runner import ModelRunnerAsyncMixin
 from diffulex.logger import get_logger
 
@@ -28,12 +26,9 @@ logger = get_logger(__name__)
 class ModelRunnerBase(
     ABC,
     ModelRunnerAsyncMixin,
-    ModelRunnerQuantizationMixin,
-    ModelRunnerDualCacheMixin,
     ModelRunnerMultiBlockMixin,
 ):
     """Base class for model runners supporting different model types."""
-
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
         self.config = config
         hf_config = config.hf_config
@@ -72,7 +67,6 @@ class ModelRunnerBase(
 
         self.model = self.load_model(config)
         self.sampler = self.load_sampler(config)
-        self.init_quantization_from_config(config)
         self.allocate_kv_cache()
         self.warmup_model()
 
@@ -110,7 +104,7 @@ class ModelRunnerBase(
                     shm.unlink()
                 except FileNotFoundError:
                     pass
-                shm_size = 2**25
+                shm_size = 2**22
                 self.shm = SharedMemory(name=self.config.shm_name, create=True, size=shm_size)
                 dist.barrier()
             else:
@@ -216,10 +210,8 @@ class ModelRunnerBase(
         else:
             raise AttributeError(f"Cannot determine head_dim from config: {type(hf_config)}")
 
-        # Get storage dtype and itemsize from quantization strategy
-        strategy = self.get_kv_cache_strategy_for_alloc()
-        storage_dtype, itemsize = strategy.get_storage_dtype()
-
+        storage_dtype = torch.bfloat16
+        itemsize = torch.empty(1, dtype=storage_dtype).element_size()
         page_bytes = 2 * hf_config.num_hidden_layers * self.page_size * num_kv_heads * head_dim * itemsize
         get_num_pages = lambda gpu_memory_utilization: (
             int(total * gpu_memory_utilization - used - peak + current) // page_bytes
@@ -268,6 +260,7 @@ class ModelRunnerBase(
             for layer_id, module in enumerate(attn_modules):
                 module.k_cache = self.k_cache[layer_id]
                 module.v_cache = self.v_cache[layer_id]
+                
         elif config.kv_cache_layout == "unified":
             self.kv_cache = torch.zeros(
                 2,
@@ -281,14 +274,13 @@ class ModelRunnerBase(
             for layer_id, module in enumerate(attn_modules):
                 module.k_cache = self.kv_cache[0, layer_id]
                 module.v_cache = self.kv_cache[1, layer_id]
+                
         else:
             raise ValueError(
                 "Unsupported kv_cache_layout: {layout}. Supported values are 'distinct' and 'unified'.".format(
                     layout=config.kv_cache_layout
                 )
             )
-
-        self.init_quantization_scales()
 
     def prepare_page_tables(self, reqs: list[DllmReq]):
         max_len = max(len(req.page_table) for req in reqs)
@@ -340,16 +332,6 @@ RunnerFactory = Callable[[Config, int, Event | list[Event]], "ModelRunnerBase"]
 
 
 class AutoModelRunner(DiffulexStrategyRegistry):
-    """Registry and factory that selects a ModelRunner implementation based on the configured decoding strategy.
-
-    Example:
-        >>> @AutoModelRunner.register("my_strategy")
-        ... class MyRunner(ModelRunnerBase):
-        ...     ...
-
-    This allows `LLMEngine` to instantiate the appropriate runner using `Config.decoding_strategy`.
-    """
-
     @classmethod
     def from_config(cls, config: Config, rank: int, event: Event | list[Event]):
         # Ensure project root is in sys.path for spawn mode subprocesses

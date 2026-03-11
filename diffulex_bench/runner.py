@@ -140,8 +140,14 @@ class BenchmarkRunner:
             List of generation results, each containing text, token_ids, n_diff_steps
         """
         start_time = time.time()
-        outputs = self.llm.generate(prompts, sampling_params, use_tqdm=use_tqdm)
+        raw_outputs = self.llm.generate(prompts, sampling_params, use_tqdm=use_tqdm)
         end_time = time.time()
+
+        # Convert GenerationOutputs to list of dicts if needed (tp_worker returns GenerationOutputs)
+        if hasattr(raw_outputs, "to_benchmark_format"):
+            outputs = raw_outputs.to_benchmark_format()
+        else:
+            outputs = raw_outputs
 
         # Add timing information
         total_time = end_time - start_time

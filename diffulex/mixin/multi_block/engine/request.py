@@ -154,11 +154,6 @@ class DllmReqMultiBlockMixin:
         return self.token_ids[self.prefix_len :]
 
     @property
-    def completion_token_ids(self) -> list[int]:
-        """Used by tp_worker for finished req output."""
-        return self.truncated_response
-
-    @property
     def is_padded(self):
         return self.prefix_len != self.padded_prefix_len
 
@@ -219,7 +214,7 @@ class DllmReqMultiBlockMixin:
     def to_cache_len(self) -> int:
         if self.is_prefilling:
             return self.padded_prefix_len - self.block_size if self.is_padded else self.padded_prefix_len
-        elif self.is_decoding:
+        elif self.is_decoding or self.is_preempted:
             return len(self.dllm_block_buffer.to_cache_blocks) * self.block_size
 
     @property
@@ -303,6 +298,13 @@ class DllmReqMultiBlockMixin:
         self.lazy_activate()
         self.log_status()
         self.status = DllmReqStatus.WAITING
+    
+    @property
+    def is_preempted(self) -> bool:
+        return self.status_history[-1] in [
+            DllmReqStatus.PREFILLING,
+            DllmReqStatus.DECODING,
+        ]
 
     def lazy_activate(self):
         self.log_status()
@@ -317,7 +319,7 @@ class DllmReqMultiBlockMixin:
         if self.status not in self.status_history:
             self.status_history.append(self.status)
 
-    def preemt_time_prefilling(self):
+    def preempt_time_prefilling(self):
         return self.status_history[-1] in [
             DllmReqStatus.WAITING,
             DllmReqStatus.PENDING,
@@ -333,7 +335,6 @@ class DllmReqMultiBlockMixin:
 
     def step(self):
         self.lazy_activate()
-        self.num_nfes += 1
         # Condition to activate the next block, when buffer contains active blocks
         activate_cond = self.dllm_block_buffer.should_add_block and not self.dllm_block_buffer.is_overflow
 

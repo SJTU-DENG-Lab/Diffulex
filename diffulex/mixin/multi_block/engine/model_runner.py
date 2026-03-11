@@ -74,8 +74,6 @@ class ModelRunnerMultiBlockMixin:
                 cur_prefix_num_pages = (block.start + self.page_size - 1) // self.page_size
                 for in_blk_page_id in range(num_pages_per_block):
                     rel_page_id = cur_prefix_num_pages + in_blk_page_id
-                    if rel_page_id >= len(req.page_table):
-                        pass
                     start = req.page_table[rel_page_id] * self.page_size
                     end = start + self.page_size
                     slot_mapping.extend(range(start, end))
@@ -156,7 +154,6 @@ class ModelRunnerMultiBlockMixin:
             page_tables=page_tables,
             block_size=self.block_size,
             kv_cache_layout=self.config.kv_cache_layout,
-            decode_mode="static",
         )
         attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
         attn_metadata.init_multi_block(
@@ -229,17 +226,6 @@ class ModelRunnerMultiBlockMixin:
 
     @torch.inference_mode()
     def capture_cudagraph_multi_block(self: ModelRunnerBase):
-        # Enable per-layer forward-plan dispatch to stabilize capture and minimize
-        # Python branching inside the captured region.
-        try:
-            from diffulex.layer.linear import LinearBase
-
-            for m in self.model.modules():
-                if isinstance(m, LinearBase):
-                    m.enable_forward_plan(True)
-        except Exception:
-            pass
-
         set_warming_up(True)
         config = self.config
         hf_config = config.hf_config
@@ -293,7 +279,6 @@ class ModelRunnerMultiBlockMixin:
                 page_tables=page_tables[:num_seqs],
                 block_size=block_size,
                 kv_cache_layout=config.kv_cache_layout,
-                decode_mode="static",
             )
             attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
             attn_metadata.init_multi_block(

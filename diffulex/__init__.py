@@ -1,7 +1,7 @@
 """Diffulex package root.
 
-Keep this module lightweight so that importing submodules like
-`diffulex.utils.quantization` does not eagerly import the full engine/kernel.
+Keep this module lightweight so that importing does not eagerly
+import the full engine/kernel.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 def __getattr__(name: str):
     if name == "Diffulex":
         # Only trigger heavy side-effect imports when users actually construct the engine.
-        # This keeps `import diffulex.utils.quantization` lightweight.
+        # Keeps import lightweight.
         from diffulex import strategy as _strategy  # noqa: F401
         from diffulex.diffulex import Diffulex
 
