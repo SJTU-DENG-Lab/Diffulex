@@ -1,5 +1,13 @@
+import sys
 import torch
-import tilelang
+
+# Add tilelang to path for spawn multiprocessing
+try:
+    import tilelang
+except ImportError:
+    sys.path.insert(0, '/home/lzx/tilelang')
+    import tilelang
+
 import tilelang.language as T
 
 from flash_attn import flash_attn_varlen_func

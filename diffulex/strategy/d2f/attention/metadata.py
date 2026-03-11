@@ -7,6 +7,8 @@ from diffulex.attention.metadata import AttnMetaDataBase
 
 @dataclass
 class D2fAttnMetaData(AttnMetaDataBase):
+    attn_type: str = "full_attention"  # D2F uses full attention
+    
     def __post_init__(self):
         self.init_multi_block()
 
@@ -46,6 +48,7 @@ def set_d2f_attn_metadata(
         block_size=block_size,
         kv_cache_layout=kv_cache_layout,
         decode_mode=decode_mode,
+        attn_type="full_attention",
     )
 
 

@@ -51,7 +51,7 @@ class ModelRunnerBase(
             init_method,
             world_size=self.world_size,
             rank=rank,
-            device_id=config.device_ids[rank],
+            device_id=torch.device(f"cuda:{config.device_ids[rank]}"),
         )
         # Choose CUDA device for this TP rank.
         # config.device_ids is already a list of logical CUDA device indices (respecting CUDA_VISIBLE_DEVICES).

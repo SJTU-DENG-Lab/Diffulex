@@ -52,11 +52,16 @@ def _normalize_kv_cache_dtype(kv_cache_dtype: str) -> str:
 
 
 def _get_fp8_e4m3_dtype() -> torch.dtype:
-    if current_platform is None:
-        if hasattr(torch, "float8_e4m3fn"):
-            return torch.float8_e4m3fn  # type: ignore[attr-defined]
-        raise RuntimeError("FP8 requested but vLLM current_platform is unavailable.")
-    return current_platform.fp8_dtype()
+    # Try PyTorch native FP8 types first (recommended for newer torch versions)
+    if hasattr(torch, "float8_e4m3fn"):
+        return torch.float8_e4m3fn  # type: ignore[attr-defined]
+    # Fallback to vLLM platform API if available
+    if current_platform is not None and hasattr(current_platform, "fp8_dtype"):
+        return current_platform.fp8_dtype()
+    raise RuntimeError(
+        "FP8 E4M3 requested but not available. "
+        "Please use PyTorch >= 2.1 with float8_e4m3fn support."
+    )
 
 
 def _get_fp8_e5m2_dtype() -> torch.dtype:

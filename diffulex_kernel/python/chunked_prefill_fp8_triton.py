@@ -1,28 +1,26 @@
+"""
+Chunked prefill attention kernel with FP8 KV cache support.
+
+Based on chunked_prefill_triton.py but adds FP8 KV cache handling with per-head scales.
+"""
+
 import torch
 import triton
 import triton.language as tl
 
 from diffulex.attention.metadata import AttnMetaDataBase
-from diffulex_kernel.python.auto_tuner import build_chunked_prefill_configs
 
 
-# Autotune disabled for Triton 3.1.0 compatibility
-# FIXME: Re-enable autotune when Triton API stabilizes
-# @triton.autotune(
-#     configs=[
-#         triton.Config(c, num_warps=c.pop("num_warps"), num_stages=c.pop("num_stages"))
-#         for c in build_chunked_prefill_configs()
-#     ],
-#     key=["NUM_GROUPS", "HEAD_DIM", "IS_BLOCK_CAUSAL", "IS_PREFIX_FULL"],
-# )
 @triton.jit
-def _chunked_prefill_attn_unified_bf16_cache_kernel(
+def _chunked_prefill_attn_fp8_cache_kernel(
     q_ptr,
     k_ptr,
     v_ptr,
     o_ptr,
     k_cache_ptr,
     v_cache_ptr,
+    k_scale_ptr,  # FP8: per-head k scale
+    v_scale_ptr,  # FP8: per-head v scale
     page_tables_ptr,
     status_table_ptr,
     context_lens_ptr,
@@ -64,11 +62,26 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
     IS_BLOCK_CAUSAL: tl.constexpr,
     IS_PREFIX_FULL: tl.constexpr,
 ):
+    """
+    FP8 KV cache chunked prefill kernel.
+    
+    Similar to BF16 version but:
+    1. Loads k_scale/v_scale per head
+    2. FP8 cache loads are converted to bf16 then scaled
+    3. Attention computed with scaled values
+    """
     req_id = tl.program_id(0)
     head_id = tl.program_id(1)
     q_block_id = tl.program_id(2)
 
     kv_head_id = head_id // NUM_GROUPS
+    
+    # Load FP8 scales for this head
+    k_scale = tl.load(k_scale_ptr + kv_head_id).to(tl.float32)
+    v_scale = tl.load(v_scale_ptr + kv_head_id).to(tl.float32)
+    
+    # Precompute combined scales (loop invariant)
+    combined_k_scale = softmax_scale * k_scale
 
     status = tl.load(status_table_ptr + req_id).to(tl.int32)
     context_len = tl.load(context_lens_ptr + req_id).to(tl.int32)
@@ -88,17 +101,20 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
     mask_q_block = offs_q_block < valid_q_len
     mask_d = offs_d < HEAD_DIM
 
+    # Load Q
     offs_q = (q_start + offs_q_block[:, None]) * q_stride_s + head_id * q_stride_h + offs_d[None, :] * q_stride_d
     q = tl.load(q_ptr + offs_q, mask=mask_q_block[:, None] & mask_d[None, :], other=0.0).to(tl.bfloat16)
 
+    # Online softmax accumulators
     m = tl.full([BLOCK_M], float("-inf"), dtype=tl.float32)
     l = tl.zeros([BLOCK_M], dtype=tl.float32)
     acc = tl.zeros([BLOCK_M, HEAD_DIM_PADDED], dtype=tl.float32)
 
-    # Stage 1: Attention against KV Cache
+    # Stage 1: Attention against FP8 KV Cache
     offs_kv_cache_block = tl.arange(0, BLOCK_N)
     mask_kv_cache_block = offs_kv_cache_block < PAGE_SIZE
     num_pages = (context_len + PAGE_SIZE - 1) // PAGE_SIZE
+    
     for page_rel_id in range(0, num_pages):
         page_abs_id = tl.load(
             page_tables_ptr + req_id * page_tables_stride_nreqs + page_rel_id * page_tables_stride_pages
@@ -106,44 +122,56 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
         page_token_ids = offs_kv_cache_block + page_rel_id * PAGE_SIZE
         page_token_valid_map = (page_abs_id >= 0) & (page_token_ids < context_len) & mask_kv_cache_block
 
+        # Load K from FP8 cache
         k_offs = (
             page_abs_id * k_cache_stride_npages
             + offs_kv_cache_block[:, None] * k_cache_stride_psz
             + kv_head_id * k_cache_stride_h
             + offs_d[None, :] * k_cache_stride_d
         )
-        k = tl.load(
+        # FP8: load as fp8, cast to float32 for compatibility, then apply scale
+        k_fp8 = tl.load(
             k_cache_ptr + k_offs,
             mask=page_token_valid_map[:, None] & mask_d[None, :],
             other=0.0,
-        ).to(tl.bfloat16)
+        )
+        # Convert FP8 to float32 (compatible with older GPUs)
+        k = k_fp8.to(tl.float32) * k_scale
+        k = k.to(tl.bfloat16)
 
-        scores = tl.dot(q, tl.trans(k)).to(tl.float32) * softmax_scale
+        # Compute Q @ K^T with pre-combined scale
+        scores = tl.dot(q, tl.trans(k)).to(tl.float32) * combined_k_scale
         scores = tl.where(mask_q_block[:, None] & page_token_valid_map[None, :], scores, float("-inf"))
 
+        # Online softmax update
         m_new = tl.maximum(m, tl.max(scores, axis=1))
         p = tl.exp(scores - m_new[:, None])
         l_new = l * tl.exp(m - m_new) + tl.sum(p, axis=1)
         alpha = tl.exp(m - m_new)
         acc *= alpha[:, None]
 
+        # Load V from FP8 cache
         v_offs = (
             page_abs_id * v_cache_stride_npages
             + offs_kv_cache_block[:, None] * v_cache_stride_psz
             + kv_head_id * v_cache_stride_h
             + offs_d[None, :] * v_cache_stride_d
         )
-        v = tl.load(
+        v_fp8 = tl.load(
             v_cache_ptr + v_offs,
             mask=page_token_valid_map[:, None] & mask_d[None, :],
             other=0.0,
-        ).to(tl.bfloat16)
+        )
+        # Convert FP8 to float32 for compatibility, apply scale
+        v = v_fp8.to(tl.float32) * v_scale
+        v = v.to(tl.bfloat16)
 
+        # P @ V
         acc += tl.dot(p.to(tl.bfloat16), v).to(tl.float32)
         m = m_new
         l = l_new
 
-    # Stage 2: Attention against new KV
+    # Stage 2: Attention against new KV (bf16, from current step)
     kv_start = q_start
     full_range = tl.cdiv(valid_kv_len, BLOCK_N)
     block_causal_range = tl.minimum(
@@ -166,6 +194,7 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
         offs_kv_block = kv_block_start + tl.arange(0, BLOCK_N)
         kv_token_valid_map = (offs_kv_block < new_len) & (offs_kv_block < valid_q_len)
 
+        # Load K (bf16, new tokens)
         k_offs = (
             (kv_start + offs_kv_block[None, :]) * kv_stride_s + kv_head_id * kv_stride_h + offs_d[:, None] * kv_stride_d
         )
@@ -175,6 +204,7 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
             other=0.0,
         ).to(tl.bfloat16)
 
+        # Compute scores (no FP8 scale for new tokens, they're bf16)
         scores = tl.dot(q, k).to(tl.float32) * softmax_scale
         score_valid_mask = mask_q_block[:, None] & kv_token_valid_map[None, :]
         if IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
@@ -183,6 +213,7 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
             ]
             score_mask = score_valid_mask & score_block_mask
         elif IS_BLOCK_CAUSAL and IS_PREFIX_FULL:
+            is_prefilling = status == 0
             if is_prefilling:
                 score_pure_prefix_mask = (offs_q_block < prefix_len)[:, None] & (offs_kv_block < prefix_len)[None, :]
                 score_padded_causal_mask = ((offs_q_block >= prefix_len) & (offs_q_block < padded_prefix_len))[
@@ -208,6 +239,7 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
         alpha = tl.exp(m - m_new)
         acc *= alpha[:, None]
 
+        # Load V (bf16, new tokens)
         v_offs = (
             (kv_start + offs_kv_block[:, None]) * kv_stride_s + kv_head_id * kv_stride_h + offs_d[None, :] * kv_stride_d
         )
@@ -221,6 +253,7 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
         m = m_new
         l = l_new
 
+    # Normalize and write output
     out = acc / l[:, None]
     o_offs = (q_start + offs_q_block[:, None]) * o_stride_s + head_id * o_stride_h + offs_d[None, :] * o_stride_d
     tl.store(
@@ -230,14 +263,25 @@ def _chunked_prefill_attn_unified_bf16_cache_kernel(
     )
 
 
-def chunked_prefill_attn_unified_bf16_cache(
+def chunked_prefill_attn_fp8_cache(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
+    k_scale: torch.Tensor,  # [num_kv_heads] fp32
+    v_scale: torch.Tensor,  # [num_kv_heads] fp32
     attn_metadata: AttnMetaDataBase,
 ):
+    """
+    FP8 KV cache chunked prefill attention.
+    
+    Args:
+        q, k, v: Query/Key/Value tensors for current step [num_tokens, num_heads, head_dim]
+        k_cache, v_cache: FP8 KV cache [num_pages, page_size, num_kv_heads, head_dim] as uint8 storage
+        k_scale, v_scale: Per-head FP8 scales [num_kv_heads]
+        attn_metadata: Attention metadata
+    """
     o = torch.empty_like(q).to(q.device)
     num_heads = q.shape[1]
     num_kv_heads = k.shape[1]
@@ -249,15 +293,27 @@ def chunked_prefill_attn_unified_bf16_cache(
     page_size = k_cache.shape[1]
     num_reqs = attn_metadata.cu_seqlens_q.shape[0] - 1
 
-    BLOCK_SIZE = 64  # Reduced from 128 to fit shared memory limit
+    # FP8 view: uint8 storage -> float8 view
+    fp8_dtype = torch.float8_e4m3fn
+    if k_cache.dtype == torch.uint8:
+        k_cache_fp8 = k_cache.view(fp8_dtype)
+        v_cache_fp8 = v_cache.view(fp8_dtype)
+    else:
+        k_cache_fp8 = k_cache
+        v_cache_fp8 = v_cache
+
+    BLOCK_SIZE = 64  # Same as BF16 version
     grid = (num_reqs, num_heads, triton.cdiv(int(attn_metadata.max_seqlen_q), BLOCK_SIZE))
-    _chunked_prefill_attn_unified_bf16_cache_kernel[grid](
+    
+    _chunked_prefill_attn_fp8_cache_kernel[grid](
         q,
         k,
         v,
         o,
-        k_cache,
-        v_cache,
+        k_cache_fp8,
+        v_cache_fp8,
+        k_scale,
+        v_scale,
         attn_metadata.page_tables,
         attn_metadata.status_table,
         attn_metadata.context_lens,
@@ -266,20 +322,36 @@ def chunked_prefill_attn_unified_bf16_cache(
         attn_metadata.prefix_lens,
         attn_metadata.padded_prefix_lens,
         softmax_scale,
-        *q.stride(),
-        *k.stride(),
-        *o.stride(),
-        *k_cache.stride(),
-        *v_cache.stride(),
-        *attn_metadata.page_tables.stride(),
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        o.stride(0),
+        o.stride(1),
+        o.stride(2),
+        k_cache.stride(0),
+        k_cache.stride(1),
+        k_cache.stride(2),
+        k_cache.stride(3),
+        v_cache.stride(0),
+        v_cache.stride(1),
+        v_cache.stride(2),
+        v_cache.stride(3),
+        attn_metadata.page_tables.stride(0),
+        attn_metadata.page_tables.stride(1),
         NUM_GROUPS=num_groups,
         HEAD_DIM=head_dim,
         HEAD_DIM_PADDED=head_dim_padded,
         PAGE_SIZE=page_size,
+        BLOCK_M=BLOCK_SIZE,
+        BLOCK_N=BLOCK_SIZE,
         DLLM_BLOCK_SIZE=attn_metadata.block_size,
         IS_BLOCK_CAUSAL=attn_metadata.is_block_causal,
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
-        BLOCK_M=64,
-        BLOCK_N=64,
     )
     return o
+
+
+__all__ = ["chunked_prefill_attn_fp8_cache"]

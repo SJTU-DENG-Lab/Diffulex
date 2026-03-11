@@ -22,6 +22,9 @@ from diffulex_kernel.python.paged_attn_decode_triton import (
 from diffulex_kernel.python.chunked_prefill_triton import (
     chunked_prefill_attn_unified_bf16_cache,
 )
+from diffulex_kernel.python.chunked_prefill_fp8_triton import (
+    chunked_prefill_attn_fp8_cache,
+)
 
 
 def dllm_flash_attn_prefill(
@@ -200,7 +203,44 @@ def dllm_chunked_prefill(
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
 ) -> torch.Tensor:
-    return chunked_prefill_attn_unified_bf16_cache(q, k, v, k_cache, v_cache, attn_metadata)
+    """
+    Chunked prefill attention wrapper:
+    - BF16 KV cache: use unified bf16 kernel
+    - FP8 KV cache: use FP8 kernel with per-head scales
+    """
+    from diffulex.utils.quantization.context import get_kv_cache_strategy
+
+    kv_strategy = get_kv_cache_strategy()
+    kv_fmt = getattr(kv_strategy, "kv_cache_format", "bf16") if kv_strategy is not None else "bf16"
+
+    if kv_fmt == "bf16":
+        return chunked_prefill_attn_unified_bf16_cache(q, k, v, k_cache, v_cache, attn_metadata)
+    
+    if kv_fmt == "fp8":
+        # KV cache is stored as uint8 for FP8
+        k_cache_fp8 = kv_strategy.view_kv_cache_for_kernels(k_cache)
+        v_cache_fp8 = kv_strategy.view_kv_cache_for_kernels(v_cache)
+        
+        # Get scales from metadata, or use default 1.0 for prefill
+        num_kv_heads = k_cache.shape[2]
+        device = k_cache.device
+        if attn_metadata.k_scale is None:
+            k_scale = torch.ones(num_kv_heads, device=device, dtype=torch.float32)
+        else:
+            k_scale = attn_metadata.k_scale
+        if attn_metadata.v_scale is None:
+            v_scale = torch.ones(num_kv_heads, device=device, dtype=torch.float32)
+        else:
+            v_scale = attn_metadata.v_scale
+        
+        return chunked_prefill_attn_fp8_cache(
+            q, k, v, 
+            k_cache_fp8, v_cache_fp8,
+            k_scale, v_scale,
+            attn_metadata
+        )
+    
+    raise ValueError(f"Unsupported kv_cache_format={kv_fmt!r} for chunked prefill")
 
 
 __all__ = [
