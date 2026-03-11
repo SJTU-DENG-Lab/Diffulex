@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import time
 
 from multiprocessing.synchronize import Event
 
 import torch
-from tqdm import tqdm
 
 from diffulex.config import Config
 from diffulex.engine.request import DllmReq
-from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata, set_warming_up, reset_warming_up
+from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
 from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
 from diffulex.strategy.multi_bd.attention.metadata import (
     fetch_multi_bd_attn_metadata,

@@ -35,7 +35,7 @@ class AttnMetaDataBase(MultiBlockAttnMetaDataMixin):
     def need_kv_cache_store(self) -> bool:
         if is_warming_up() and self.slot_mapping.numel() > 0:
             return True
-        
+
         return (self.slot_mapping >= 0).any() if self.enforce_eager else self.slot_mapping.numel() > 0
 
 

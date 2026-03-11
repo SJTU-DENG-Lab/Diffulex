@@ -23,25 +23,24 @@ class SchedulerMultiBlockMixin:
 
         while self.waiting_reqs and num_reqs < self.max_num_reqs:
             req = self.waiting_reqs[0]
-            
+
             projected = len(req) + self.block_size
-            if (
-                num_batched_tokens + projected > self.max_num_batched_tokens 
-                or not self.kv_cache_manager.can_allocate(req)
+            if num_batched_tokens + projected > self.max_num_batched_tokens or not self.kv_cache_manager.can_allocate(
+                req
             ):
                 break
-            
+
             num_reqs += 1
             self.kv_cache_manager.allocate(req)
             if req.is_preempted:
                 self.kv_cache_manager.may_append(req)
-            
+
             num_batched_tokens += projected - req.num_cached_tokens
             req.make_pending()
             self.waiting_reqs.popleft()
             self.running_reqs.append(req)
             scheduled.append(req)
-            
+
         if scheduled:
             return scheduled, True
 
@@ -85,7 +84,7 @@ class SchedulerMultiBlockMixin:
                 "MultiBlockScheduler: unable to schedule any req in decode; "
                 f"state={diag}; details={' | '.join(details)}"
             )
-            
+
         self.running_reqs.extendleft(reversed(scheduled))
         return scheduled, False
 

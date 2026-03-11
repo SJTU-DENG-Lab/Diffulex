@@ -8,20 +8,20 @@ engine:
   model_name: "fast_dllm_v2"
   decoding_strategy: "multi_bd"
   mask_token_id: 151665
-  
+
   use_lora: false
   lora_path: ""
-  
+
   tensor_parallel_size: 1
   data_parallel_size: 1
   gpu_memory_utilization: 0.9
   max_model_len: 2048
   max_num_batched_tokens: 4096
   max_num_reqs: 128
-  
+
   enforce_eager: true
   kv_cache_layout: "unified"
-  
+
   decoding_thresholds:
     add_block_threshold: 0.1
     semi_complete_threshold: 0.9

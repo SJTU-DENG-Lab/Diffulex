@@ -4,7 +4,6 @@ import triton
 import triton.language as tl
 
 from typing import Tuple
-import os
 
 from diffulex.attention.metadata import AttnMetaDataBase
 
@@ -422,7 +421,7 @@ def load_kv_cache_kernel_distinct(
             )
             tl.store(k_out_ptr + offs_cur_kv_new_to_out, k_new)
             tl.store(v_out_ptr + offs_cur_kv_new_to_out, v_new)
-    
+
 
 def load_kv_cache(
     k_cache: torch.Tensor,
@@ -431,7 +430,7 @@ def load_kv_cache(
     k_new: torch.Tensor,
     v_new: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """ KV Cache Load Kernel
+    """KV Cache Load Kernel
     Supports both unified and distinct layouts:
     - Unified: k_cache.shape == v_cache.shape == [num_blocks, page_size, num_kv_heads, head_dim]
     - Distinct: k_cache.shape = [num_blks, h, hdim // x, blk_sz, x], v_cache.shape = [num_blks, h, hdim, blk_sz]

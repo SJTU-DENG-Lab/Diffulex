@@ -298,7 +298,7 @@ class DllmReqMultiBlockMixin:
         self.lazy_activate()
         self.log_status()
         self.status = DllmReqStatus.WAITING
-    
+
     @property
     def is_preempted(self) -> bool:
         return self.status_history[-1] in [

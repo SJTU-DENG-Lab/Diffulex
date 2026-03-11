@@ -182,7 +182,7 @@ class ModelRunnerMultiBlockMixin:
             return self.model.compute_logits(self.model(input_ids, positions))
 
         num_tokens = input_ids.size(0)
-        
+
         graph = self.graphs[next(x for x in self.graph_bs if x >= num_tokens)]
         graph_vars = self.graph_vars
         for key, value in graph_vars.items():
@@ -271,8 +271,8 @@ class ModelRunnerMultiBlockMixin:
                 False,
                 slot_mapping=slot_mapping[:num_tokens],
                 context_lens=context_lens[:num_seqs],
-                cu_seqlens_q=cu_seqlens_q[:num_seqs + 1],
-                cu_seqlens_k=cu_seqlens_k[:num_seqs + 1],
+                cu_seqlens_q=cu_seqlens_q[: num_seqs + 1],
+                cu_seqlens_k=cu_seqlens_k[: num_seqs + 1],
                 max_seqlen_q=chunk_size,
                 max_seqlen_k=config.max_model_len,
                 page_size=config.kv_cache_page_size,

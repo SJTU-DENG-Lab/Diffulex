@@ -10,15 +10,15 @@ logger = get_logger(__name__)
 class ReqStep:
     step_id: int
     step_time: float
-    
+
     is_prefill: bool
-    
+
     num_generated_tokens: int
     running_token_ids: list[int]
-    
+
     block_size: int
     buffer_bids: list[int]
-    
+
     def to_dict(self) -> dict:
         return dict(
             step_id=self.step_id,
@@ -34,17 +34,17 @@ class ReqStep:
 @dataclass
 class ReqTrajectory:
     req_id: int
-    
+
     token_ids: list[int]
     trajectory: list[ReqStep]
-    
+
     is_truncated: bool
     max_new_tokens_reached: bool
     max_model_len_reached: bool
     eos_token_generated: bool
-    
+
     text: str = None
-    
+
     def to_dict(self) -> dict:
         return dict(
             req_id=self.req_id,
@@ -60,20 +60,21 @@ class ReqTrajectory:
 
 class GenerationOutputs:
     """Accumulates generation outputs."""
+
     def __init__(self, num_prompts: int):
         self.trajectories: list[ReqTrajectory] = [
             ReqTrajectory(
-                req_id=req_id, 
-                token_ids=[], 
-                trajectory=[], 
-                is_truncated=False, 
-                max_new_tokens_reached=False, 
-                max_model_len_reached=False, 
-                eos_token_generated=False
+                req_id=req_id,
+                token_ids=[],
+                trajectory=[],
+                is_truncated=False,
+                max_new_tokens_reached=False,
+                max_model_len_reached=False,
+                eos_token_generated=False,
             )
             for req_id in range(num_prompts)
         ]
-    
+
     @property
     def tpf(self) -> float:
         num_generated_tokens = 0
@@ -83,7 +84,7 @@ class GenerationOutputs:
                 num_generated_tokens += step.num_generated_tokens
                 num_steps += 1
         return num_generated_tokens / num_steps if num_steps > 0 else 0
-    
+
     @property
     def ttft(self) -> float:
         num_generated_tokens = 0
@@ -91,19 +92,19 @@ class GenerationOutputs:
         for trajectory in self.trajectories:
             if len(trajectory.trajectory) == 0:
                 continue
-            
+
             prefill_step = trajectory.trajectory[0]
             if not prefill_step.is_prefill:
                 continue
-            
+
             num_generated_tokens += prefill_step.num_generated_tokens
             total_time += prefill_step.step_time
         return total_time / num_generated_tokens if num_generated_tokens > 0 else 0
-    
+
     @property
     def tpot(self) -> float:
         return 1 / self.decode_throughput if self.decode_throughput > 0 else 0
-    
+
     @property
     def prefill_throughput(self) -> float:
         num_prefill_tokens = 0
@@ -111,15 +112,15 @@ class GenerationOutputs:
         for trajectory in self.trajectories:
             if len(trajectory.trajectory) == 0:
                 continue
-            
+
             prefill_step = trajectory.trajectory[0]
             if not prefill_step.is_prefill:
                 continue
-            
+
             num_prefill_tokens += len(prefill_step.running_token_ids)
             total_time += prefill_step.step_time
         return num_prefill_tokens / total_time
-    
+
     @property
     def decode_throughput(self) -> float:
         num_generated_tokens = 0
@@ -130,7 +131,7 @@ class GenerationOutputs:
                     num_generated_tokens += step.num_generated_tokens
                     total_time += step.step_time
         return num_generated_tokens / total_time if total_time > 0 else 0
-    
+
     def record_step(self, reqs: list[DllmReq], step_time: float, req_id_to_prompt_id: dict[int, int] | None = None):
         for req in reqs:
             prompt_idx = (req_id_to_prompt_id or {}).get(req.req_id, req.req_id)
@@ -153,7 +154,7 @@ class GenerationOutputs:
             cur_trajectory.max_new_tokens_reached = req.max_new_tokens_reached
             cur_trajectory.max_model_len_reached = req.max_model_len_reached
             cur_trajectory.eos_token_generated = req.eos_token_generated
-    
+
     def postfix(self) -> dict:
         return dict(
             tpf=f"{int(self.tpf)}",
@@ -162,7 +163,7 @@ class GenerationOutputs:
             ptps=f"{int(self.prefill_throughput)}tok/sec",
             dtps=f"{int(self.decode_throughput)}tok/sec",
         )
-        
+
     def log_summary(self):
         logger.info("--------------------------------")
         logger.info("Generation Outputs Summary:")
@@ -176,8 +177,8 @@ class GenerationOutputs:
         logger.info(f"Prefill Throughput: {self.prefill_throughput:.2f} tok/sec")
         logger.info(f"Decode Throughput: {self.decode_throughput:.2f} tok/sec")
         logger.info("--------------------------------")
-        
-    def convert_to_text(self, tokenizer) :
+
+    def convert_to_text(self, tokenizer):
         for trajectory in self.trajectories:
             trajectory.text = tokenizer.decode(trajectory.token_ids).split(tokenizer.eos_token)[0]
 
