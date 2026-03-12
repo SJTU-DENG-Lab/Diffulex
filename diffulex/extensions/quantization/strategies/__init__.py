@@ -17,18 +17,20 @@ from .linear_bf16 import BF16LinearStrategy
 from .linear_no_quantization import NoQuantizationStrategy
 
 # FP8 strategies
-from .linear_fp8_w8a8 import FP8W8A8LinearStrategy, FP8E5M2W8A8LinearStrategy
-from .linear_fp8_w8a16 import FP8W8A16LinearStrategy, FP8E5M2W8A16LinearStrategy
+from .linear_fp8_w8a8 import FP8E4M3W8A8LinearStrategy, FP8E5M2W8A8LinearStrategy
+from .linear_fp8_w8a16 import FP8E4M3W8A16LinearStrategy, FP8E5M2W8A16LinearStrategy
 
 # INT8 strategies  
 from .linear_int8_w8a8 import INT8W8A8LinearStrategy
 from .linear_int8_w8a16 import INT8W8A16LinearStrategy
 
-# GPTQ strategies (2, 3, 4, 8 bit)
-from .linear_gptq_w2a16 import GPTQW2A16LinearStrategy
-from .linear_gptq_w3a16 import GPTQW3A16LinearStrategy
-from .linear_gptq_w4a16 import GPTQW4A16LinearStrategy
-from .linear_gptq_w8a16 import GPTQW8A16LinearStrategy
+# GPTQ strategies (2, 3, 4, 8 bit) - unified implementation
+from .linear_gptq_wxa16 import (
+    GPTQW2A16LinearStrategy,
+    GPTQW3A16LinearStrategy,
+    GPTQW4A16LinearStrategy,
+    GPTQW8A16LinearStrategy,
+)
 
 # GPTQ + Marlin strategies (4, 8 bit)
 from .linear_gptq_marlin_w4a16 import GPTQMarlinW4A16LinearStrategy
@@ -50,9 +52,9 @@ __all__ = [
     "BF16LinearStrategy",
     "NoQuantizationStrategy",
     # FP8
-    "FP8W8A8LinearStrategy",
+    "FP8E4M3W8A8LinearStrategy",
     "FP8E5M2W8A8LinearStrategy",
-    "FP8W8A16LinearStrategy",
+    "FP8E4M3W8A16LinearStrategy",
     "FP8E5M2W8A16LinearStrategy",
     # INT8
     "INT8W8A8LinearStrategy",

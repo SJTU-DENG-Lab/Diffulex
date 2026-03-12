@@ -32,6 +32,10 @@ def create_quantized_linear_class(base_class: Type[nn.Module]) -> Type[nn.Module
         Quantized version of linear layer.
         
         Inherits from both the original class and LinearQuantizationMixin.
+        
+        Features:
+        - Load-time quantization: quantizes weights immediately after loading
+        - Memory efficient: deletes original BF16 weights after quantization
         """
         
         def __init__(self, *args, quant_kind: str = "other", **kwargs):
@@ -40,6 +44,100 @@ def create_quantized_linear_class(base_class: Type[nn.Module]) -> Type[nn.Module
             
             # Initialize quantization
             self.init_quantization(quant_kind)
+            
+            # Override weight_loader to enable load-time quantization
+            self._setup_quantized_weight_loader()
+        
+        def _setup_quantized_weight_loader(self):
+            """
+            Setup weight loader that quantizes weights immediately after loading.
+            
+            This overrides the original weight_loader to implement:
+            1. Load weight from checkpoint (via original weight_loader)
+            2. Quantize weight to INT8/FP8
+            3. Delete original BF16 weight to save memory
+            4. Store quantized weight
+            """
+            # Store reference to original weight_loader
+            if hasattr(self, 'weight') and self.weight is not None:
+                original_loader = getattr(self.weight, 'weight_loader', None)
+                if original_loader is not None:
+                    # Bind our quantized loader
+                    self.weight.weight_loader = self._quantized_weight_loader
+                    self._original_weight_loader = original_loader
+        
+        def _quantized_weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, *args, **kwargs):
+            """
+            Weight loader that quantizes immediately after loading.
+            
+            Flow:
+            1. Call original weight_loader to load weight into param
+            2. Get quantization strategy
+            3. Quantize weight
+            4. Store quantized weight
+            5. Delete original weight to free memory
+            """
+            import torch
+            from .context import get_linear_strategy
+            
+            # Step 1: Call original weight loader
+            if hasattr(self, '_original_weight_loader') and self._original_weight_loader is not None:
+                # Handle different signature for different linear types
+                try:
+                    if args or kwargs:
+                        self._original_weight_loader(param, loaded_weight, *args, **kwargs)
+                    else:
+                        self._original_weight_loader(param, loaded_weight)
+                except Exception:
+                    # Fallback: direct copy
+                    param.data.copy_(loaded_weight)
+            else:
+                # No original loader, direct copy
+                param.data.copy_(loaded_weight)
+            
+            # Step 2: Get quantization strategy
+            strategy = get_linear_strategy(self.quant_kind)
+            if strategy is None:
+                return  # No quantization enabled
+            
+            # Step 3: Check if we should quantize this layer
+            # Skip if already quantized or if it's not a weight we want to quantize
+            if self.has_quantized_weight() or self.has_offline_quantized_weight():
+                return
+            
+            # Step 4: Quantize weight immediately after loading
+            try:
+                # Get the loaded weight data
+                weight = param.data
+                
+                # Only quantize if it's BF16/FP16/FP32 (not already quantized)
+                if weight.dtype not in [torch.bfloat16, torch.float16, torch.float32]:
+                    return
+                
+                # Quantize weight
+                q_weight, w_meta = strategy.quantize_weight_for_kernel(weight)
+                w_scale = w_meta.get("scale")
+                w_zero = w_meta.get("zero_point")
+                
+                # Step 5: Store quantized weight
+                self.set_quantized_weight(q_weight, w_scale, w_zero)
+                
+                # Step 6: Delete original weight to save memory
+                # Replace param.data with empty tensor to free memory
+                # The actual data is now stored in quant_weight_int8 buffer
+                param.data = torch.empty(0, dtype=weight.dtype, device=weight.device)
+                
+                # Remove from parameters (convert to buffer or just delete)
+                if 'weight' in self._parameters:
+                    del self._parameters['weight']
+                
+                # Mark as quantized
+                self._weight_is_quantized_py = True
+                
+            except Exception as e:
+                # Quantization failed, keep original weight
+                # This ensures model can still work even if quantization fails
+                pass
         
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             """Forward with quantization support."""

@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..strategy import LinearQuantizationStrategy
 from ..registry import register_linear_strategy
-from ..kernel_availability import warn_kernel_unavailable, check_vllm_op_available
+from ..kernels.kernel_availability import warn_kernel_unavailable, check_vllm_op_available
 
 
 @register_linear_strategy("gptq_marlin_w4a16", "bf16")

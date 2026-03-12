@@ -116,6 +116,7 @@ def test_fp8_strategy():
     print("\nTesting FP8 strategy...")
     
     from .registry import create_linear_strategy, create_kv_cache_strategy
+    from .kernels import check_vllm_op_available
     
     # FP8 KV cache
     fp8_kv = create_kv_cache_strategy("fp8_e4m3")
@@ -127,10 +128,13 @@ def test_fp8_strategy():
     assert fp8_linear is not None
     assert "fp8" in fp8_linear.linear_weight_format
     
-    # Test quantization
-    x = torch.randn(10, 10, dtype=torch.bfloat16)
-    q_x, scale = fp8_linear.quantize(x)
-    assert q_x.dtype == torch.float8_e4m3fn
+    # Test quantization (skip if vLLM ops not available)
+    if check_vllm_op_available('scaled_fp8_quant'):
+        x = torch.randn(10, 10, dtype=torch.bfloat16)
+        q_x, scale = fp8_linear.quantize(x)
+        assert q_x.dtype == torch.float8_e4m3fn
+    else:
+        print("  (skipped FP8 quantize test - vLLM ops not available)")
     
     print("✓ FP8 strategy tests passed")
     return True
@@ -213,7 +217,7 @@ def test_forward_plans():
     )
     
     # Create plan
-    plan = BF16Plan(layer, sig)
+    plan = BF16Plan(sig, layer.weight, None)
     y = plan(x)
     assert y.shape == (5, 20)
     

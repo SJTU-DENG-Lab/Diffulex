@@ -15,6 +15,8 @@ Usage:
 import sys
 from typing import Optional, Dict, Any
 
+import torch
+
 # Global state
 _is_enabled = False
 _quant_config: Optional[Dict[str, Any]] = None
@@ -236,6 +238,14 @@ def _post_import_patch(module_name: str, module):
             patch_loader()
         except Exception:
             pass
+    
+    # Patch model to quantize weights after loading
+    # Only patch when the actual engine module is imported (not during recursion)
+    if module_name == 'diffulex.diffulex' or module_name == 'diffulex.engine.tp_worker':
+        try:
+            _patch_model_for_weight_quantization(module)
+        except Exception:
+            pass
 
 
 # Convenience function for configuring quantization from CLI args
@@ -333,3 +343,132 @@ def auto_enable_from_config(config):
             }
     
     return enable(config=quant_config)
+
+
+def _patch_model_for_weight_quantization(module):
+    """
+    Patch model initialization to quantize weights after loading.
+    
+    This ensures online quantization (INT8/FP8) is applied to weights
+    immediately after model creation, not during each forward pass.
+    """
+    from .context import get_linear_strategy
+    from .layer_mixin import LinearQuantizationMixin
+    
+    # Find the Diffulex class
+    DiffulexClass = None
+    for attr_name in ['DiffulexTPWorker', 'Diffulex', 'DiffulexDPWorker']:
+        if hasattr(module, attr_name):
+            DiffulexClass = getattr(module, attr_name)
+            break
+    
+    if DiffulexClass is None:
+        return
+    
+    original_init = DiffulexClass.__init__
+    
+    def patched_init(self, *args, **kwargs):
+        # Call original init
+        original_init(self, *args, **kwargs)
+        
+        # After initialization, quantize weights if needed
+        _quantize_model_weights(self)
+    
+    DiffulexClass.__init__ = patched_init
+
+
+def _quantize_model_weights(model_wrapper):
+    """
+    Quantize all linear layer weights in the model.
+    
+    This is called once after model loading to pre-quantize weights.
+    """
+    from .context import get_linear_strategy
+    from .layer_mixin import LinearQuantizationMixin
+    
+    # Check if already quantized (avoid duplicate quantization in multi-worker setup)
+    if getattr(model_wrapper, '_weights_quantized', False):
+        return
+    
+    # Get model runner
+    model_runner = getattr(model_wrapper, 'model_runner', None)
+    if model_runner is None:
+        return
+    
+    model = getattr(model_runner, 'model', None)
+    if model is None:
+        return
+    
+    # Get current quantization config
+    weight_method = _quant_config.get('weights', {}).get('method', 'bf16')
+    
+    # Skip if not online quantization
+    if weight_method in ['bf16', 'none']:
+        return
+    
+    # Skip if offline quantization (GPTQ/AWQ) - those are already quantized
+    if any(fmt in weight_method.lower() for fmt in ['gptq', 'awq', 'marlin']):
+        return
+    
+    # Mark as quantized to avoid duplicate work
+    model_wrapper._weights_quantized = True
+    
+    print(f"[Quantization] Pre-quantizing model weights to {weight_method}...")
+    
+    # Get strategy
+    strategy = get_linear_strategy('attn')  # Use attn strategy for all
+    if strategy is None:
+        return
+    
+    quantized_count = 0
+    total_saved_bytes = 0
+    
+    # Iterate through all modules
+    for name, module in model.named_modules():
+        # Check if this is a quantized linear layer
+        if isinstance(module, LinearQuantizationMixin):
+            # Skip if already quantized
+            if module.has_quantized_weight() or module.has_offline_quantized_weight():
+                continue
+            
+            # Quantize weight
+            try:
+                weight = module.weight
+                if weight is None or weight.dtype != torch.bfloat16:
+                    continue
+                
+                original_size = weight.numel() * weight.element_size()
+                
+                # Use strategy to quantize weight
+                q_weight, w_meta = strategy.quantize_weight_for_kernel(weight)
+                w_scale = w_meta.get('scale')
+                w_zero = w_meta.get('zero_point')
+                
+                # Store quantized weight
+                module.set_quantized_weight(q_weight, w_scale, w_zero)
+                
+                # Delete original weight to save memory
+                if hasattr(module, 'weight'):
+                    delattr(module, 'weight')
+                    if 'weight' in module._parameters:
+                        del module._parameters['weight']
+                
+                quantized_size = q_weight.numel() * q_weight.element_size()
+                total_saved_bytes += (original_size - quantized_size)
+                quantized_count += 1
+                
+            except Exception as e:
+                # Log but continue
+                print(f"[Quantization] Warning: Failed to quantize {name}: {e}")
+                continue
+    
+    if quantized_count > 0:
+        saved_mb = total_saved_bytes / (1024 ** 2)
+        print(f"[Quantization] Pre-quantized {quantized_count} layers to {weight_method}")
+        print(f"[Quantization] Estimated memory saved: {saved_mb:.1f} MB")
+        
+        # Force CUDA synchronization to get accurate memory stats
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            mem_allocated = torch.cuda.memory_allocated() / 1024**3
+            print(f"[Quantization] Current GPU memory: {mem_allocated:.2f} GB")

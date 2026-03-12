@@ -19,6 +19,7 @@ Available quantization formats:
 - AWQ W4A16: 4-bit AWQ quantized weights
 - GPTQ/AWQ + Marlin: Optimized kernels for above
 - FP8 KV Cache: FP8 quantized KV cache
+- Custom Triton Kernels: On-the-fly dequantization
 
 Example usage:
     # FP8 W8A8 with FP8 KV Cache
@@ -53,13 +54,33 @@ from .bootstrap import (
     auto_enable_from_config,
 )
 
-# Kernel availability checking
-from .kernel_availability import (
+# Kernels package (unified interface)
+from .kernels import (
+    # Registry
+    KernelRegistry,
+    register_kernel,
+    get_kernel,
+    list_available_kernels,
+    # Availability
     check_vllm_op_available,
+    check_kernel_available,
     get_kernel_status,
     print_kernel_status,
     set_strict_mode,
     is_strict_mode,
+    warn_kernel_unavailable,
+    # vLLM wrappers
+    VllmGPTQGemm,
+    VllmAWQGemm,
+    VllmMarlinGemm,
+    VllmCutlassScaledMM,
+    VllmAllSparkW8A16,
+    VllmCutlassW4A8,
+    VllmFp8LinearOp,
+    # Triton kernels
+    Fp8KVAttentionKernel,
+    fp8_kv_attention_forward,
+    _HAS_TRITON_KERNELS,
 )
 
 # Configuration
@@ -96,14 +117,16 @@ from .registry import (
 # Concrete strategies (for advanced usage)
 from .strategies.kv_cache_bf16 import BF16KVCacheStrategy
 from .strategies.linear_bf16 import BF16LinearStrategy
-from .strategies.linear_fp8_w8a8 import FP8W8A8LinearStrategy
-from .strategies.linear_fp8_w8a16 import FP8W8A16LinearStrategy
+from .strategies.linear_fp8_w8a8 import FP8E4M3W8A8LinearStrategy, FP8E5M2W8A8LinearStrategy
+from .strategies.linear_fp8_w8a16 import FP8E4M3W8A16LinearStrategy, FP8E5M2W8A16LinearStrategy
 from .strategies.linear_int8_w8a8 import INT8W8A8LinearStrategy
 from .strategies.linear_int8_w8a16 import INT8W8A16LinearStrategy
-from .strategies.linear_gptq_w2a16 import GPTQW2A16LinearStrategy
-from .strategies.linear_gptq_w3a16 import GPTQW3A16LinearStrategy
-from .strategies.linear_gptq_w4a16 import GPTQW4A16LinearStrategy
-from .strategies.linear_gptq_w8a16 import GPTQW8A16LinearStrategy
+from .strategies.linear_gptq_wxa16 import (
+    GPTQW2A16LinearStrategy,
+    GPTQW3A16LinearStrategy,
+    GPTQW4A16LinearStrategy,
+    GPTQW8A16LinearStrategy,
+)
 from .strategies.linear_gptq_marlin_w4a16 import GPTQMarlinW4A16LinearStrategy
 from .strategies.linear_gptq_marlin_w8a16 import GPTQMarlinW8A16LinearStrategy
 from .strategies.linear_awq_w4a16 import AWQW4A16LinearStrategy
@@ -131,6 +154,7 @@ from .linear_plans import (
     ForwardPlanBase,
     ForwardPlanSig,
     BF16Plan,
+    QuantizedLinearPlan,
     QuantInt8W8A16Plan,
     QuantInt8W8A8Plan,
     QuantFP8W8A8Plan,
@@ -143,6 +167,9 @@ from .linear_plans import (
 )
 from .linear_plan_builder import build_forward_plan, rebuild_plan_if_needed
 
+# Offline quantization
+from .quantize_model import quantize_model
+
 __all__ = [
     # Bootstrap
     "enable",
@@ -151,6 +178,29 @@ __all__ = [
     "get_config",
     "configure_from_args",
     "auto_enable_from_config",
+    
+    # Kernels
+    "KernelRegistry",
+    "register_kernel",
+    "get_kernel",
+    "list_available_kernels",
+    "check_vllm_op_available",
+    "check_kernel_available",
+    "get_kernel_status",
+    "print_kernel_status",
+    "set_strict_mode",
+    "is_strict_mode",
+    "warn_kernel_unavailable",
+    "VllmGPTQGemm",
+    "VllmAWQGemm",
+    "VllmMarlinGemm",
+    "VllmCutlassScaledMM",
+    "VllmAllSparkW8A16",
+    "VllmCutlassW4A8",
+    "VllmFp8LinearOp",
+    "Fp8KVAttentionKernel",
+    "fp8_kv_attention_forward",
+    "_HAS_TRITON_KERNELS",
     
     # Configuration
     "QuantizationConfig",
@@ -210,6 +260,7 @@ __all__ = [
     "ForwardPlanBase",
     "ForwardPlanSig",
     "BF16Plan",
+    "QuantizedLinearPlan",
     "QuantInt8W8A16Plan",
     "QuantInt8W8A8Plan",
     "QuantFP8W8A8Plan",
@@ -221,4 +272,7 @@ __all__ = [
     "DirectMarlinGemmPlan",
     "build_forward_plan",
     "rebuild_plan_if_needed",
+    
+    # Offline quantization
+    "quantize_model",
 ]

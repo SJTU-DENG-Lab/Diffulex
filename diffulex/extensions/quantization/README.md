@@ -27,6 +27,7 @@ Zero-coupling quantization support for Diffulex. This extension adds support for
 **KV Cache Quantization:**
 - FP8 E4M3: 8-bit KV cache with E4M3 format
 - FP8 E5M2: 8-bit KV cache with E5M2 format
+- **Custom FP8 Triton Kernel**: On-the-fly dequantization during attention
 - BF16: No quantization (default)
 
 ## Installation
@@ -203,6 +204,46 @@ class CustomLinearStrategy(LinearQuantizationStrategy):
 
 ## Architecture
 
+### Directory Structure
+
+```
+diffulex/extensions/quantization/
+├── __init__.py                 # Main API exports
+├── bootstrap.py                # Extension initialization
+├── config.py                   # Configuration classes
+├── context.py                  # Strategy context management
+├── registry.py                 # Strategy registry
+├── strategy.py                 # Base strategy classes
+├── layer_patch.py              # Layer monkey patching
+├── layer_mixin.py              # Quantized layer mixin
+├── kv_cache_patch.py           # KV cache quantization
+├── linear_plans.py             # Forward plan definitions
+├── linear_plan_builder.py      # Plan builder
+├── loader_patch.py             # Weight loader patching
+├── test_basic.py               # Basic tests
+├── README.md                   # This documentation
+├── kernels/                    # Kernel implementations
+│   ├── __init__.py
+│   ├── kernel_registry.py      # Kernel registry & base classes
+│   ├── kernel_availability.py  # Availability checking & warnings
+│   ├── vllm_kernels.py         # vLLM kernel wrappers
+│   └── triton_kernels/         # Custom Triton kernels
+│       ├── __init__.py
+│       └── fp8_kv_attention.py # FP8 KV attention kernel
+└── strategies/                 # Quantization strategies
+    ├── __init__.py
+    ├── kv_cache_bf16.py
+    ├── kv_cache_fp8_running_max.py
+    ├── linear_bf16.py
+    ├── linear_fp8_w8a8.py
+    ├── linear_fp8_w8a16.py
+    ├── linear_int8_w8a8.py
+    ├── linear_int8_w8a16.py
+    ├── linear_gptq_w*.py
+    ├── linear_awq_*.py
+    └── linear_w4a8_cutlass.py
+```
+
 ### Zero-Coupling Design
 
 This extension uses a **zero-coupling architecture** that ensures:
@@ -235,6 +276,34 @@ Run the test suite:
 ```bash
 python -m diffulex.extensions.quantization.test_basic
 ```
+
+## Advanced Features
+
+### Custom FP8 KV Cache Triton Kernel
+
+The extension includes a custom Triton kernel for FP8 KV cache attention that performs on-the-fly dequantization, avoiding explicit dequantize-copy operations:
+
+```python
+from diffulex.extensions import quantization
+
+# Check if Triton kernel is available
+if quantization._HAS_FP8_TRITON_KERNEL:
+    print("FP8 Triton kernel available")
+
+# Enable FP8 KV cache
+quantization.enable(kv_cache_dtype="fp8_e4m3")
+
+# The kernel will be automatically used for attention computation
+```
+
+**Benefits:**
+- On-the-fly dequantization in Triton kernel
+- Reduces memory bandwidth by ~50% for KV cache
+- Faster than explicit dequantize + attention
+
+**Requirements:**
+- Triton >= 2.0
+- CUDA-capable GPU
 
 ## Troubleshooting
 

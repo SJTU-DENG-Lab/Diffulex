@@ -87,13 +87,19 @@ class QuantizationContext:
         Uses data pointer, shape, stride, dtype, device, and version
         to ensure cache correctness.
         """
+        # Handle inference tensors (no version tracking in no_grad mode)
+        try:
+            version = int(x._version)
+        except (RuntimeError, AttributeError):
+            version = -1
+        
         return (
             int(x.data_ptr()),
             tuple(x.shape),
             tuple(x.stride()),
             str(x.dtype),
             str(x.device),
-            int(getattr(x, "_version", -1)),
+            version,
         )
     
     def get_cached_act_quant(self, x: torch.Tensor) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:

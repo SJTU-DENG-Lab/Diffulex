@@ -10,6 +10,13 @@ from typing import Optional, Tuple, Any, Dict
 
 from .context import get_kv_cache_strategy
 
+# Import custom FP8 Triton kernel
+try:
+    from .kernels.triton_kernels import fp8_kv_attention_forward
+    _HAS_FP8_TRITON_KERNEL = True
+except ImportError:
+    _HAS_FP8_TRITON_KERNEL = False
+
 
 def patch_kv_cache_manager(cache_manager):
     """
@@ -165,6 +172,41 @@ def _update_scales(cache_manager, k: torch.Tensor, v: torch.Tensor):
     cache_manager._kv_cache_scales_v = new_v_scale
     
     return new_k_scale, new_v_scale
+
+
+def use_fp8_triton_kernel() -> bool:
+    """Check if FP8 Triton kernel is available."""
+    return _HAS_FP8_TRITON_KERNEL
+
+
+def run_fp8_kv_attention(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k_scale: torch.Tensor,
+    v_scale: torch.Tensor,
+    page_tables: torch.Tensor,
+    context_lens: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    softmax_scale: float,
+    is_e4m3: bool = True,
+) -> Optional[torch.Tensor]:
+    """
+    Run FP8 KV attention using custom Triton kernel.
+    
+    Returns None if kernel is not available.
+    """
+    if not _HAS_FP8_TRITON_KERNEL:
+        return None
+    
+    try:
+        return fp8_kv_attention_forward(
+            q, k_cache, v_cache, k_scale, v_scale,
+            page_tables, context_lens, cu_seqlens_q,
+            softmax_scale, is_e4m3
+        )
+    except Exception:
+        return None
 
 
 # Model Runner patching

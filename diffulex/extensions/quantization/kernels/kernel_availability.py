@@ -1,13 +1,12 @@
 """
 Kernel Availability Checker
 
-Tracks availability of optimized kernels and warns when falling back to slow paths.
+Tracks availability of optimized kernels and warns when falling back.
 """
 
 import warnings
 import os
 from typing import Set, Optional
-from functools import lru_cache
 
 # Track which warnings have been issued to avoid spamming
 _issued_warnings: Set[str] = set()
@@ -27,8 +26,38 @@ def is_strict_mode() -> bool:
     return _STRICT_MODE
 
 
-def warn_kernel_unavailable(kernel_name: str, strategy_name: str, 
-                             fallback_desc: str = "slow fallback") -> None:
+def check_vllm_op_available(op_name: str) -> bool:
+    """Check if a vLLM custom op is available."""
+    try:
+        import vllm._custom_ops as ops
+        return hasattr(ops, op_name)
+    except (ImportError, AttributeError):
+        return False
+
+
+def check_kernel_available(kernel_name: str, op_checker: Optional[callable] = None) -> bool:
+    """
+    Check if a kernel is available.
+    
+    Args:
+        kernel_name: Name of the kernel
+        op_checker: Optional function to check availability
+        
+    Returns:
+        True if available
+    """
+    if op_checker is not None:
+        return op_checker()
+    
+    # Default: check vLLM ops
+    return check_vllm_op_available(kernel_name)
+
+
+def warn_kernel_unavailable(
+    kernel_name: str,
+    strategy_name: str,
+    fallback_desc: str = "slow fallback"
+) -> None:
     """
     Warn once when an optimized kernel is unavailable.
     
@@ -60,15 +89,6 @@ def warn_kernel_unavailable(kernel_name: str, strategy_name: str,
         RuntimeWarning,
         stacklevel=3
     )
-
-
-def check_vllm_op_available(op_name: str) -> bool:
-    """Check if a vLLM custom op is available."""
-    try:
-        import vllm._custom_ops as ops
-        return hasattr(ops, op_name)
-    except (ImportError, AttributeError):
-        return False
 
 
 def get_kernel_status() -> dict:

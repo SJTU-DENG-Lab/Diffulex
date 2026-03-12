@@ -1,15 +1,15 @@
 """
-Forward Plan Builder
+Forward Plan Builder - vLLM-aligned factory for creating execution plans.
 
-Factory for creating appropriate ForwardPlan based on layer state and strategy.
+Builds plans that bind tensors at construction time to eliminate Python overhead.
 """
 
 import torch
 from typing import Optional, Any
 
 from .linear_plans import (
-    ForwardPlanSig, BF16Plan, QuantInt8W8A16Plan, QuantInt8W8A8Plan,
-    QuantFP8W8A8Plan, QuantFP8W8A16Plan,
+    ForwardPlanSig, BF16Plan,
+    QuantizedLinearPlan,
     OfflineGPTQPlan, OfflineAWQPlan,
     OfflineGPTQMarlinPlan, OfflineAWQMarlinPlan,
     DirectGPTQGemmPlan, DirectAWQGemmPlan, DirectMarlinGemmPlan,
@@ -20,6 +20,8 @@ def build_forward_plan(layer: torch.nn.Module, example_x: Optional[torch.Tensor]
                        bias: Optional[torch.Tensor] = None) -> Any:
     """
     Build appropriate forward plan for a quantized linear layer.
+    
+    Binds tensors at build time to minimize Python overhead during forward.
     
     Args:
         layer: Linear layer with quantization buffers
@@ -45,9 +47,20 @@ def _build_signature(layer: torch.nn.Module, x: torch.Tensor, bias: Optional[tor
                      mode: str, strategy_name: str) -> ForwardPlanSig:
     """Build plan signature for cache validation."""
     dev = x.device
+    dev_idx = dev.index if dev.index is not None else 0
+    
+    # Get out_features from layer
+    out_features = getattr(layer, '_forward_out_features', None)
+    if out_features is None:
+        # Try to infer from weights
+        if hasattr(layer, 'quant_weight') and layer.quant_weight is not None:
+            out_features = layer.quant_weight.shape[1] if len(layer.quant_weight.shape) > 1 else None
+        elif hasattr(layer, 'weight') and layer.weight is not None:
+            out_features = layer.weight.shape[0]
+    
     return ForwardPlanSig(
         device_type=dev.type,
-        device_index=dev.index if dev.index is not None else 0,
+        device_index=dev_idx,
         x_dtype=x.dtype,
         x_shape=tuple(x.shape),
         has_bias=bias is not None,
@@ -58,56 +71,56 @@ def _build_signature(layer: torch.nn.Module, x: torch.Tensor, bias: Optional[tor
 
 def _build_bf16_plan(layer: torch.nn.Module, example_x: Optional[torch.Tensor],
                      bias: Optional[torch.Tensor]) -> BF16Plan:
-    """Build BF16 plan."""
-    if example_x is not None:
-        sig = _build_signature(layer, example_x, bias, "bf16", "bf16_linear")
-    else:
-        sig = None
-    return BF16Plan(layer, sig)
+    """Build BF16 plan with bound weight and bias."""
+    weight = getattr(layer, 'weight', None)
+    sig = _build_signature(layer, example_x, bias, "bf16", "bf16_linear") if example_x is not None else None
+    return BF16Plan(sig, weight, bias)
 
 
 def _build_online_plan(layer: torch.nn.Module, example_x: torch.Tensor,
                        bias: Optional[torch.Tensor]) -> Any:
-    """Build plan for online quantized weights (INT8/FP8)."""
-    # Get strategy from layer or context
+    """Build plan for online quantized weights (INT8/FP8) with bound tensors."""
     strategy = None
     if hasattr(layer, '_quant_strategy'):
         strategy = layer._quant_strategy
     
     if strategy is None:
-        # Default to BF16
         return _build_bf16_plan(layer, example_x, bias)
     
     strategy_name = strategy.name
     weight_format = strategy.linear_weight_format
     act_format = strategy.linear_act_format
+    quant_kind = getattr(layer, 'quant_kind', 'other')
     
-    # Get weight scale
-    weight_scale = getattr(layer, 'quant_scales', None)
-    zero_point = getattr(layer, 'quant_zero_points', None)
+    # Get bound tensors
+    qweight = getattr(layer, 'quant_weight', None)
+    scales = getattr(layer, 'quant_scales', None)
+    
+    if qweight is None or scales is None:
+        return _build_bf16_plan(layer, example_x, bias)
+    
+    # Ensure scales are 1xN for broadcasting
+    scales_1xn = scales if scales.dim() == 2 else scales.view(1, -1)
+    
+    # Infer out_features
+    out_features = qweight.shape[1] if len(qweight.shape) > 1 else None
+    if out_features is None:
+        out_features = getattr(layer, '_forward_out_features', None)
     
     sig = _build_signature(layer, example_x, bias, "quant", strategy_name)
     
-    # Build appropriate plan based on formats
-    if "int8" in weight_format:
-        if "int8" in act_format:
-            return QuantInt8W8A8Plan(layer, sig, weight_scale, strategy, zero_point)
-        else:
-            return QuantInt8W8A16Plan(layer, sig, weight_scale, zero_point)
-    elif "fp8" in weight_format:
-        if "fp8" in act_format:
-            return QuantFP8W8A8Plan(layer, sig, weight_scale, strategy)
-        else:
-            return QuantFP8W8A16Plan(layer, sig, weight_scale, strategy)
-    
-    # Fallback to BF16
-    return _build_bf16_plan(layer, example_x, bias)
+    # Build unified quantized linear plan
+    return QuantizedLinearPlan(
+        sig, strategy, quant_kind,
+        qweight, scales_1xn, out_features, bias,
+        weight_format=weight_format,
+        act_format=act_format,
+    )
 
 
 def _build_offline_plan(layer: torch.nn.Module, example_x: torch.Tensor,
                         bias: Optional[torch.Tensor]) -> Any:
     """Build plan for offline quantized weights (GPTQ/AWQ/Marlin)."""
-    # Get format
     weight_format = None
     if hasattr(layer, '_offline_quant_format'):
         weight_format = layer._offline_quant_format
@@ -117,135 +130,123 @@ def _build_offline_plan(layer: torch.nn.Module, example_x: torch.Tensor,
     if weight_format is None:
         return _build_bf16_plan(layer, example_x, bias)
     
-    # Get strategy from layer
     strategy = getattr(layer, '_quant_strategy', None)
     strategy_name = strategy.name if strategy else weight_format
+    quant_kind = getattr(layer, 'quant_kind', 'other')
     
     sig = _build_signature(layer, example_x, bias, "offline", strategy_name)
     
     # Check for Marlin format
     if "marlin" in weight_format.lower():
-        return _build_marlin_plan(layer, sig, strategy)
+        return _build_marlin_plan(layer, sig, strategy, quant_kind, bias)
     
     # Check for GPTQ format
     if "gptq" in weight_format.lower():
-        return _build_gptq_plan(layer, sig, strategy)
+        return _build_gptq_plan(layer, sig, strategy, quant_kind, bias)
     
     # Check for AWQ format
     if "awq" in weight_format.lower():
-        return _build_awq_plan(layer, sig, strategy)
+        return _build_awq_plan(layer, sig, strategy, quant_kind, bias)
     
-    # Fallback
     return _build_bf16_plan(layer, example_x, bias)
 
 
 def _build_gptq_plan(layer: torch.nn.Module, sig: ForwardPlanSig,
-                     strategy: Any) -> Any:
-    """Build GPTQ plan."""
-    # Get buffers
+                     strategy: Any, quant_kind: str, bias: Optional[torch.Tensor]) -> Any:
+    """Build GPTQ plan with bound tensors."""
     qweight = getattr(layer, 'gptq_qweight', None)
     qzeros = getattr(layer, 'gptq_qzeros', None)
     scales = getattr(layer, 'gptq_scales', None)
     g_idx = getattr(layer, 'gptq_g_idx', None)
     
     if qweight is None or qzeros is None or scales is None:
-        return _build_bf16_plan(layer, None, None)
+        return _build_bf16_plan(layer, None, bias)
     
     bits = getattr(layer, '_offline_quant_bits', 4)
-    is_shuffled = getattr(layer, '_gptq_is_shuffled', False)
+    is_shuffled = getattr(layer, '_gptq_is_shuffled_py', False) or bool(getattr(layer, '_gptq_is_shuffled', False))
     
-    # Try direct GEMM if available
-    try:
-        import vllm._custom_ops as ops
-        if hasattr(ops, 'gptq_gemm'):
-            return DirectGPTQGemmPlan(
-                layer, sig, qweight, qzeros, scales, g_idx,
-                bits, is_shuffled, ops.gptq_gemm
-            )
-    except (ImportError, AttributeError):
-        pass
+    # Infer dimensions
+    out_features = getattr(layer, '_forward_out_features', None)
+    in_features = None
+    group_size = getattr(layer, '_offline_quant_group_size', 128)
     
-    # Use strategy-based plan
     if strategy is not None:
         return OfflineGPTQPlan(
-            layer, sig, strategy, qweight, qzeros, scales,
-            g_idx, bits, is_shuffled
+            sig, strategy, quant_kind,
+            qweight, qzeros, scales, g_idx,
+            bits, is_shuffled,
+            out_features, in_features, group_size,
+            bias
         )
     
-    return _build_bf16_plan(layer, None, None)
+    return _build_bf16_plan(layer, None, bias)
 
 
 def _build_awq_plan(layer: torch.nn.Module, sig: ForwardPlanSig,
-                    strategy: Any) -> Any:
-    """Build AWQ plan."""
-    # Get buffers
+                    strategy: Any, quant_kind: str, bias: Optional[torch.Tensor]) -> Any:
+    """Build AWQ plan with bound tensors."""
     qweight = getattr(layer, 'awq_qweight', None)
     qzeros = getattr(layer, 'awq_qzeros', None)
     scales = getattr(layer, 'awq_scales', None)
     
     if qweight is None or qzeros is None or scales is None:
-        return _build_bf16_plan(layer, None, None)
+        return _build_bf16_plan(layer, None, bias)
     
     bits = getattr(layer, '_offline_quant_bits', 4)
+    pack_factor = 32 // max(1, bits)
     
-    # Try direct GEMM if available
-    try:
-        import vllm._custom_ops as ops
-        if hasattr(ops, 'awq_gemm'):
-            return DirectAWQGemmPlan(
-                layer, sig, qweight, qzeros, scales,
-                bits, ops.awq_gemm
-            )
-    except (ImportError, AttributeError):
-        pass
+    out_features = getattr(layer, '_forward_out_features', None)
+    in_features = None
+    group_size = getattr(layer, '_offline_quant_group_size', 128)
     
-    # Use strategy-based plan
     if strategy is not None:
         return OfflineAWQPlan(
-            layer, sig, strategy, qweight, qzeros, scales, bits
+            sig, strategy, quant_kind,
+            qweight, qzeros, scales,
+            bits, pack_factor,
+            out_features, in_features, group_size,
+            bias
         )
     
-    return _build_bf16_plan(layer, None, None)
+    return _build_bf16_plan(layer, None, bias)
 
 
 def _build_marlin_plan(layer: torch.nn.Module, sig: ForwardPlanSig,
-                       strategy: Any) -> Any:
-    """Build Marlin plan."""
-    # Get Marlin buffers
+                       strategy: Any, quant_kind: str, bias: Optional[torch.Tensor]) -> Any:
+    """Build Marlin plan with bound tensors."""
     marlin_qweight = getattr(layer, 'gptq_marlin_qweight', None) or getattr(layer, 'marlin_qweight', None)
     marlin_scales = getattr(layer, 'gptq_marlin_scales', None) or getattr(layer, 'marlin_scales', None)
     marlin_workspace = getattr(layer, 'gptq_marlin_workspace', None) or getattr(layer, 'marlin_workspace', None)
     
     if marlin_qweight is None or marlin_scales is None or marlin_workspace is None:
-        return _build_bf16_plan(layer, None, None)
+        return _build_bf16_plan(layer, None, bias)
     
     bits = getattr(layer, '_offline_quant_bits', 4)
+    is_k_full = True
     
-    # Try direct GEMM
-    try:
-        import vllm._custom_ops as ops
-        if hasattr(ops, 'gptq_marlin_gemm'):
-            return DirectMarlinGemmPlan(
-                layer, sig, marlin_qweight, marlin_scales,
-                marlin_workspace, bits, True, ops.gptq_marlin_gemm
-            )
-    except (ImportError, AttributeError):
-        pass
+    out_features = getattr(layer, '_forward_out_features', None)
+    in_features = None
+    group_size = getattr(layer, '_offline_quant_group_size', 128)
     
-    # Use strategy-based plan
     if strategy is not None:
         if "gptq" in strategy.name:
             return OfflineGPTQMarlinPlan(
-                layer, sig, marlin_qweight, marlin_scales,
-                marlin_workspace, bits, True, strategy
+                sig, strategy, quant_kind,
+                marlin_qweight, marlin_scales, marlin_workspace,
+                bits, is_k_full,
+                in_features, out_features, group_size,
+                bias
             )
         else:
             return OfflineAWQMarlinPlan(
-                layer, sig, marlin_qweight, marlin_scales,
-                marlin_workspace, bits, True, strategy
+                sig, strategy, quant_kind,
+                marlin_qweight, marlin_scales, marlin_workspace,
+                bits, is_k_full,
+                in_features, out_features, group_size,
+                bias
             )
     
-    return _build_bf16_plan(layer, None, None)
+    return _build_bf16_plan(layer, None, bias)
 
 
 def rebuild_plan_if_needed(layer: torch.nn.Module, x: torch.Tensor,
@@ -257,7 +258,6 @@ def rebuild_plan_if_needed(layer: torch.nn.Module, x: torch.Tensor,
         True if plan was rebuilt, False otherwise
     """
     if not hasattr(layer, '_forward_plan') or layer._forward_plan is None:
-        # No plan exists, build one
         layer._forward_plan = build_forward_plan(layer, x, bias)
         return True
     
@@ -265,7 +265,6 @@ def rebuild_plan_if_needed(layer: torch.nn.Module, x: torch.Tensor,
     sig = plan.get_signature()
     
     if sig is None:
-        # Plan doesn't support signature validation, rebuild
         layer._forward_plan = build_forward_plan(layer, x, bias)
         return True
     
@@ -274,8 +273,7 @@ def rebuild_plan_if_needed(layer: torch.nn.Module, x: torch.Tensor,
     if (sig.device_type == dev.type and 
         sig.device_index == (dev.index if dev.index is not None else 0) and
         sig.x_dtype == x.dtype and 
-        sig.x_shape == tuple(x.shape) and 
-        sig.has_bias == (bias is not None)):
+        sig.x_shape == tuple(x.shape)):
         return False
     
     # Signature mismatch, rebuild

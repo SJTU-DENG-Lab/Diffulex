@@ -3,6 +3,8 @@ FP8 KV Cache Strategy with Running Max
 
 FP8 KV cache quantization using running max for dynamic scales.
 Supports both E4M3 and E5M2 formats.
+
+Includes custom Triton kernel support for on-the-fly dequantization.
 """
 
 import torch
@@ -10,6 +12,13 @@ from typing import Optional, Tuple
 
 from ..strategy import KVCacheQuantizationStrategy
 from ..registry import register_kv_cache_strategy
+
+# Try to import custom FP8 Triton kernel
+try:
+    from ..kernels.triton_kernels import fp8_kv_attention_forward
+    _HAS_FP8_TRITON_KERNEL = True
+except ImportError:
+    _HAS_FP8_TRITON_KERNEL = False
 
 
 # FP8 constants
@@ -144,6 +153,60 @@ class FP8E4M3KVCacheStrategy(KVCacheQuantizationStrategy):
             v = q_v.to(torch.bfloat16)
         
         return k, v
+    
+    def has_triton_kernel(self) -> bool:
+        """Check if custom Triton kernel is available."""
+        return _HAS_FP8_TRITON_KERNEL
+    
+    def triton_attention(
+        self,
+        q: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+        page_tables: torch.Tensor,
+        context_lens: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        softmax_scale: float,
+    ) -> Optional[torch.Tensor]:
+        """
+        Compute attention using custom FP8 Triton kernel.
+        
+        This avoids explicit dequantization by doing it on-the-fly in the kernel.
+        
+        Args:
+            q: Query tensor [total_seqlen, num_heads, head_dim]
+            k_cache: Key cache in FP8 [num_pages, page_size, num_kv_heads, head_dim]
+            v_cache: Value cache in FP8 [num_pages, page_size, num_kv_heads, head_dim]
+            k_scale: Per-request K scales
+            v_scale: Per-request V scales
+            page_tables: Page table mapping
+            context_lens: Context lengths per request
+            cu_seqlens_q: Cumulative sequence lengths
+            softmax_scale: Softmax scaling factor
+            
+        Returns:
+            Attention output or None if kernel fails
+        """
+        if not _HAS_FP8_TRITON_KERNEL:
+            return None
+        
+        try:
+            return fp8_kv_attention_forward(
+                q=q,
+                k_cache=k_cache,
+                v_cache=v_cache,
+                k_scale=k_scale,
+                v_scale=v_scale,
+                page_tables=page_tables,
+                context_lens=context_lens,
+                cu_seqlens_q=cu_seqlens_q,
+                softmax_scale=softmax_scale,
+                is_e4m3=(self.fp8_dtype == torch.float8_e4m3fn),
+            )
+        except Exception:
+            return None
 
 
 @register_kv_cache_strategy("fp8_e5m2")
