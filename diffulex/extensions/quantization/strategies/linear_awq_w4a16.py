@@ -24,6 +24,8 @@ class AWQW4A16LinearStrategy(LinearQuantizationStrategy):
     - scales: float16/bfloat16 scales
     """
     
+    is_offline_quantized = True
+    
     def __init__(self, bits: int = 4, group_size: int = 128):
         self.bits = bits
         self.group_size = group_size

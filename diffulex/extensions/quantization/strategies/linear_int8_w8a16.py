@@ -173,7 +173,7 @@ class INT8W8A16LinearStrategy(LinearQuantizationStrategy):
         
         # Store scales as 1D
         s_1d = s_reorder_1xn.reshape(-1).to(dtype=torch.bfloat16)
-        return q_reorder.contiguous(), s_1d.contiguous()
+        return q_reorder.contiguous(), {"scales": s_1d.contiguous()}
     
     def quantize_act_for_kernel(self, x: torch.Tensor,
                                 cache_key: Optional[str] = None) -> Tuple[torch.Tensor, Any]:

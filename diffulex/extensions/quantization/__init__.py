@@ -78,8 +78,7 @@ from .kernels import (
     VllmCutlassW4A8,
     VllmFp8LinearOp,
     # Triton kernels
-    Fp8KVAttentionKernel,
-    fp8_kv_attention_forward,
+    chunked_prefill_attn_unified_fp8,
     _HAS_TRITON_KERNELS,
 )
 
@@ -170,6 +169,8 @@ from .linear_plan_builder import build_forward_plan, rebuild_plan_if_needed
 # Offline quantization
 from .quantize_model import quantize_model
 
+
+
 __all__ = [
     # Bootstrap
     "enable",
@@ -198,8 +199,7 @@ __all__ = [
     "VllmAllSparkW8A16",
     "VllmCutlassW4A8",
     "VllmFp8LinearOp",
-    "Fp8KVAttentionKernel",
-    "fp8_kv_attention_forward",
+    "chunked_prefill_attn_unified_fp8",
     "_HAS_TRITON_KERNELS",
     
     # Configuration

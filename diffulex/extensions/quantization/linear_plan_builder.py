@@ -84,6 +84,12 @@ def _build_online_plan(layer: torch.nn.Module, example_x: torch.Tensor,
     if hasattr(layer, '_quant_strategy'):
         strategy = layer._quant_strategy
     
+    # If strategy not set on layer, get from context
+    if strategy is None:
+        from .context import get_linear_strategy
+        quant_kind = getattr(layer, 'quant_kind', 'other')
+        strategy = get_linear_strategy(quant_kind)
+    
     if strategy is None:
         return _build_bf16_plan(layer, example_x, bias)
     

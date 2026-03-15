@@ -1,44 +1,41 @@
 """
-INT8 W8A8 Linear Strategy - vLLM-aligned high-performance implementation.
+INT8 W8A8 Linear Strategy - Pre-quantization only
 
-Key optimizations (from feat/kv-cache-fp8-support):
-1. Activation quantization: vllm._custom_ops.scaled_int8_quant (CUDA kernel, dynamic per-token)
-2. GEMM: vllm._custom_ops.cutlass_scaled_mm (CUTLASS, no fallback)
-3. Weight layout: stored as K×N (transposed), matching CUTLASS requirements
-
-No dequantize fallback - forces CUTLASS path for performance.
+Weight is pre-quantized during model loading. No runtime weight quantization.
 """
 
-import torch
-import torch.nn.functional as F
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional, Tuple
 
-from ..strategy import LinearQuantizationStrategy
+import torch
+from torch import nn
+
+from .linear_bf16 import BF16LinearStrategy
 from ..registry import register_linear_strategy
 
-
+# vLLM custom ops for fast INT8 W8A8
 try:
     from vllm import _custom_ops as _vllm_ops
-except Exception:
+except ImportError:
     _vllm_ops = None
 
 
 @register_linear_strategy("int8", "int8")
-class INT8W8A8LinearStrategy(LinearQuantizationStrategy):
+class INT8W8A8LinearStrategy(BF16LinearStrategy):
     """
-    INT8 W8A8 linear quantization using vLLM's optimized CUDA kernels.
+    INT8 W8A8 quantization using vLLM's CUTLASS kernels.
     
-    Weight layout: stored as [K, N] int8 (transposed from original [N, K])
-    Scale layout: [1, N] float32 for broadcasting with per-token activation scales
+    - Weight: per-channel symmetric int8, pre-quantized during loading
+    - Activation: dynamic per-token int8 quantization
+    - Kernel: vLLM's cutlass_scaled_mm
+    
+    NOTE: This strategy requires PRE-QUANTIZED weights. It will fail if
+    called with unquantized (BF16) weights.
     """
+    
+    name = "int8_w8a8"
     
     def __init__(self):
-        # Cache: id(weight) -> (qweight_int8 [K,N], w_scales_fp32 [1,N])
-        self._weight_cache: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
-    
-    @property
-    def name(self) -> str:
-        return "int8_w8a8"
+        super().__init__()
     
     @property
     def linear_weight_format(self) -> str:
@@ -48,25 +45,16 @@ class INT8W8A8LinearStrategy(LinearQuantizationStrategy):
     def linear_act_format(self) -> str:
         return "int8"
     
-    def get_storage_dtype(self, device: torch.device) -> Tuple[torch.dtype, int]:
-        return (torch.int8, 1)
-    
-    def get_scale_shape(self, original_shape: Tuple[int, ...], **kwargs: Any) -> Tuple[int, ...]:
-        """Return scale shape for weight quantization."""
-        if len(original_shape) != 2:
-            raise ValueError(f"Expected 2D weight [N,K], got {original_shape}")
-        return (original_shape[0],)  # Per-output-channel: [N]
-    
-    def quantize(self, weight: torch.Tensor, **kwargs: Any) -> Tuple[torch.Tensor, Any]:
+    def quantize(self, weight: torch.Tensor) -> Tuple[torch.Tensor, dict]:
         """
-        Quantize weight to INT8.
+        Quantize weight to INT8 (per-channel symmetric).
         
         Args:
-            weight: [N, K] float tensor
+            weight: [N, K] BF16/FP16 weight tensor
             
         Returns:
-            qweight: [K, N] int8 (transposed for CUTLASS)
-            metadata: {"scales": [1, N] float32}
+            qweight: [K, N] int8 (column-major for CUTLASS)
+            meta: {"scales": [1, N] float32}
         """
         if weight.dim() != 2:
             raise ValueError(f"Expected 2D weight [N,K], got shape={tuple(weight.shape)}")
@@ -95,19 +83,19 @@ class INT8W8A8LinearStrategy(LinearQuantizationStrategy):
         *,
         device: Optional[torch.device] = None,
         **_: Any,
-    ) -> Tuple[torch.Tensor, Any]:
+    ) -> Tuple[torch.Tensor, dict]:
         """
         Quantize weight for kernel consumption.
         
         Returns:
             qweight: [K, N] int8 on target device
-            scales: [1, N] float32 on target device
+            meta: {"scales": [1, N] float32 on target device}
         """
         q_kn, meta = self.quantize(weight)
         if device is not None:
             q_kn = q_kn.to(device=device)
             meta["scales"] = meta["scales"].to(device=device)
-        return q_kn, meta["scales"]
+        return q_kn, meta
     
     def quantize_act_for_kernel(self, x: torch.Tensor,
                                 cache_key: Optional[str] = None) -> Tuple[torch.Tensor, Any]:
@@ -156,33 +144,32 @@ class INT8W8A8LinearStrategy(LinearQuantizationStrategy):
         INT8 W8A8 linear forward using vLLM's cutlass_scaled_mm.
         
         Args:
-            x: Input tensor [..., K]
-            weight: Quantized weight [K, N] int8, or original weight
+            x: Input tensor [..., K] (BF16/FP16)
+            weight: Pre-quantized weight [K, N] int8
             bias: Optional bias [N]
-            quant_scales: Weight scales [1, N] float32 (if weight is already quantized)
+            quant_scales: Weight scales [1, N] float32
             
         Returns:
-            output: [..., N]
+            output: [..., N] (BF16/FP16)
+            
+        Raises:
+            RuntimeError: If weight is not pre-quantized (dtype != int8)
         """
         if _vllm_ops is None:
             raise RuntimeError(
                 "vLLM custom ops are required for W8A8 (scaled_int8_quant / cutlass_scaled_mm)"
             )
         
-        # Get quantized weight and scales
-        if weight is not None and weight.dtype == torch.int8 and quant_scales is not None:
-            # Already quantized (from load-time quantization)
-            qweight = weight
-            w_scales = quant_scales
-        else:
-            # Need to quantize on-the-fly (cache by weight id)
-            wid = id(weight)
-            cached = self._weight_cache.get(wid)
-            if cached is None or cached[0].device != x.device:
-                qweight, w_scales = self.quantize_weight_for_kernel(weight, device=x.device)
-                self._weight_cache[wid] = (qweight, w_scales)
-            else:
-                qweight, w_scales = cached
+        # STRICT: Only accept pre-quantized weights
+        if weight is None or weight.dtype != torch.int8 or quant_scales is None:
+            raise RuntimeError(
+                f"INT8 W8A8 requires pre-quantized weight (dtype=int8) and scales, "
+                f"got weight.dtype={weight.dtype if weight is not None else None}, "
+                f"quant_scales={quant_scales is not None}"
+            )
+        
+        qweight = weight
+        w_scales = quant_scales
         
         # Reshape input: [..., K] -> [M, K]
         orig_shape = x.shape

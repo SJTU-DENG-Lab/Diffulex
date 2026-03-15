@@ -21,6 +21,8 @@ class GPTQMarlinW8A16LinearStrategy(LinearQuantizationStrategy):
     Uses pre-repacked Marlin format weights for optimal performance.
     """
     
+    is_offline_quantized = True
+    
     def __init__(self, group_size: int = 128):
         self.bits = 8
         self.group_size = group_size

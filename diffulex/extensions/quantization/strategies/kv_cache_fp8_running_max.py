@@ -13,9 +13,9 @@ from typing import Optional, Tuple
 from ..strategy import KVCacheQuantizationStrategy
 from ..registry import register_kv_cache_strategy
 
-# Try to import custom FP8 Triton kernel
+# Try to import custom FP8 Triton kernels
 try:
-    from ..kernels.triton_kernels import fp8_kv_attention_forward
+    from ..kernels.triton_kernels import chunked_prefill_attn_unified_fp8
     _HAS_FP8_TRITON_KERNEL = True
 except ImportError:
     _HAS_FP8_TRITON_KERNEL = False
@@ -161,51 +161,56 @@ class FP8E4M3KVCacheStrategy(KVCacheQuantizationStrategy):
     def triton_attention(
         self,
         q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
         k_cache: torch.Tensor,
         v_cache: torch.Tensor,
-        k_scale: torch.Tensor,
-        v_scale: torch.Tensor,
-        page_tables: torch.Tensor,
-        context_lens: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        softmax_scale: float,
+        attn_metadata,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
     ) -> Optional[torch.Tensor]:
         """
-        Compute attention using custom FP8 Triton kernel.
+        Compute attention using unified FP8 Triton kernel.
         
-        This avoids explicit dequantization by doing it on-the-fly in the kernel.
+        This kernel handles both:
+        - Stage 1: Attention against cached FP8 KV (dequantized on-the-fly)
+        - Stage 2: Attention against new BF16 KV
         
         Args:
-            q: Query tensor [total_seqlen, num_heads, head_dim]
+            q: Query tensor [total_seqlen, num_heads, head_dim] (BF16)
+            k: Key tensor [total_seqlen, num_kv_heads, head_dim] (BF16) - current step
+            v: Value tensor [total_seqlen, num_kv_heads, head_dim] (BF16) - current step
             k_cache: Key cache in FP8 [num_pages, page_size, num_kv_heads, head_dim]
             v_cache: Value cache in FP8 [num_pages, page_size, num_kv_heads, head_dim]
-            k_scale: Per-request K scales
-            v_scale: Per-request V scales
-            page_tables: Page table mapping
-            context_lens: Context lengths per request
-            cu_seqlens_q: Cumulative sequence lengths
-            softmax_scale: Softmax scaling factor
+            attn_metadata: Attention metadata object
+            k_scale: Per-tensor K scale (scalar float32)
+            v_scale: Per-tensor V scale (scalar float32)
             
         Returns:
-            Attention output or None if kernel fails
+            Attention output [total_seqlen, num_heads, head_dim] or None if kernel fails
         """
         if not _HAS_FP8_TRITON_KERNEL:
             return None
         
+        if k_scale is None or v_scale is None:
+            raise ValueError("FP8 KV cache Triton kernel requires k_scale and v_scale")
+        
         try:
-            return fp8_kv_attention_forward(
+            return chunked_prefill_attn_unified_fp8(
                 q=q,
+                k=k,
+                v=v,
                 k_cache=k_cache,
                 v_cache=v_cache,
                 k_scale=k_scale,
                 v_scale=v_scale,
-                page_tables=page_tables,
-                context_lens=context_lens,
-                cu_seqlens_q=cu_seqlens_q,
-                softmax_scale=softmax_scale,
-                is_e4m3=(self.fp8_dtype == torch.float8_e4m3fn),
+                attn_metadata=attn_metadata,
             )
-        except Exception:
+        except Exception as e:
+            # Fallback to None to trigger dequantization path
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"FP8 Triton kernel failed: {e}")
             return None
 
 

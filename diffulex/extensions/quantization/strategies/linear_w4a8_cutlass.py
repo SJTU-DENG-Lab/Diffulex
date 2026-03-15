@@ -61,6 +61,8 @@ class CutlassW4A8LinearStrategy(LinearQuantizationStrategy):
     - out_features % 128 == 0
     """
     
+    is_offline_quantized = True
+    
     def __init__(self, group_size: int = 128):
         if group_size != 128:
             raise ValueError(f"CutlassW4A8 only supports group_size=128, got {group_size}")

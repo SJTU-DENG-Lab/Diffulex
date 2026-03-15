@@ -101,11 +101,17 @@ def create_quantized_linear_class(base_class: Type[nn.Module]) -> Type[nn.Module
                 return  # No quantization enabled
             
             # Step 3: Check if we should quantize this layer
-            # Skip if already quantized or if it's not a weight we want to quantize
+            # Skip if already quantized (online or offline)
             if self.has_quantized_weight() or self.has_offline_quantized_weight():
                 return
             
-            # Step 4: Quantize weight immediately after loading
+            # Step 4: Skip offline quantization strategies
+            # Offline quantized weights (GPTQ/AWQ) are loaded via buffers, not weight param
+            # They are processed in _post_process_loaded_weights after loading
+            if hasattr(strategy, 'is_offline_quantized') and strategy.is_offline_quantized:
+                return
+            
+            # Step 5: Online quantization for BF16/FP16/FP32 weights
             try:
                 # Get the loaded weight data
                 weight = param.data
@@ -114,17 +120,21 @@ def create_quantized_linear_class(base_class: Type[nn.Module]) -> Type[nn.Module
                 if weight.dtype not in [torch.bfloat16, torch.float16, torch.float32]:
                     return
                 
-                # Quantize weight
                 q_weight, w_meta = strategy.quantize_weight_for_kernel(weight)
-                w_scale = w_meta.get("scale")
+                w_scale = w_meta.get("scales") if w_meta.get("scales") is not None else w_meta.get("scale")
                 w_zero = w_meta.get("zero_point")
                 
-                # Step 5: Store quantized weight
+                # Check if actual quantization happened (has scale means quantized)
+                if w_scale is None:
+                    # No quantization (e.g., BF16 strategy), keep original weight
+                    return
+                
+                # Step 6: Store quantized weight
                 self.set_quantized_weight(q_weight, w_scale, w_zero)
                 
-                # Step 6: Delete original weight to save memory
+                # Step 7: Delete original weight to save memory
                 # Replace param.data with empty tensor to free memory
-                # The actual data is now stored in quant_weight_int8 buffer
+                # The actual data is now stored in quant_weight buffer
                 param.data = torch.empty(0, dtype=weight.dtype, device=weight.device)
                 
                 # Remove from parameters (convert to buffer or just delete)

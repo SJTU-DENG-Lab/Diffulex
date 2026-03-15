@@ -9,7 +9,7 @@ import torch
 
 from .kernel_registry import LinearKernel, KVCacheKernel
 from .kernel_registry import register_kernel as _register
-from .kernel_availability import check_vllm_op_available, warn_kernel_unavailable
+from .kernel_availability import check_vllm_op_available, check_torch_c_op_available, warn_kernel_unavailable
 
 
 class VllmKernelBase:
@@ -47,7 +47,7 @@ class VllmKernelBase:
 
 @_register("vllm_gptq_gemm")
 class VllmGPTQGemm(VllmKernelBase, LinearKernel):
-    """GPTQ GEMM kernel (W2/W3/W4/W8)."""
+    """GPTQ GEMM kernel (W2/W3/W4/W8) via vllm._custom_ops."""
     
     name = "vllm_gptq_gemm"
     description = "GPTQ GEMM for 2/3/4/8-bit weights"
@@ -58,6 +58,59 @@ class VllmGPTQGemm(VllmKernelBase, LinearKernel):
                 bits: int) -> torch.Tensor:
         """Execute GPTQ GEMM."""
         return self._op(x, qweight, qzeros, scales, g_idx, is_shuffled, bits)
+
+
+@_register("torch_c_gptq_gemm")
+class TorchCGPTQGemm(LinearKernel):
+    """GPTQ GEMM kernel via torch.ops._C (vLLM's torch library interface)."""
+    
+    name = "torch_c_gptq_gemm"
+    description = "GPTQ GEMM via torch.ops._C for 2/3/4/8-bit weights"
+    
+    _op: Optional[Callable] = None
+    _checked: bool = False
+    
+    @classmethod
+    def is_available(cls) -> bool:
+        """Check if torch.ops._C.gptq_gemm is available."""
+        if not cls._checked:
+            cls._op = None
+            if check_torch_c_op_available("gptq_gemm"):
+                try:
+                    cls._op = torch.ops._C.gptq_gemm
+                except (ImportError, AttributeError):
+                    pass
+            cls._checked = True
+        return cls._op is not None
+    
+    @classmethod
+    def get_missing_reason(cls) -> Optional[str]:
+        """Get reason why kernel is unavailable."""
+        if cls.is_available():
+            return None
+        return "torch.ops._C.gptq_gemm not available. Install vLLM with CUDA support."
+    
+    def __init__(self):
+        if not self.is_available():
+            raise RuntimeError(f"{self.__class__.__name__} is not available")
+    
+    def forward(self, x: torch.Tensor, qweight: torch.Tensor, qzeros: torch.Tensor,
+                scales: torch.Tensor, g_idx: torch.Tensor,
+                use_exllama: bool, use_v2_format: bool,
+                bits: int) -> torch.Tensor:
+        """Execute GPTQ GEMM via torch.ops._C.
+        
+        Args:
+            x: Input tensor (FP16)
+            qweight: Quantized weight tensor (int32)
+            qzeros: Quantized zeros tensor (int32)
+            scales: Scales tensor (FP16/FP32)
+            g_idx: Group indices (int), empty tensor if not used
+            use_exllama: Whether to use Exllama format
+            use_v2_format: Whether to use v2 format
+            bits: Quantization bits (2, 3, 4, or 8)
+        """
+        return self._op(x, qweight, qzeros, scales, g_idx, use_exllama, use_v2_format, bits)
 
 
 @_register("vllm_awq_gemm")
