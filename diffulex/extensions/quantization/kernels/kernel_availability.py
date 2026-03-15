@@ -7,6 +7,7 @@ Tracks availability of optimized kernels and warns when falling back.
 import warnings
 import os
 from typing import Set, Optional
+import torch
 
 # Track which warnings have been issued to avoid spamming
 _issued_warnings: Set[str] = set()
@@ -27,10 +28,18 @@ def is_strict_mode() -> bool:
 
 
 def check_vllm_op_available(op_name: str) -> bool:
-    """Check if a vLLM custom op is available."""
+    """Check if a vLLM custom op is available via vllm._custom_ops."""
     try:
         import vllm._custom_ops as ops
         return hasattr(ops, op_name)
+    except (ImportError, AttributeError):
+        return False
+
+
+def check_torch_c_op_available(op_name: str) -> bool:
+    """Check if a vLLM custom op is available via torch.ops._C."""
+    try:
+        return hasattr(torch.ops._C, op_name)
     except (ImportError, AttributeError):
         return False
 

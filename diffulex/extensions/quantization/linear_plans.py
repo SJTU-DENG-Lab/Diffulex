@@ -136,15 +136,12 @@ class OfflineGPTQPlan(ForwardPlanBase):
         return self._strategy.linear_forward(
             x, None, self._bias,
             quant_kind=self._quant_kind,
-            gptq_qweight=self._qweight,
-            gptq_qzeros=self._qzeros,
-            gptq_scales=self._scales,
-            gptq_g_idx=self._g_idx,
-            weight_bits=self._bits,
-            use_v2_format=False,
-            out_features=self._out_features,
-            in_features=self._in_features,
-            group_size=self._group_size,
+            qweight=self._qweight,
+            qzeros=self._qzeros,
+            scales=self._scales,
+            g_idx=self._g_idx,
+            bits=self._bits,
+            is_shuffled=self._is_shuffled,
         )
     
     def get_signature(self) -> ForwardPlanSig:

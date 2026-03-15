@@ -21,6 +21,8 @@ class AWQMarlinW4A16LinearStrategy(LinearQuantizationStrategy):
     Uses pre-repacked Marlin format weights from AWQ checkpoints.
     """
     
+    is_offline_quantized = True
+    
     def __init__(self, bits: int = 4, group_size: int = 128):
         self.bits = bits
         self.group_size = group_size

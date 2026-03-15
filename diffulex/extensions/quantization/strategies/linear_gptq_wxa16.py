@@ -2,7 +2,7 @@
 GPTQ W*x*A16 Linear Strategy - Unified implementation for all bit widths.
 
 Supports 2-bit, 3-bit, 4-bit, and 8-bit weight quantization with BF16 activation.
-Uses vLLM's gptq_gemm op for optimized inference.
+Uses vLLM's gptq_gemm op via torch.ops._C for optimized inference.
 """
 
 import torch
@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..strategy import LinearQuantizationStrategy
 from ..registry import register_linear_strategy
-from ..kernels.kernel_availability import warn_kernel_unavailable, check_vllm_op_available
+from ..kernels.kernel_availability import warn_kernel_unavailable, check_torch_c_op_available
 
 
 def _unpack_gptq_weights(qweight: torch.Tensor, bits: int, 
@@ -87,6 +87,7 @@ class GPTQWxa16LinearStrategy(LinearQuantizationStrategy):
     """
     
     SUPPORTED_BITS = [2, 3, 4, 8]
+    is_offline_quantized = True  # Mark as offline quantization
     
     def __init__(self, bits: int = 4, group_size: int = 128, desc_act: bool = False):
         if bits not in self.SUPPORTED_BITS:
@@ -96,16 +97,14 @@ class GPTQWxa16LinearStrategy(LinearQuantizationStrategy):
         self.group_size = group_size
         self.desc_act = desc_act
         
-        # Check for vLLM GPTQ ops
+        # Check for vLLM GPTQ ops via torch.ops._C
         self.gptq_gemm = None
         self.shuffle_weights = None
         self._kernel_warned = False
+        self._empty_g_idx_cache: Dict[int, torch.Tensor] = {}
         
-        if check_vllm_op_available('gptq_gemm'):
-            import vllm._custom_ops as ops
-            self.gptq_gemm = ops.gptq_gemm
-            if hasattr(ops, 'gptq_shuffle'):
-                self.shuffle_weights = ops.gptq_shuffle
+        if check_torch_c_op_available('gptq_gemm'):
+            self.gptq_gemm = torch.ops._C.gptq_gemm
         # Note: Warning is deferred to first forward call to avoid spam during import
     
     @property
@@ -169,19 +168,37 @@ class GPTQWxa16LinearStrategy(LinearQuantizationStrategy):
         if scales is None:
             raise ValueError("GPTQ forward requires 'scales' buffer")
         
-        # Use vLLM GPTQ GEMM if available
+        # Use vLLM GPTQ GEMM via torch.ops._C if available
         if self.gptq_gemm is not None:
             try:
-                x_2d = x.reshape(-1, x.shape[-1])
+                # vLLM expects FP16 activations
+                x_in = x if x.dtype == torch.float16 else x.to(dtype=torch.float16)
+                x_2d = x_in.reshape(-1, x_in.shape[-1]) if x_in.dim() != 2 else x_in
+                if not x_2d.is_contiguous():
+                    x_2d = x_2d.contiguous()
                 
+                # Handle g_idx - use cached empty tensor per device
+                device = x.device
+                dev_key = int(device.index) if device.type == "cuda" and device.index is not None else -1
+                if g_idx is None or g_idx.numel() == 0:
+                    empty = self._empty_g_idx_cache.get(dev_key)
+                    if empty is None or empty.device != device:
+                        empty = torch.empty((0,), device=device, dtype=torch.int)
+                        self._empty_g_idx_cache[dev_key] = empty
+                    g_idx_t = empty
+                else:
+                    g_idx_t = g_idx if (g_idx.device == device and g_idx.dtype == torch.int) else g_idx.to(device=device, dtype=torch.int)
+                
+                # Call torch.ops._C.gptq_gemm (vLLM style)
                 output = self.gptq_gemm(
                     x_2d,
                     qweight,
                     qzeros,
                     scales,
-                    g_idx if g_idx is not None else torch.empty(0, dtype=torch.int32, device=x.device),
-                    is_shuffled,
-                    bits
+                    g_idx_t,
+                    True,   # use_exllama
+                    False,  # use_v2_format
+                    bits,
                 )
                 
                 output_shape = list(x.shape[:-1]) + [scales.shape[1]]

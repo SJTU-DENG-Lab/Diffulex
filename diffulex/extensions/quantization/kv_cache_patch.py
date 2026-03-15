@@ -7,14 +7,25 @@ Uses dynamic attribute injection to avoid modifying original code.
 
 import torch
 from typing import Optional, Tuple, Any, Dict
+import logging
 
 from .context import get_kv_cache_strategy
 
-# Import custom FP8 Triton kernel
+logger = logging.getLogger(__name__)
+
+# Import custom FP8 Triton kernel (new unified version with Stage 1 + Stage 2)
 try:
-    from .kernels.triton_kernels import fp8_kv_attention_forward
-    _HAS_FP8_TRITON_KERNEL = True
-except ImportError:
+    from .kernels.triton_kernels import chunked_prefill_attn_unified_fp8
+    # Enable Triton kernel for all CUDA devices (including RTX 4090 sm_89)
+    # NOTE: Kernel uses FP32 intermediate to avoid cvt.bf16.f16 (sm_90+ requirement)
+    import torch
+    if torch.cuda.is_available():
+        _HAS_FP8_TRITON_KERNEL = True
+        print(f"[Quantization] FP8 unified Triton kernel enabled for device capability {torch.cuda.get_device_capability()}")
+    else:
+        _HAS_FP8_TRITON_KERNEL = False
+except ImportError as e:
+    print(f"[Quantization] FP8 unified Triton kernel not available: {e}")
     _HAS_FP8_TRITON_KERNEL = False
 
 
@@ -179,37 +190,79 @@ def use_fp8_triton_kernel() -> bool:
     return _HAS_FP8_TRITON_KERNEL
 
 
-def run_fp8_kv_attention(
-    q: torch.Tensor,
-    k_cache: torch.Tensor,
-    v_cache: torch.Tensor,
-    k_scale: torch.Tensor,
-    v_scale: torch.Tensor,
-    page_tables: torch.Tensor,
-    context_lens: torch.Tensor,
-    cu_seqlens_q: torch.Tensor,
-    softmax_scale: float,
-    is_e4m3: bool = True,
-) -> Optional[torch.Tensor]:
-    """
-    Run FP8 KV attention using custom Triton kernel.
-    
-    Returns None if kernel is not available.
-    """
-    if not _HAS_FP8_TRITON_KERNEL:
-        return None
-    
-    try:
-        return fp8_kv_attention_forward(
-            q, k_cache, v_cache, k_scale, v_scale,
-            page_tables, context_lens, cu_seqlens_q,
-            softmax_scale, is_e4m3
-        )
-    except Exception:
-        return None
-
-
 # Model Runner patching
+def patch_allocate_kv_cache_method(model_runner_class):
+    """
+    Patch ModelRunnerBase.allocate_kv_cache class method to support quantization.
+    
+    This must be called before any model runner instance is created.
+    """
+    if hasattr(model_runner_class, '_allocate_kv_cache_patched'):
+        return
+    model_runner_class._allocate_kv_cache_patched = True
+    
+    # Store original allocate_kv_cache
+    original_allocate = model_runner_class.allocate_kv_cache
+    
+    def allocate_kv_cache_with_quant(self):
+        """Allocate KV cache with quantization support."""
+        # Get quantization strategy before allocation
+        strategy = get_kv_cache_strategy()
+        
+        if strategy is not None:
+            # Store strategy for later use
+            self._kv_cache_strategy = strategy
+            self.kv_cache_dtype = getattr(strategy, 'name', 'bf16')
+            
+            # Determine storage dtype from strategy
+            storage_dtype_info = strategy.get_storage_dtype(self)
+            if isinstance(storage_dtype_info, tuple):
+                storage_dtype = storage_dtype_info[0]
+            else:
+                storage_dtype = storage_dtype_info
+            
+            # Temporarily override dtype for allocation
+            original_dtype = getattr(self, 'default_dtype', torch.bfloat16)
+            self._original_dtype_for_kv = original_dtype
+            self.default_dtype = storage_dtype if storage_dtype != torch.float8_e4m3fn else torch.bfloat16
+            
+            # Store FP8 info if needed
+            if storage_dtype == torch.float8_e4m3fn:
+                self._kv_cache_storage_dtype = torch.float8_e4m3fn
+                self._kv_cache_compute_dtype = torch.bfloat16
+        
+        # Call original allocation
+        result = original_allocate(self)
+        
+        # Restore dtype and convert allocated cache if needed
+        if hasattr(self, '_original_dtype_for_kv'):
+            self.default_dtype = self._original_dtype_for_kv
+            delattr(self, '_original_dtype_for_kv')
+        
+        # If FP8 was requested, convert the allocated cache
+        if hasattr(self, '_kv_cache_storage_dtype') and self._kv_cache_storage_dtype == torch.float8_e4m3fn:
+            # Convert allocated caches to FP8
+            if hasattr(self, 'kv_cache') and self.kv_cache is not None:
+                self.kv_cache = self.kv_cache.to(torch.float8_e4m3fn)
+                
+                # Update attention module references for unified layout
+                # Find attention modules and re-assign their cache views
+                attn_modules = [m for m in self.model.modules() if hasattr(m, 'k_cache') and hasattr(m, 'v_cache')]
+                for layer_id, m in enumerate(attn_modules):
+                    m.k_cache = self.kv_cache[0, layer_id]
+                    m.v_cache = self.kv_cache[1, layer_id]
+            
+            if hasattr(self, 'k_cache') and self.k_cache is not None:
+                self.k_cache = self.k_cache.to(torch.float8_e4m3fn)
+                self.v_cache = self.v_cache.to(torch.float8_e4m3fn)
+            
+            logger.info(f"KV cache allocated with dtype: {torch.float8_e4m3fn}")
+        
+        return result
+    
+    model_runner_class.allocate_kv_cache = allocate_kv_cache_with_quant
+
+
 def patch_model_runner(model_runner):
     """
     Patch ModelRunner with KV cache quantization support.
@@ -221,8 +274,8 @@ def patch_model_runner(model_runner):
     
     model_runner._kv_quant_patched = True
     
-    # Store original allocate_kv_cache
-    if hasattr(model_runner, 'allocate_kv_cache'):
+    # Store original allocate_kv_cache (instance level)
+    if hasattr(model_runner, 'allocate_kv_cache') and not hasattr(model_runner.__class__, '_allocate_kv_cache_patched'):
         original_allocate = model_runner.allocate_kv_cache
         
         def allocate_kv_cache_with_quant(*args, **kwargs):
@@ -247,7 +300,17 @@ def patch_model_runner(model_runner):
             # Dequantize if needed
             if result is not None and model_runner._kv_cache_strategy is not None:
                 k, v = result
-                k, v = model_runner._kv_cache_strategy.dequantize_kv_for_compute(k, v)
+                
+                # For FP8 with custom kernel, skip dequantization - kernel handles it
+                strategy = model_runner._kv_cache_strategy
+                if hasattr(strategy, 'name') and 'fp8' in strategy.name.lower():
+                    has_kernel = getattr(strategy, 'has_triton_kernel', lambda: False)()
+                    if has_kernel:
+                        # Skip dequantization - kernel will handle it
+                        return result
+                
+                # Dequantize for non-FP8 or when kernel not available
+                k, v = strategy.dequantize_kv_for_compute(k, v)
                 result = (k, v)
             
             return result
@@ -290,3 +353,93 @@ def _init_runner_kv_quantization(model_runner):
             num_layers, max_num_seqs, max_seq_len, num_heads,
             dtype=torch.float32, device=device
         )
+
+
+# Attention class patching
+def patch_attention_class():
+    """
+    Patch Attention class to use custom FP8 Triton kernel when available.
+    This is called during extension initialization.
+    """
+    import warnings
+    
+    try:
+        from diffulex.attention.attn_impl import Attention
+        from diffulex_kernel import chunked_prefill_attn_unified
+    except ImportError:
+        return
+    
+    # Store original forward
+    if hasattr(Attention, '_original_forward'):
+        return  # Already patched
+    
+    Attention._original_forward = Attention.forward
+    
+    def forward_with_fp8_kernel(self, q, k, v, mask=None):
+        """Forward that uses custom FP8 unified kernel when available."""
+        from einops import rearrange
+        from diffulex.attention import fetch_attn_metadata
+        from diffulex_kernel import (
+            store_kv_cache_distinct_layout,
+            store_kv_cache_unified_layout,
+            chunked_prefill_attn_unified,
+        )
+        from .context import get_kv_cache_strategy
+        
+        # Reshape
+        q = rearrange(q, "s (nh hd) -> s nh hd", nh=self.num_heads, hd=self.head_dim)
+        k = rearrange(k, "s (nkvh hd) -> s nkvh hd", nkvh=self.num_kv_heads, hd=self.head_dim)
+        v = rearrange(v, "s (nkvh hd) -> s nkvh hd", nkvh=self.num_kv_heads, hd=self.head_dim)
+        
+        attn_metadata = fetch_attn_metadata()
+        k_cache, v_cache = self.k_cache, self.v_cache
+        is_unified_layout = attn_metadata.kv_cache_layout == "unified"
+        
+        # Store KV cache
+        if k_cache.numel() and v_cache.numel():
+            if attn_metadata.need_kv_cache_store:
+                store_kv_cache = store_kv_cache_unified_layout if is_unified_layout else store_kv_cache_distinct_layout
+                store_kv_cache(k, v, k_cache, v_cache, attn_metadata.slot_mapping, attn_metadata)
+        
+        # Try to use custom FP8 Triton kernel through strategy layer
+        strategy = get_kv_cache_strategy()
+        if strategy is not None and k_cache.dtype == torch.float8_e4m3fn and _HAS_FP8_TRITON_KERNEL:
+            try:
+                if hasattr(strategy, 'has_triton_kernel') and strategy.has_triton_kernel():
+                    # Get scales from strategy (per-tensor running max)
+                    # For now use default scales (1.0) as scale management needs integration
+                    num_reqs = len(attn_metadata.context_lens)
+                    k_scale = torch.tensor(1.0, dtype=torch.float32, device=q.device)
+                    v_scale = torch.tensor(1.0, dtype=torch.float32, device=q.device)
+                    
+                    # Call unified FP8 kernel through strategy
+                    # This handles both Stage 1 (cached FP8 KV) and Stage 2 (new BF16 KV)
+                    o = strategy.triton_attention(
+                        q=q,
+                        k=k,  # New K (BF16) for Stage 2
+                        v=v,  # New V (BF16) for Stage 2
+                        k_cache=k_cache,  # Cached K (FP8) for Stage 1
+                        v_cache=v_cache,  # Cached V (FP8) for Stage 1
+                        attn_metadata=attn_metadata,
+                        k_scale=k_scale,
+                        v_scale=v_scale,
+                    )
+                    if o is not None:
+                        return rearrange(o, "s nh hd -> s (nh hd)").contiguous()
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(f"FP8 unified kernel failed: {e}")
+                pass  # Fallback to standard kernel
+        
+        # Standard kernel with on-the-fly dequantization
+        if k_cache.dtype == torch.float8_e4m3fn:
+            k_cache_bf16 = k_cache.to(torch.bfloat16)
+            v_cache_bf16 = v_cache.to(torch.bfloat16)
+        else:
+            k_cache_bf16, v_cache_bf16 = k_cache, v_cache
+            
+        o = chunked_prefill_attn_unified(q, k, v, k_cache_bf16, v_cache_bf16, attn_metadata)
+        return rearrange(o, "s nh hd -> s (nh hd)").contiguous()
+    
+    Attention.forward = forward_with_fp8_kernel

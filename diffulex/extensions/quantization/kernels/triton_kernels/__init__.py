@@ -4,17 +4,16 @@ Custom Triton Kernels
 Pure Triton implementations for operations not covered by vLLM kernels.
 """
 
+# Unified FP8 kernel (Stage 1 + Stage 2)
 try:
-    from .fp8_kv_attention import (
-        Fp8KVAttentionKernel,
-        fp8_kv_attention_forward,
+    from .chunked_prefill_attn_unified_fp8 import (
+        chunked_prefill_attn_unified_fp8,
     )
-    _HAS_FP8_KERNEL = True
+    _HAS_FP8_UNIFIED_KERNEL = True
 except ImportError:
-    _HAS_FP8_KERNEL = False
+    _HAS_FP8_UNIFIED_KERNEL = False
 
 __all__ = [
-    "Fp8KVAttentionKernel",
-    "fp8_kv_attention_forward",
-    "_HAS_FP8_KERNEL",
+    "chunked_prefill_attn_unified_fp8",
+    "_HAS_FP8_UNIFIED_KERNEL",
 ]

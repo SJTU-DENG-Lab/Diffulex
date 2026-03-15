@@ -109,7 +109,7 @@ class FP8E4M3W8A16LinearStrategy(LinearQuantizationStrategy):
         if device is not None:
             q_fp8 = q_fp8.to(device=device)
             meta["scales"] = meta["scales"].to(device=device)
-        return q_fp8, meta["scales"]
+        return q_fp8, meta
     
     def quantize_act_for_kernel(self, x: torch.Tensor,
                                 cache_key: Optional[str] = None) -> Tuple[torch.Tensor, Any]:

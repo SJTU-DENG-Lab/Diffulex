@@ -38,14 +38,13 @@ from .vllm_kernels import (
 # Import custom Triton kernels
 try:
     from .triton_kernels import (
-        Fp8KVAttentionKernel,
-        fp8_kv_attention_forward,
+        chunked_prefill_attn_unified_fp8,
+        _HAS_FP8_UNIFIED_KERNEL,
     )
     _HAS_TRITON_KERNELS = True
 except ImportError:
     _HAS_TRITON_KERNELS = False
-    Fp8KVAttentionKernel = None
-    fp8_kv_attention_forward = None
+    chunked_prefill_attn_unified_fp8 = None
 
 __all__ = [
     # Registry
@@ -70,7 +69,6 @@ __all__ = [
     "VllmCutlassW4A8",
     "VllmFp8LinearOp",
     # Triton kernels
-    "Fp8KVAttentionKernel",
-    "fp8_kv_attention_forward",
+    "chunked_prefill_attn_unified_fp8",
     "_HAS_TRITON_KERNELS",
 ]
