@@ -1,0 +1,36 @@
+engine:
+  model_path: "/data1/ckpts/JetLM/SDAR-1.7B-Chat-b32"
+  tokenizer_path: null
+  model_name: "sdar"
+  decoding_strategy: "multi_bd"
+  mask_token_id: 151669
+
+  use_lora: false
+  lora_path: ""
+
+  tensor_parallel_size: 1
+  data_parallel_size: 1
+  gpu_memory_utilization: 0.3
+  max_model_len: 1024
+  max_num_batched_tokens: 4096
+  max_num_reqs: 1
+
+  enforce_eager: true
+  kv_cache_layout: "unified"
+
+  decoding_thresholds:
+    add_block_threshold: 0.1
+    semi_complete_threshold: 0.9
+    decoding_threshold: 0.95
+  block_size: 32
+  buffer_size: 2
+
+eval:
+  dataset_name: "gsm8k"
+  dataset_split: "test"
+  dataset_limit: 5
+  temperature: 0.0
+  max_tokens: 256
+  add_bos_token: true
+  output_dir: "benchmark_results"
+  save_results: false
