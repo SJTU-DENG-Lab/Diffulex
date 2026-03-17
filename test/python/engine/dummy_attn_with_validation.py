@@ -24,11 +24,8 @@ class AttentionWithValidation(OriginalAttention):
         output = super().forward(q, k, v, mask)
 
         # Run reference implementation
-        try:
-            ref_output = self._compute_reference(q, k, v, attn_metadata)
-            self._validate_output(output, ref_output, attn_metadata)
-        except Exception as e:
-            self.error_log.append(f"Validation failed: {e}")
+        ref_output = self._compute_reference(q, k, v, attn_metadata)
+        self._validate_output(output, ref_output, attn_metadata)
 
         return output
 
@@ -44,6 +41,7 @@ class AttentionWithValidation(OriginalAttention):
         cu_seqlens_q = metadata.cu_seqlens_q
         valid_slices = getattr(metadata, 'valid_slices', None)
         page_size = metadata.page_size
+        block_size = metadata.block_size
 
         num_seqs = len(cu_seqlens_q) - 1
         output = torch.zeros_like(q_reshaped)
@@ -88,12 +86,28 @@ class AttentionWithValidation(OriginalAttention):
                 k_full = k_new
                 v_full = v_new
 
+            # Build block-causal mask (aligned with kernel line 179-181)
+            mask = None
+            if block_size > 0:
+                qi = torch.arange(valid_q_len, device=q.device)
+                kj = torch.arange(valid_q_len, device=q.device)
+                # Kernel: ((offs_q_block // DLLM_BLOCK_SIZE + 1) * DLLM_BLOCK_SIZE)[:, None] > offs_kv_block[None, :]
+                block_ends = ((qi // block_size) + 1) * block_size
+                new_kv_mask = block_ends[:, None] > kj[None, :]
+
+                if ctx_len > 0:
+                    cache_mask = torch.ones(valid_q_len, ctx_len, dtype=torch.bool, device=q.device)
+                    mask = torch.cat([cache_mask, new_kv_mask], dim=1)
+                else:
+                    mask = new_kv_mask
+                mask = mask.unsqueeze(0).unsqueeze(0)
+
             q_sdpa = rearrange(q_seq, "s h d -> 1 h s d")
             k_sdpa = rearrange(k_full, "s h d -> 1 h s d")
             v_sdpa = rearrange(v_full, "s h d -> 1 h s d")
 
             attn_out = F.scaled_dot_product_attention(
-                q_sdpa, k_sdpa, v_sdpa, dropout_p=0.0, is_causal=False, scale=scale, enable_gqa=True
+                q_sdpa, k_sdpa, v_sdpa, attn_mask=mask, dropout_p=0.0, is_causal=False, scale=scale, enable_gqa=True
             )
             output[q_start:q_start + valid_q_len] = rearrange(attn_out, "1 h s d -> s h d")
 
