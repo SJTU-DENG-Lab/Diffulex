@@ -57,18 +57,7 @@ class SamplerBase(nn.Module):
         if top_k is not None:
             logits = self.top_k_logits(logits, top_k)
 
-        # Softmax in float32: bf16 logits often yield NaN/invalid probs under sampling,
-        # which triggers CUDA assert inside Categorical/multinomial (surfacing async at later ops).
-        logits_f = logits.float()
-        probs = torch.softmax(logits_f, dim=-1)
-        probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-        probs = torch.clamp(probs, min=0.0)
-        row_sums = probs.sum(dim=-1, keepdim=True)
-        # All-masked / all -inf rows → softmax is NaN → zeros → multinomial asserts; use uniform.
-        n_cls = probs.size(-1)
-        uniform = torch.full_like(probs, 1.0 / float(n_cls))
-        safe = row_sums > 1e-8
-        probs = torch.where(safe, probs / row_sums.clamp(min=1e-12), uniform)
+        probs = torch.softmax(logits, dim=-1)
 
         if temperature > 0:
             try:
