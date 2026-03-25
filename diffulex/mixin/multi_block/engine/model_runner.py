@@ -127,6 +127,7 @@ class ModelRunnerMultiBlockMixin:
                 req.last_kv_mapping_trace = trace
             else:
                 req.last_kv_mapping_trace = None
+            req.last_sampler_trace = None
             status_table.append(prepared["status"])
             prefix_lens_list.append(prepared["prefix_len"])
             padded_prefix_lens_list.append(prepared["padded_prefix_len"])

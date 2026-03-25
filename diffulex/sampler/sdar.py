@@ -17,8 +17,11 @@ class SDARSampler(DllmSamplerNoShiftBase):
         **kwargs,
     ) -> torch.Tensor:
         high_conf_indices = torch.where(initial_confidence > threshold)[0]
-        if len(high_conf_indices) == 0:
-            max_prob_idx = initial_confidence.argmax()
-            return max_prob_idx.view(1)
-        max_prob_idx = initial_confidence.argmax()
-        return torch.unique(torch.cat([high_conf_indices, max_prob_idx.view(1)]))
+        if block.should_force_decode_topk:
+            topk_idx = (
+                torch.topk(confidence, 1)[1]
+                if len(high_conf_indices) == 0
+                else torch.tensor([], device=confidence.device, dtype=torch.long)
+            )
+            return torch.unique(torch.cat([topk_idx, high_conf_indices]))
+        return high_conf_indices

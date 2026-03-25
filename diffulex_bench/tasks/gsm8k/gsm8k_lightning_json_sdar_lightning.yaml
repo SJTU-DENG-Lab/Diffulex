@@ -1,0 +1,28 @@
+tag:
+  - math_word_problems
+task: gsm8k_lightning_json_sdar_lightning
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files: /home/jyj/workspace/denglab-diffulex/MultiBD/multi_bd/eval/data/lightning/GSM8K.json
+test_split: train
+output_type: generate_until
+doc_to_text: !function sdar_utils.doc_to_text_math
+doc_to_target: "{{ground_truth_answer}}"
+process_results: !function sdar_utils.process_results_math
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "<|im_end|>"
+    - "</s>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 8192
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 1.0
+  description: "GSM8K from LightningRL data/GSM8K.json (question + ground_truth_answer). Use without --apply_chat_template for parity with sample.py. max_gen_toks matches Lightning eval.yaml max_token; engine may still cap via strategy max_new_tokens."

@@ -382,6 +382,26 @@ class DllmReqMultiBlockMixin:
         for block_id in range(self.num_prefix_blocks):
             self.dllm_blocks[block_id].in_cache()
 
+    def apply_cached_prefix_pages(self):
+        if not getattr(self, "is_multi_block", False):
+            return
+        if not self.page_cache_missed:
+            return
+
+        cached_pages = 0
+        for missed in self.page_cache_missed:
+            if missed:
+                break
+            cached_pages += 1
+
+        if cached_pages == 0:
+            return
+
+        blocks_per_page = self.page_size // self.block_size
+        cached_blocks = min(cached_pages * blocks_per_page, len(self.dllm_blocks))
+        for block_id in range(cached_blocks):
+            self.dllm_blocks[block_id].in_cache()
+
     def postprocess(self):
         self.maybe_postprocess_prefix_blocks()
         block_id = 0

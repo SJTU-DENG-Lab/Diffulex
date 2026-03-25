@@ -37,6 +37,8 @@ class ReqStep:
 
     # Populated when engine saves KV mapping trace (multi-block prepare); see Config.save_kv_mapping_trace.
     kv_mapping_trace: dict | None = None
+    # Populated from sampler output maps during scheduler postprocess for block-by-block diffing.
+    sampler_trace: dict | None = None
 
     def to_dict(self) -> dict:
         d = dict(
@@ -50,6 +52,8 @@ class ReqStep:
         )
         if self.kv_mapping_trace is not None:
             d["kv_mapping_trace"] = self.kv_mapping_trace
+        if self.sampler_trace is not None:
+            d["sampler_trace"] = self.sampler_trace
         return d
 
 
@@ -164,6 +168,7 @@ class GenerationOutputs:
                 continue
             cur_trajectory = self.trajectories[prompt_idx]
             kv_trace = getattr(req, "last_kv_mapping_trace", None)
+            sampler_trace = getattr(req, "last_sampler_trace", None)
             step_id = len(cur_trajectory.trajectory)
             cur_trajectory.trajectory.append(
                 ReqStep(
@@ -175,6 +180,7 @@ class GenerationOutputs:
                     block_size=req.block_size,
                     buffer_bids=[block.block_id for block in req.dllm_block_buffer.dllm_blocks],
                     kv_mapping_trace=kv_trace,
+                    sampler_trace=sampler_trace,
                 )
             )
             cur_trajectory.token_ids = req.truncated_response.copy() if req.truncated_response else []

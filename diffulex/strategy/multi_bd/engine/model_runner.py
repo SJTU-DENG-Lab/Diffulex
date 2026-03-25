@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 
 from multiprocessing.synchronize import Event
 
@@ -26,7 +27,7 @@ class MultiBDModelRunner(ModelRunnerBase):
             set_multi_bd_attn_metadata, reset_multi_bd_attn_metadata, fetch_multi_bd_attn_metadata
         )
         self.mask_token_id = config.mask_token_id
-        self.is_prefix_full = False
+        self.is_prefix_full = os.environ.get("DIFFULEX_MULTI_BLOCK_PREFIX_FULL", "0") == "1"
 
         super().__init__(config, rank, event)
 

@@ -32,6 +32,7 @@ class SchedulerMultiBlockMixin:
 
             num_reqs += 1
             self.kv_cache_manager.allocate(req)
+            req.apply_cached_prefix_pages()
             if req.is_preempted:
                 self.kv_cache_manager.may_append(req)
 
@@ -105,6 +106,14 @@ class SchedulerMultiBlockMixin:
             true_ids_map = sample_output.true_local_ids_map.get(req_id_str, {})
             accepted_ids_map = sample_output.accepted_ids_map.get(req_id_str, {})
             sampled_tokens_map = sample_output.sampled_tokens_map.get(req_id_str, {})
+            req.last_sampler_trace = {
+                "true_local_ids_map": dict(true_ids_map),
+                "accepted_ids_map": dict(accepted_ids_map),
+                "sampled_tokens_map": dict(sampled_tokens_map),
+                "mask_token_rel_ids_map": dict(sample_output.mask_token_rel_ids_map.get(req_id_str, {})),
+                "confidence_map": dict(sample_output.confidence_map.get(req_id_str, {})),
+                "initial_confidence_map": dict(sample_output.initial_confidence_map.get(req_id_str, {})),
+            }
             for block_id, accepted_ids in accepted_ids_map.items():
                 if not accepted_ids:
                     continue

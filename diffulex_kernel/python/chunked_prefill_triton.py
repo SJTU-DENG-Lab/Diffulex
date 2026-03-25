@@ -23,7 +23,6 @@ def maybe_autotune(fn):
         key=["NUM_GROUPS", "HEAD_DIM", "IS_BLOCK_CAUSAL", "IS_PREFIX_FULL"],
     )(fn)
 
-
 @maybe_autotune
 def _chunked_prefill_attn_unified_kernel(
     q_ptr,
@@ -249,7 +248,7 @@ def _chunked_prefill_attn_unified_kernel(
     )
 
 
-def chunked_prefill_attn_unified(
+def _run_chunked_prefill_attn_unified_kernel(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -313,3 +312,14 @@ def chunked_prefill_attn_unified(
         **launch_kwargs,
     )
     return o
+
+
+def chunked_prefill_attn_unified(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    attn_metadata: AttnMetaDataBase,
+):
+    return _run_chunked_prefill_attn_unified_kernel(q, k, v, k_cache, v_cache, attn_metadata)

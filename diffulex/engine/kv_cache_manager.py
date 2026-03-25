@@ -79,6 +79,8 @@ class KVCacheManagerBase(ABC, MultiBlockKVCacheManagerMixin):
 
     def allocate(self, req: DllmReq):
         assert not req.page_table
+        req.page_cache_missed.clear()
+        req.num_cached_tokens = 0
         h = -1
         cache_miss = False
 
@@ -117,6 +119,7 @@ class KVCacheManagerBase(ABC, MultiBlockKVCacheManagerMixin):
                 self._free_page(page_id)
 
         req.num_cached_tokens = 0
+        req.page_cache_missed.clear()
         req.page_table.clear()
 
     @abstractmethod

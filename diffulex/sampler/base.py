@@ -89,11 +89,17 @@ class SampleOutputBase:
     true_local_ids_map: dict[str, dict[str, list[int]]]
     accepted_ids_map: dict[str, dict[str, list[int]]]
     sampled_tokens_map: dict[str, dict[str, list[int]]]
+    mask_token_rel_ids_map: dict[str, dict[str, list[int]]] | None = None
+    confidence_map: dict[str, dict[str, list[float]]] | None = None
+    initial_confidence_map: dict[str, dict[str, list[float]]] | None = None
 
     def __post_init__(self):
         self.accepted_ids_map = edict(self.accepted_ids_map)
         self.sampled_tokens_map = edict(self.sampled_tokens_map)
         self.true_local_ids_map = edict(self.true_local_ids_map)
+        self.mask_token_rel_ids_map = edict(self.mask_token_rel_ids_map or {})
+        self.confidence_map = edict(self.confidence_map or {})
+        self.initial_confidence_map = edict(self.initial_confidence_map or {})
 
 
 class SamplerShiftLogits(SamplerBase):
@@ -166,11 +172,17 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
         accepted_ids_map = {}
         sampled_tokens_map = {}
         true_local_ids_map = {}
+        mask_token_rel_ids_map = {}
+        confidence_map = {}
+        initial_confidence_map = {}
 
         for idx, (temperature, req, req_logits) in enumerate(zip(temperatures, reqs, split_logits)):
             true_local_ids_sub_map = {}
             accepted_ids_sub_map = {}
             sampled_tokens_sub_map = {}
+            mask_token_rel_ids_sub_map = {}
+            confidence_sub_map = {}
+            initial_confidence_sub_map = {}
 
             for block_id, block in enumerate(req.dllm_blocks):
                 if not block.is_active or (block.num_mask_tokens == 0):
@@ -197,20 +209,30 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
                 accepted_ids = self._compute_accepted_ids(
                     block, confidence, initial_confidence, sampled_tokens, **kwargs
                 )
+                block_id_str = str(block_id)
                 accepted_ids_list = accepted_ids.to(device="cpu").tolist()
-                true_local_ids_sub_map[str(block_id)] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
-                accepted_ids_sub_map[str(block_id)] = accepted_ids_list
-                sampled_tokens_sub_map[str(block_id)] = sampled_tokens.to(device="cpu").tolist()
+                true_local_ids_sub_map[block_id_str] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
+                accepted_ids_sub_map[block_id_str] = accepted_ids_list
+                sampled_tokens_sub_map[block_id_str] = sampled_tokens.to(device="cpu").tolist()
+                mask_token_rel_ids_sub_map[block_id_str] = list(block.mask_token_relative_ids)
+                confidence_sub_map[block_id_str] = confidence.to(device="cpu").tolist()
+                initial_confidence_sub_map[block_id_str] = initial_confidence.to(device="cpu").tolist()
 
             req_id_str = str(req.req_id)
             true_local_ids_map[req_id_str] = true_local_ids_sub_map
             accepted_ids_map[req_id_str] = accepted_ids_sub_map
             sampled_tokens_map[req_id_str] = sampled_tokens_sub_map
+            mask_token_rel_ids_map[req_id_str] = mask_token_rel_ids_sub_map
+            confidence_map[req_id_str] = confidence_sub_map
+            initial_confidence_map[req_id_str] = initial_confidence_sub_map
 
         return self.output_cls(
             true_local_ids_map=true_local_ids_map,
             accepted_ids_map=accepted_ids_map,
             sampled_tokens_map=sampled_tokens_map,
+            mask_token_rel_ids_map=mask_token_rel_ids_map,
+            confidence_map=confidence_map,
+            initial_confidence_map=initial_confidence_map,
         )
 
     def _compute_accepted_ids(
@@ -252,11 +274,17 @@ class DllmSamplerShiftBase(SamplerShiftLogits):
         accepted_ids_map = {}
         sampled_tokens_map = {}
         true_local_ids_map = {}
+        mask_token_rel_ids_map = {}
+        confidence_map = {}
+        initial_confidence_map = {}
 
         for idx, (temperature, req, req_logits) in enumerate(zip(temperatures, reqs, split_logits)):
             true_local_ids_sub_map = {}
             accepted_ids_sub_map = {}
             sampled_tokens_sub_map = {}
+            mask_token_rel_ids_sub_map = {}
+            confidence_sub_map = {}
+            initial_confidence_sub_map = {}
             last_logits = self._fetch_last_logits(req_logits, req)
             shifted_logits = self._shift_logits(req_logits, last_logits)
 
@@ -285,20 +313,30 @@ class DllmSamplerShiftBase(SamplerShiftLogits):
                 accepted_ids = self._compute_accepted_ids(
                     block, confidence, initial_confidence, sampled_tokens, **kwargs
                 )
+                block_id_str = str(block_id)
                 accepted_ids_list = accepted_ids.to(device="cpu").tolist()
-                true_local_ids_sub_map[str(block_id)] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
-                accepted_ids_sub_map[str(block_id)] = accepted_ids_list
-                sampled_tokens_sub_map[str(block_id)] = sampled_tokens.to(device="cpu").tolist()
+                true_local_ids_sub_map[block_id_str] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
+                accepted_ids_sub_map[block_id_str] = accepted_ids_list
+                sampled_tokens_sub_map[block_id_str] = sampled_tokens.to(device="cpu").tolist()
+                mask_token_rel_ids_sub_map[block_id_str] = list(block.mask_token_relative_ids)
+                confidence_sub_map[block_id_str] = confidence.to(device="cpu").tolist()
+                initial_confidence_sub_map[block_id_str] = initial_confidence.to(device="cpu").tolist()
 
             req_id_str = str(req.req_id)
             true_local_ids_map[req_id_str] = true_local_ids_sub_map
             accepted_ids_map[req_id_str] = accepted_ids_sub_map
             sampled_tokens_map[req_id_str] = sampled_tokens_sub_map
+            mask_token_rel_ids_map[req_id_str] = mask_token_rel_ids_sub_map
+            confidence_map[req_id_str] = confidence_sub_map
+            initial_confidence_map[req_id_str] = initial_confidence_sub_map
 
         return self.output_cls(
             true_local_ids_map=true_local_ids_map,
             accepted_ids_map=accepted_ids_map,
             sampled_tokens_map=sampled_tokens_map,
+            mask_token_rel_ids_map=mask_token_rel_ids_map,
+            confidence_map=confidence_map,
+            initial_confidence_map=initial_confidence_map,
         )
 
     def _compute_accepted_ids(

@@ -13,7 +13,7 @@ engine:
   gpu_memory_utilization: 0.3
   max_model_len: 1024
   max_num_batched_tokens: 4096
-  max_num_reqs: 1
+  max_num_reqs: 4
 
   enforce_eager: true
   kv_cache_layout: "unified"
@@ -23,7 +23,7 @@ engine:
     semi_complete_threshold: 0.9
     decoding_threshold: 0.95
   block_size: 32
-  buffer_size: 4
+  buffer_size: 1
 
 eval:
   dataset_name: "gsm8k"
