@@ -8,9 +8,6 @@ from diffulex.moe.runner.base import MoERunner
 
 class TrivialMoERunner(MoERunner):
     def forward(self, dispatch_output: DispatchOutput) -> CombineInput:
-        if dispatch_output.topk_output.weights is None or dispatch_output.topk_output.ids is None:
-            raise RuntimeError("MoE runner requires top-k ids and weights.")
-
         expert_hidden_states = []
 
         for expert_idx, token_idx in enumerate(dispatch_output.expert_token_indices):
@@ -35,6 +32,7 @@ class TrivialMoERunner(MoERunner):
             expert_token_indices=dispatch_output.expert_token_indices,
             expert_topk_slot_indices=dispatch_output.expert_topk_slot_indices,
             topk_weights=dispatch_output.topk_output.weights,
-            num_tokens=dispatch_output.hidden_states.shape[0],
+            num_tokens=dispatch_output.num_tokens,
             hidden_size=self.hidden_size,
+            context=dispatch_output.context
         )

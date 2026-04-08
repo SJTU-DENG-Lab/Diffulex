@@ -42,6 +42,7 @@ class Config:
 
     data_parallel_size: int = 1
     tensor_parallel_size: int = 2
+    expert_parallel_size: int = 1
     master_addr: str = "localhost"
     master_port: int = 2333
     shm_name: str = "diffulex_shm"
@@ -101,6 +102,12 @@ class Config:
             raise ValueError(
                 "data_parallel_size must be in [1, 1024], "
                 f"got: {self.data_parallel_size}"
+            )
+
+        if not 1 <= self.expert_parallel_size <= 32768:
+            raise ValueError(
+                "expert_parallel_size must be in [1, 32768], "
+                f"got: {self.expert_parallel_size}"
             )
 
         if not (isinstance(self.master_port, int) and 0 < self.master_port < 65536):

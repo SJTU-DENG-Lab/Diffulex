@@ -14,6 +14,7 @@ from diffulex.config import Config
 from diffulex.engine.tp_worker import DiffulexTPWorker
 from diffulex.sampling_params import SamplingParams
 from diffulex.logger import get_logger
+from diffulex.utils.parallelism import get_world_size
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,7 @@ def _dp_child_entry(config: Config, dp_idx: int, local_devices: list[int], conn)
             gpu_memory_utilization=config.gpu_memory_utilization,
             data_parallel_size=1,
             tensor_parallel_size=config.tensor_parallel_size,
+            expert_parallel_size=config.expert_parallel_size,
             master_addr=config.master_addr,
             master_port=int(config.master_port) + dp_idx,
             shm_name=f"{config.shm_name}_{dp_idx}",
@@ -131,9 +133,15 @@ class DiffulexDPWorker:
         else:
             vis = list(range(torch.cuda.device_count()))
 
-        need_gpus = self.dp_size * cfg.tensor_parallel_size
+        self.model_parallel_world_size = get_world_size(
+            cfg.tensor_parallel_size,
+            cfg.expert_parallel_size,
+        )
+        need_gpus = self.dp_size * self.model_parallel_world_size
         assert len(vis) >= need_gpus, (
-            f"Require {need_gpus} GPUs (dp={self.dp_size}, tp={cfg.tensor_parallel_size}), visible {len(vis)}"
+            "Require "
+            f"{need_gpus} GPUs (dp={self.dp_size}, mp={self.model_parallel_world_size}, "
+            f"tp={cfg.tensor_parallel_size}, ep={cfg.expert_parallel_size}), visible {len(vis)}"
         )
 
         # Optional overrides: kwargs['device_ids']
@@ -148,9 +156,9 @@ class DiffulexDPWorker:
         else:
             plan = vis[:need_gpus]
 
-        tp = cfg.tensor_parallel_size
+        mp_size = self.model_parallel_world_size
         for dp_idx in range(self.dp_size):
-            local_devices = plan[dp_idx * tp : (dp_idx + 1) * tp]
+            local_devices = plan[dp_idx * mp_size : (dp_idx + 1) * mp_size]
             parent_conn, child_conn = ctx.Pipe()
             p = ctx.Process(target=_dp_child_entry, args=(cfg, dp_idx, local_devices, child_conn))
             p.start()

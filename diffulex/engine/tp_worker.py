@@ -14,6 +14,7 @@ from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
 from diffulex.engine.model_runner import AutoModelRunner
 from diffulex.mixin.async_engine.engine.serving_worker import DiffulexServingWorkerMixin
 from diffulex.utils.output import GenerationOutputs
+from diffulex.utils.parallelism import get_world_size
 from diffulex.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,10 +25,14 @@ class DiffulexTPWorker(DiffulexServingWorkerMixin):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         self.config = config = Config(model, **config_kwargs)
+        self.model_parallel_world_size = get_world_size(
+            config.tensor_parallel_size,
+            config.expert_parallel_size,
+        )
         self.ps = []
         self.events = []
         ctx = mp.get_context("spawn")
-        for i in range(1, config.tensor_parallel_size):
+        for i in range(1, self.model_parallel_world_size):
             event = ctx.Event()
             process = ctx.Process(target=AutoModelRunner.from_config, args=(config, i, event))
             process.start()

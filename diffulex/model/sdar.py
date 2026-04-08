@@ -2,7 +2,6 @@ import os
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 
 from diffulex.attention import Attention
 from diffulex.layer.layernorm import RMSNorm
@@ -12,6 +11,7 @@ from diffulex.layer.linear import RowParallelLinear, ColumnParallelLinear
 from diffulex.layer.embed_head import VocabParallelEmbedding, ParallelLMHead
 from diffulex.model.auto_model import AutoModelForDiffusionLM
 from diffulex.model.config.sdar.configuration_sdar import SDARConfig
+from diffulex.utils.parallelism import get_tp_world_size
 
 
 if os.environ.get("TRITON_INTERPRET", None) == "1":
@@ -30,7 +30,7 @@ class SDARAttention(nn.Module):
 
     def __init__(self, config: SDARConfig) -> None:
         super().__init__()
-        tp_size = dist.get_world_size()
+        tp_size = get_tp_world_size()
         self.total_num_heads = config.num_attention_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size

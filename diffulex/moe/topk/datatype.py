@@ -7,6 +7,6 @@ import torch
 
 @dataclass(frozen=True)
 class TopKOutput:
-    weights: torch.Tensor | None
-    ids: torch.Tensor | None
+    weights: torch.Tensor
+    ids: torch.Tensor
     router_logits: torch.Tensor

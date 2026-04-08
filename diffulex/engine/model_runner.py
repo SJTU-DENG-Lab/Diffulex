@@ -16,6 +16,12 @@ from diffulex.attention.metadata import set_warming_up, reset_warming_up
 from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
 from diffulex.logger import get_logger
+from diffulex.utils.parallelism import (
+    get_tp_world_size,
+    init_model_parallelism_metadata,
+    init_process_group,
+    reset_model_parallelism_metadata,
+)
 
 
 logger = get_logger(__name__)
@@ -37,23 +43,31 @@ class ModelRunnerBase(
         self.rank = rank
         self.event = event
 
-        # Initialize model, sampler, and kv cache
-        init_method = f"tcp://{config.master_addr}:{config.master_port}"
-        dist.init_process_group(
-            "nccl",
-            init_method,
-            world_size=self.world_size,
-            rank=rank,
-            device_id=config.device_ids[rank],
-        )
-        # Choose CUDA device for this TP rank.
-        # config.device_ids is already a list of logical CUDA device indices (respecting CUDA_VISIBLE_DEVICES).
-        # Do NOT add rank again, otherwise rank 1 with device_ids=[0,1] becomes device 2.
         if getattr(config, "device_ids", None):
             device_id = config.device_ids[rank]
         else:
             device_id = (getattr(config, "device_start", 0) or 0) + rank
         assert 0 <= device_id < torch.cuda.device_count(), f"Invalid device_id {device_id}."
+
+        # Initialize model, sampler, and kv cache
+        init_method = f"tcp://{config.master_addr}:{config.master_port}"
+        init_process_group(
+            tp_size=config.tensor_parallel_size,
+            ep_size=config.expert_parallel_size,
+            rank=rank,
+            init_method=init_method,
+            device_id=device_id,
+            backend="nccl",
+        )
+        layout = init_model_parallelism_metadata(
+            tp_size=config.tensor_parallel_size,
+            ep_size=config.expert_parallel_size,
+        )
+        self.world_size = layout.world_size
+        self.rank = layout.global_rank
+        # Choose CUDA device for this TP rank.
+        # config.device_ids is already a list of logical CUDA device indices (respecting CUDA_VISIBLE_DEVICES).
+        # Do NOT add rank again, otherwise rank 1 with device_ids=[0,1] becomes device 2.
         torch.cuda.set_device(device_id)
 
         self.default_dtype = torch.get_default_dtype()
@@ -85,6 +99,7 @@ class ModelRunnerBase(
 
         torch.cuda.synchronize()
         dist.destroy_process_group()
+        reset_model_parallelism_metadata()
 
     def start_worker_loop(self):
         # Allocate shared memory for inter-process communication
@@ -177,7 +192,7 @@ class ModelRunnerBase(
                 "num_key_value_heads",
                 getattr(hf_config, "n_kv_heads", None),
             )
-            // self.world_size
+            // get_tp_world_size()
         )
 
         if hasattr(hf_config, "head_dim"):

@@ -1,7 +1,6 @@
 import os
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 
 from diffulex.attention import Attention
 from diffulex.layer.layernorm import RMSNorm
@@ -13,6 +12,7 @@ from diffulex.layer.embed_head import VocabParallelEmbedding, ParallelLMHead
 from diffulex.model.config.fast_dllm_v2.configuration_fast_dllm_v2 import (
     FastdLLMV2Config,
 )
+from diffulex.utils.parallelism import get_tp_world_size
 
 
 if os.environ.get("TRITON_INTERPRET", None) == "1":
@@ -42,7 +42,7 @@ class FastdLLMV2Attention(nn.Module):
         rope_scaling: tuple | None = None,
     ) -> None:
         super().__init__()
-        tp_size = dist.get_world_size()
+        tp_size = get_tp_world_size()
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
