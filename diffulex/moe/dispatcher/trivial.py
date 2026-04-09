@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
-import torch.distributed as dist
 import torch.nn.functional as F
 
 from diffulex.moe.dispatcher.base import TokenDispatcher
@@ -80,8 +79,16 @@ class TrivialTokenDispatcher(TokenDispatcher):
     ) -> DispatchOutput:
         if topk_output.ids is None or topk_output.weights is None:
             raise RuntimeError("Token dispatch requires top-k ids and weights.")
+        if ((topk_output.ids < 0) | (topk_output.ids >= self.num_experts)).any():
+            invalid_ids = topk_output.ids[
+                ((topk_output.ids < 0) | (topk_output.ids >= self.num_experts))
+            ][:16].detach().cpu().tolist()
+            raise RuntimeError(
+                "Top-k routing ids are out of range before dispatch. "
+                f"num_experts={self.num_experts}, sample_invalid_ids={invalid_ids}."
+            )
 
-        expert_mask = F.one_hot(topk_output.ids, num_classes=self.num_experts).permute(2, 1, 0)
+        expert_mask = F.one_hot(topk_output.ids.to(torch.long), num_classes=self.num_experts).permute(2, 1, 0)
         expert_token_indices = []
         expert_topk_slot_indices = []
 
@@ -98,32 +105,6 @@ class TrivialTokenDispatcher(TokenDispatcher):
             expert_topk_slot_indices=tuple(expert_topk_slot_indices),
             hidden_states_scale=hidden_states_scale,
         )
-
-    def _combine_trivial(
-        self,
-        combine_input: CombineInput,
-        *,
-        all_reduce: bool,
-    ) -> torch.Tensor:
-        final_hidden_states = combine_input.expert_hidden_states[0].new_zeros(
-            (combine_input.num_tokens, combine_input.hidden_size)
-        )
-
-        for expert_hidden_states, token_idx, topk_slot_idx in zip(
-            combine_input.expert_hidden_states,
-            combine_input.expert_token_indices,
-            combine_input.expert_topk_slot_indices,
-            strict=True,
-        ):
-            if token_idx.numel() == 0:
-                continue
-            routing_weights = combine_input.topk_weights[token_idx, topk_slot_idx].to(expert_hidden_states.dtype)
-            final_hidden_states.index_add_(0, token_idx, expert_hidden_states * routing_weights.unsqueeze(-1))
-
-        if all_reduce:
-            dist.all_reduce(final_hidden_states)
-
-        return final_hidden_states
 
     def dispatch(
         self,
@@ -145,7 +126,4 @@ class TrivialTokenDispatcher(TokenDispatcher):
         )
 
     def combine(self, combine_input: CombineInput) -> torch.Tensor:
-        return self._combine_trivial(
-            combine_input,
-            all_reduce=self.layout.world_size > 1,
-        )
+        return combine_input.hidden_states

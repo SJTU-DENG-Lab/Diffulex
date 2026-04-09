@@ -64,21 +64,18 @@ class FusedMoE(nn.Module):
             self.ep_rank = layout.ep_rank
             self.local_intermediate_size = divide(self.intermediate_size, self.tp_size)
             self.num_local_experts = self.num_experts
-            dispatcher_impl = "trivial"
         elif self.ep_enabled:
             self.expert_tp_size = 1
             self.tp_rank = layout.tp_rank
             self.ep_rank = layout.ep_rank
             self.local_intermediate_size = self.intermediate_size
             self.num_local_experts = divide(self.num_experts, self.ep_size)
-            dispatcher_impl = "trivial"
         else:
             self.expert_tp_size = 1
             self.tp_rank = layout.tp_rank
             self.ep_rank = layout.ep_rank
             self.local_intermediate_size = self.intermediate_size
             self.num_local_experts = self.num_experts
-            dispatcher_impl = "trivial"
 
         self.local_expert_start = self.ep_rank * self.num_local_experts
         self.local_expert_end = self.local_expert_start + self.num_local_experts
@@ -95,13 +92,13 @@ class FusedMoE(nn.Module):
         self.w2.weight_loader = self.w2_weight_loader
 
         self.router = build_topk_router(
-            "trivial",
+            "triton",
             top_k=top_k,
             renormalize=norm_topk_prob,
             scoring_func="softmax",
         )
         self.runner = build_runner(
-            "trivial",
+            "triton",
             num_experts=num_experts,
             num_local_experts=self.num_local_experts,
             hidden_size=hidden_size,
@@ -110,9 +107,10 @@ class FusedMoE(nn.Module):
             hidden_act=hidden_act,
             w13=self.w13,
             w2=self.w2,
+            local_expert_start=self.local_expert_start,
         )
         self.dispatcher = build_dispatcher(
-            dispatcher_impl,
+            "trivial",
             num_experts=self.num_experts,
             top_k=self.top_k,
             num_local_experts=self.num_local_experts,

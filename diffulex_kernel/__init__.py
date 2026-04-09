@@ -24,20 +24,28 @@ def __getattr__(name: str):
         from diffulex_kernel.python.chunked_prefill_triton import (
             chunked_prefill_attn_unified,
         )
-
         return chunked_prefill_attn_unified
+
     if name == "store_kv_cache_unified_layout":
         from diffulex_kernel.python.kv_cache_kernels import store_kv_cache_unified_layout
-
         return store_kv_cache_unified_layout
+
     if name == "store_kv_cache_distinct_layout":
         from diffulex_kernel.python.kv_cache_kernels import store_kv_cache_distinct_layout
-
         return store_kv_cache_distinct_layout
+
     if name == "load_kv_cache":
         from diffulex_kernel.python.kv_cache_kernels import load_kv_cache
-
         return load_kv_cache
+
+    if name == "fused_moe":
+        from diffulex_kernel.python.fused_moe_triton import fused_moe
+        return fused_moe
+    
+    if name == "fused_topk":
+        from diffulex_kernel.python.fused_topk_triton import fused_topk
+        return fused_topk
+
     raise AttributeError(name)
 
 

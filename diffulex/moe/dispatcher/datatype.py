@@ -20,10 +20,5 @@ class DispatchOutput:
 
 @dataclass(frozen=True)
 class CombineInput:
-    expert_hidden_states: tuple[torch.Tensor, ...]
-    expert_token_indices: tuple[torch.Tensor, ...]
-    expert_topk_slot_indices: tuple[torch.Tensor, ...]
-    topk_weights: torch.Tensor
-    num_tokens: int
-    hidden_size: int
+    hidden_states: torch.Tensor
     context: Any = None
