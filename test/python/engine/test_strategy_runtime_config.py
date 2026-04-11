@@ -2,6 +2,8 @@ from pathlib import Path
 
 import yaml
 
+import pytest
+
 from diffulex.config import Config
 from diffulex_bench.arg_parser import create_argument_parser
 from diffulex_bench.main import load_config_from_args
@@ -85,3 +87,60 @@ def test_runtime_builds_default_decoding_thresholds_when_flat_keys_are_none():
     assert cfg.decoding_thresholds.add_block_threshold == 0.1
     assert cfg.decoding_thresholds.semi_complete_threshold == 0.9
     assert cfg.decoding_thresholds.decoding_threshold == 0.9
+
+
+@pytest.fixture
+def config_no_model_load(monkeypatch, tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    monkeypatch.setattr("diffulex.config.AutoConfig.from_pretrained", lambda *args, **kwargs: type(
+        "FakeHFConfig",
+        (),
+        {"max_position_embeddings": 4096},
+    )())
+    return model_dir
+
+
+@pytest.mark.parametrize(
+    "page_size,block_size",
+    [(page_size, block_size) for block_size in (4, 8, 16, 32) for page_size in (4, 8, 16, 32) if block_size <= page_size],
+)
+def test_config_accepts_supported_page_block_matrix(config_no_model_load, page_size, block_size):
+    cfg = Config(
+        str(config_no_model_load),
+        decoding_strategy="multi_bd",
+        page_size=page_size,
+        block_size=block_size,
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.page_size == page_size
+    assert cfg.block_size == block_size
+
+
+def test_config_rejects_block_larger_than_page(config_no_model_load):
+    with pytest.raises(ValueError, match="block_size must be <= page_size"):
+        Config(
+            str(config_no_model_load),
+            decoding_strategy="multi_bd",
+            page_size=4,
+            block_size=8,
+            tensor_parallel_size=1,
+            data_parallel_size=1,
+            device_ids=[0],
+        )
+
+
+def test_config_rejects_unsupported_page_block_size(config_no_model_load):
+    with pytest.raises(ValueError, match="page_size must be one of"):
+        Config(
+            str(config_no_model_load),
+            decoding_strategy="multi_bd",
+            page_size=64,
+            block_size=32,
+            tensor_parallel_size=1,
+            data_parallel_size=1,
+            device_ids=[0],
+        )

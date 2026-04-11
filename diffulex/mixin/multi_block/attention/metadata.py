@@ -5,6 +5,8 @@ import torch
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from diffulex.config import SUPPORTED_PAGE_BLOCK_SIZES
+
 if TYPE_CHECKING:
     from diffulex.attention.metadata import AttnMetaDataBase
 
@@ -29,7 +31,15 @@ class MultiBlockAttnMetaDataMixin:
         self.prefix_lens = prefix_lens
         self.padded_prefix_lens = padded_prefix_lens
 
-        if self.page_size != self.block_size:
+        if self.page_size not in SUPPORTED_PAGE_BLOCK_SIZES:
             raise ValueError(
-                f"page_size {self.page_size} must equal block_size {self.block_size}"
+                f"page_size must be one of {SUPPORTED_PAGE_BLOCK_SIZES}, got {self.page_size}"
+            )
+        if self.block_size not in SUPPORTED_PAGE_BLOCK_SIZES:
+            raise ValueError(
+                f"block_size must be one of {SUPPORTED_PAGE_BLOCK_SIZES}, got {self.block_size}"
+            )
+        if self.block_size > self.page_size:
+            raise ValueError(
+                f"block_size {self.block_size} must be <= page_size {self.page_size}"
             )

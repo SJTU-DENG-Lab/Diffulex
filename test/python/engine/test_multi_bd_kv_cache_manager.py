@@ -159,6 +159,40 @@ def test_apply_cached_prefix_pages_marks_prefix_blocks_in_cache() -> None:
     assert all(req2.dllm_blocks[i].status == DllmBlockStatus.IN_CACHE for i in range(2))
 
 
+def test_apply_cached_prefix_page_marks_all_blocks_inside_cached_page() -> None:
+    config = SimpleNamespace(
+        block_size=4,
+        buffer_size=4,
+        mask_token_id=-1,
+        decoding_thresholds=SimpleNamespace(
+            add_block_threshold=0.1,
+            semi_complete_threshold=0.9,
+            decoding_threshold=0.9,
+        ),
+        eos=-1,
+        max_model_len=2048,
+    )
+    manager = MultiBDKVCacheManager(SimpleNamespace(num_pages=16, page_size=8))
+
+    token_ids = list(range(16))
+    req1 = MultiBDReq(token_ids)
+    req1.page_size = 8
+    req1.init_multi_block(config)
+    manager.allocate(req1)
+    manager.free(req1)
+
+    req2 = MultiBDReq(token_ids)
+    req2.page_size = 8
+    req2.init_multi_block(config)
+    manager.allocate(req2)
+    req2.apply_cached_prefix_pages()
+
+    assert req2.num_cached_tokens == 16
+    assert req2.in_cache_len == 16
+    assert req2.page_cache_missed == [False, False]
+    assert all(req2.dllm_blocks[i].status == DllmBlockStatus.IN_CACHE for i in range(4))
+
+
 def test_first_block_does_not_force_decode_topk_without_prev_block() -> None:
     block = DllmBlock(
         block_id=0,

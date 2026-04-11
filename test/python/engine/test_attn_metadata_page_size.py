@@ -2,6 +2,7 @@ import pytest
 
 from types import SimpleNamespace
 
+from diffulex.attention.metadata import AttnMetaDataBase
 from diffulex.mixin.multi_block.engine.model_runner import ModelRunnerMultiBlockMixin
 
 
@@ -61,3 +62,19 @@ def test_prepare_chunked_prefill_passes_runtime_page_size_to_attn_metadata() -> 
     assert runner.captured_kwargs is not None
     assert runner.captured_kwargs["page_size"] == 32
     assert runner.captured_kwargs["block_size"] == 32
+
+
+def test_multi_block_metadata_accepts_smaller_block_than_page() -> None:
+    metadata = AttnMetaDataBase(page_size=8, block_size=4)
+
+    metadata.init_multi_block()
+
+    assert metadata.page_size == 8
+    assert metadata.block_size == 4
+
+
+def test_multi_block_metadata_rejects_block_larger_than_page() -> None:
+    metadata = AttnMetaDataBase(page_size=4, block_size=8)
+
+    with pytest.raises(ValueError, match="block_size 8 must be <= page_size 4"):
+        metadata.init_multi_block()

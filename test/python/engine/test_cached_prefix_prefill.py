@@ -60,6 +60,28 @@ def test_prepare_prefill_req_uses_suffix_positions_and_lengths_for_cached_prefix
     assert prepared["slot_mapping"] == list(range(8, 20))
 
 
+def test_prepare_prefill_req_maps_multiple_blocks_to_one_page() -> None:
+    runner = _Runner()
+    runner.page_size = 8
+    runner.block_size = 4
+    req = SimpleNamespace(
+        running_sequence=list(range(8)),
+        in_cache_len=0,
+        running_len=8,
+        page_table=[3],
+        prefix_len=8,
+        padded_prefix_len=8,
+        dllm_blocks=[
+            SimpleNamespace(start=0, end=4, rel_page_id=0, is_to_cache=True),
+            SimpleNamespace(start=4, end=8, rel_page_id=0, is_to_cache=True),
+        ],
+    )
+
+    prepared = runner._prepare_prefill_req(req)
+
+    assert prepared["slot_mapping"] == list(range(24, 32))
+
+
 def test_prepare_prefill_req_prefers_contiguous_cached_prefix_over_in_cache_len() -> None:
     req = SimpleNamespace(
         running_sequence=list(range(4, 12)),

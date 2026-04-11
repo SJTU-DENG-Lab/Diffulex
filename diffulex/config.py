@@ -5,6 +5,7 @@ from transformers import AutoConfig
 from diffulex.logger import get_logger
 
 logger = get_logger(__name__)
+SUPPORTED_PAGE_BLOCK_SIZES = (4, 8, 16, 32)
 
 
 @dataclass
@@ -74,16 +75,20 @@ class Config:
             if self.enable_prefix_caching:
                 logger.info("Enabling prefix caching for decoding_strategy=multi_bd.")
 
-        if self.page_size % 4 != 0:
-            raise ValueError(f"page_size must be divisible by 4, got: {self.page_size}")
-        
-        if self.block_size % 4 != 0:
-            raise ValueError(f"block_size must be divisible by 4, got: {self.block_size}")
-        
-        if self.page_size != self.block_size:
+        if self.page_size not in SUPPORTED_PAGE_BLOCK_SIZES:
             raise ValueError(
-                "page_size must equal block_size, "
-                f"got: page_size={self.page_size}, block_size={self.block_size}"
+                f"page_size must be one of {SUPPORTED_PAGE_BLOCK_SIZES}, got: {self.page_size}"
+            )
+
+        if self.block_size not in SUPPORTED_PAGE_BLOCK_SIZES:
+            raise ValueError(
+                f"block_size must be one of {SUPPORTED_PAGE_BLOCK_SIZES}, got: {self.block_size}"
+            )
+
+        if self.block_size > self.page_size:
+            raise ValueError(
+                "block_size must be <= page_size, "
+                f"got: block_size={self.block_size}, page_size={self.page_size}"
             )
 
         if not 1 <= self.tensor_parallel_size <= 8:

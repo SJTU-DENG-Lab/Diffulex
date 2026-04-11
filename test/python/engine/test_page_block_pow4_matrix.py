@@ -37,7 +37,7 @@ PROMPT = (
 
 def _matrix_cases() -> list[tuple[int, list[int]]]:
     return [
-        (block_size, [page_size for page_size in POW4_VALUES if page_size == block_size])
+        (block_size, [page_size for page_size in POW4_VALUES if block_size <= page_size])
         for block_size in POW4_VALUES
     ]
 
