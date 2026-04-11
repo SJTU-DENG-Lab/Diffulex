@@ -35,18 +35,6 @@ class ModelParallelismMetadata:
     tp_rank: int
     ep_rank: int
 
-    @property
-    def is_pure_ep(self) -> bool:
-        return self.tp_size == 1 and self.ep_size > 1
-
-    @property
-    def is_tp_eq_ep(self) -> bool:
-        return self.tp_size > 1 and self.tp_size == self.ep_size
-
-    @property
-    def is_tp_only(self) -> bool:
-        return self.tp_size > 1 and self.ep_size == 1
-
     @classmethod
     def from_world(
         cls,
