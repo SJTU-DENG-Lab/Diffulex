@@ -8,7 +8,8 @@ import torch
 from diffulex.config import Config
 from diffulex.engine.request import DllmReq
 from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
-from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
+from diffulex.engine.model_runner import AutoModelRunner
+from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
 from diffulex.strategy.d2f.attention.metadata import (
     fetch_d2f_attn_metadata,
     set_d2f_attn_metadata,
@@ -17,7 +18,7 @@ from diffulex.strategy.d2f.attention.metadata import (
 
 
 @AutoModelRunner.register("d2f", is_default=True)
-class D2fModelRunner(ModelRunnerBase):
+class D2fModelRunner(MultiBlockModelRunnerTemplate):
     """Reference implementation of Multi-Block Diffusion decoding strategy."""
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):

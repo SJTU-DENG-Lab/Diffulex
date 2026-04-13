@@ -2,11 +2,11 @@ import pytest
 
 from types import SimpleNamespace
 
-from diffulex.attention.metadata import AttnMetaDataBase
-from diffulex.mixin.multi_block.engine.model_runner import ModelRunnerMultiBlockMixin
+from diffulex.strategy_template.multi_block.attention.metadata import MultiBlockAttnMetaDataTemplate
+from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
 
 
-class _Runner(ModelRunnerMultiBlockMixin):
+class _Runner(MultiBlockModelRunnerTemplate):
     def __init__(self):
         self.page_size = 32
         self.block_size = 32
@@ -23,6 +23,21 @@ class _Runner(ModelRunnerMultiBlockMixin):
 
     def fetch_attn_metadata(self):
         return SimpleNamespace(init_multi_block=lambda **kwargs: None)
+
+    def prepare_prefill(self, reqs):
+        pass
+
+    def prepare_decode(self, reqs):
+        pass
+
+    def run_model(self, input_ids, positions):
+        pass
+
+    def run(self, reqs):
+        pass
+
+    def capture_cudagraph(self):
+        pass
 
 
 class _Req:
@@ -65,7 +80,7 @@ def test_prepare_chunked_prefill_passes_runtime_page_size_to_attn_metadata() -> 
 
 
 def test_multi_block_metadata_accepts_smaller_block_than_page() -> None:
-    metadata = AttnMetaDataBase(page_size=8, block_size=4)
+    metadata = MultiBlockAttnMetaDataTemplate(page_size=8, block_size=4)
 
     metadata.init_multi_block()
 
@@ -74,7 +89,7 @@ def test_multi_block_metadata_accepts_smaller_block_than_page() -> None:
 
 
 def test_multi_block_metadata_rejects_block_larger_than_page() -> None:
-    metadata = AttnMetaDataBase(page_size=4, block_size=8)
+    metadata = MultiBlockAttnMetaDataTemplate(page_size=4, block_size=8)
 
     with pytest.raises(ValueError, match="block_size 8 must be <= page_size 4"):
         metadata.init_multi_block()

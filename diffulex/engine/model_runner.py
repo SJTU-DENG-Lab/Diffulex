@@ -11,13 +11,10 @@ from multiprocessing.shared_memory import SharedMemory
 
 from diffulex.config import Config
 from diffulex.sampler import AutoSampler
-from diffulex.engine.request import AutoReq, DllmReq
-from diffulex.engine.status import DllmReqStatus
+from diffulex.engine.request import DllmReq
 from diffulex.attention.metadata import set_warming_up, reset_warming_up
 from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
-from diffulex.mixin.multi_block.engine.model_runner import ModelRunnerMultiBlockMixin
-from diffulex.mixin.async_engine.engine.model_runner import ModelRunnerAsyncMixin
 from diffulex.logger import get_logger
 
 
@@ -26,8 +23,6 @@ logger = get_logger(__name__)
 
 class ModelRunnerBase(
     ABC,
-    ModelRunnerAsyncMixin,
-    ModelRunnerMultiBlockMixin,
 ):
     """Base class for model runners supporting different model types."""
 
@@ -36,20 +31,7 @@ class ModelRunnerBase(
         hf_config = config.hf_config
         self.block_size = config.block_size
         self.page_size = config.kv_cache_page_size
-        # Reference attention debug path is not CUDA-graph-safe; force eager to avoid
-        # graph-capture failures during diagnostics.
-        use_reference_attn = os.environ.get("DIFFULEX_USE_REFERENCE_MULTI_BLOCK_ATTN", "0") == "1"
-        use_reference_cached_context_attn = os.environ.get("DIFFULEX_USE_REFERENCE_CACHED_CONTEXT_ATTN", "0") == "1"
-        self.enforce_eager = (
-            config.enforce_eager
-            or use_reference_attn
-            or use_reference_cached_context_attn
-        )
-        if (use_reference_attn or use_reference_cached_context_attn) and not config.enforce_eager and rank == 0:
-            logger.warning(
-                "Reference attention diagnostics detected; forcing enforce_eager=True "
-                "to bypass CUDA graph capture for reference attention diagnostics."
-            )
+        self.enforce_eager = config.enforce_eager
         config.enforce_eager = self.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
@@ -100,10 +82,6 @@ class ModelRunnerBase(
 
         if not self.enforce_eager:
             del self.graphs, self.graph_pool
-
-        # Clean up executor if it exists
-        if hasattr(self, "_executor"):
-            self._executor.shutdown(wait=True)
 
         torch.cuda.synchronize()
         dist.destroy_process_group()
@@ -173,27 +151,10 @@ class ModelRunnerBase(
         """Instantiate the sampler implementation; override to customize."""
         return AutoSampler.from_config(config)
 
+    @abstractmethod
     def _prefill_warmup(self):
-        logger.info("Warming up prefill...")
-
-        max_num_batched_tokens, max_model_len = (
-            self.config.max_num_batched_tokens,
-            self.config.max_model_len,
-        )
-        num_reqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_reqs)
-        test_input_ids = [0] * max_model_len
-        reqs = [AutoReq.create(config=self.config, token_ids=test_input_ids) for _ in range(num_reqs)]
-
-        for req in reqs:
-            req.init_multi_block(self.config)
-            req.status = DllmReqStatus.PENDING  # so step() can transition to PREFILLING
-
-        self.run(reqs)
-
-        for req in reqs:
-            req.postprocess()
-
-        torch.cuda.empty_cache()
+        """Run template-specific prefill warmup."""
+        pass
 
     def warmup_model(self):
         logger.info("Warming up model...")

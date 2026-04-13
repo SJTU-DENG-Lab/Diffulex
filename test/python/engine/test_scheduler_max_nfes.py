@@ -2,11 +2,11 @@ from collections import deque
 from types import SimpleNamespace
 
 from diffulex.engine.status import DllmReqStatus
-from diffulex.mixin.multi_block.engine.request import DllmReqMultiBlockMixin
-from diffulex.mixin.multi_block.engine.scheduler import SchedulerMultiBlockMixin
+from diffulex.strategy_template.multi_block.engine.request import MultiBlockReqTemplate
+from diffulex.strategy_template.multi_block.engine.scheduler import MultiBlockSchedulerTemplate
 
 
-class _Scheduler(SchedulerMultiBlockMixin):
+class _Scheduler(MultiBlockSchedulerTemplate):
     def __init__(self):
         self.kv_cache_manager = SimpleNamespace(free=self._free)
         self.running_reqs = deque()
@@ -14,6 +14,18 @@ class _Scheduler(SchedulerMultiBlockMixin):
 
     def _free(self, req):
         self.freed_req_ids.append(req.req_id)
+
+    def add(self, req):
+        pass
+
+    def schedule(self):
+        pass
+
+    def preempt(self, req):
+        pass
+
+    def postprocess(self, reqs, sample_output):
+        pass
 
 
 class _Req:
@@ -26,6 +38,11 @@ class _Req:
         self.dllm_blocks = []
         self.status = DllmReqStatus.DECODING
         self.repetition_run_length = 0
+        self.eos_token_generated = False
+        self.max_new_tokens_reached = False
+        self.max_model_len_reached = False
+        self.truncated_response = []
+        self.completion_reason = None
 
     @property
     def max_nfe_reached(self) -> bool:
@@ -45,7 +62,8 @@ class _Req:
     def postprocess(self):
         pass
 
-    def force_deactivate(self):
+    def force_deactivate(self, reason=None):
+        self.completion_reason = reason
         self.status = DllmReqStatus.COMPLETED
 
 
@@ -93,6 +111,6 @@ def test_scheduler_postprocess_kills_req_when_repetition_run_is_too_long() -> No
 def test_repetition_run_length_counts_trailing_identical_tokens() -> None:
     req = SimpleNamespace(truncated_response=[11, 22, 22, 22])
 
-    run_length = DllmReqMultiBlockMixin.repetition_run_length.fget(req)
+    run_length = MultiBlockReqTemplate.repetition_run_length.fget(req)
 
     assert run_length == 3

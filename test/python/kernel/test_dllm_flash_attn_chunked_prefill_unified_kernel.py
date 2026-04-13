@@ -95,7 +95,6 @@ def call_chunked_prefill_kernel(
     dllm_block_size,
     is_block_causal,
     is_prefix_full=False,
-    use_legacy_page_block_cache_fastpath=False,
     BLOCK_M=64,
     BLOCK_N=64,
 ):
@@ -159,7 +158,6 @@ def call_chunked_prefill_kernel(
         DLLM_BLOCK_SIZE=dllm_block_size,
         IS_BLOCK_CAUSAL=is_block_causal,
         IS_PREFIX_FULL=is_prefix_full,
-        USE_LEGACY_PAGE_BLOCK_CACHE_FASTPATH=use_legacy_page_block_cache_fastpath,
         **launch_kwargs,
     )
     return o

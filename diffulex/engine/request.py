@@ -10,11 +10,10 @@ from diffulex.config import Config
 from diffulex.sampling_params import SamplingParams
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
 from diffulex.engine.status import DllmReqStatus
-from diffulex.mixin.multi_block.engine.request import DllmReqMultiBlockMixin
 from diffulex.mixin.request_state import ReqStateMixin
 
 
-class DllmReq(DllmReqMultiBlockMixin, ReqStateMixin):
+class DllmReq(ReqStateMixin):
     """Minimal base class that tracks prompt tokens and cache bookkeeping."""
 
     page_size = 32

@@ -9,13 +9,11 @@ import multiprocessing as mp
 
 from typing import Any
 from multiprocessing.connection import wait as mp_wait
-from concurrent.futures import ThreadPoolExecutor
 
 from diffulex.config import Config
 from diffulex.engine.tp_worker import DiffulexTPWorker
 from diffulex.sampling_params import SamplingParams
 from diffulex.logger import get_logger
-from diffulex.mixin.async_engine.engine.dp_worker import DiffulexDPWorkerAsyncMixin
 
 logger = get_logger(__name__)
 
@@ -113,7 +111,7 @@ def _dp_child_entry(config: Config, dp_idx: int, local_devices: list[int], conn)
                 pass
 
 
-class DiffulexDPWorker(DiffulexDPWorkerAsyncMixin):
+class DiffulexDPWorker:
     """Data-parallel wrapper that runs N independent TP groups as child processes and aggregates results."""
 
     def __init__(self, model, **kwargs):
@@ -162,7 +160,6 @@ class DiffulexDPWorker(DiffulexDPWorkerAsyncMixin):
         self._gid_counter = 0
         self._gid_map = {}  # (replica, local_id) -> global_id
         self._rev_gid_map = {}  # global_id -> (replica, local_id)
-        self._executor = ThreadPoolExecutor(max_workers=self.dp_size)
         atexit.register(self.exit)
 
     def _ask(self, replica: int, cmd: str, *args):
@@ -183,9 +180,6 @@ class DiffulexDPWorker(DiffulexDPWorkerAsyncMixin):
         raise RuntimeError(f"DP child #{replica} error: {payload}")
 
     def exit(self):
-        # Shutdown executor
-        if hasattr(self, "_executor"):
-            self._executor.shutdown(wait=True)
         for i, p in enumerate(self.ps):
             if p.is_alive():
                 try:

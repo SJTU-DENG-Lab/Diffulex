@@ -309,34 +309,3 @@ class DllmBlockBuffer:
     def maybe_fix_context_management(self):
         if self.first_valid_block.is_dummy and self.first_valid_block.is_last_in_context:
             self.first_valid_block.prev_block.make_last_in_context()
-
-
-def dllm_block_to_trace_dict(block: DllmBlock) -> dict:
-    """JSON-friendly snapshot of one block (for KV / scheduler debugging)."""
-    prev_id = block.prev_block.block_id if block.prev_block is not None else None
-    st = block.status
-    return {
-        "block_id": block.block_id,
-        "start": block.start,
-        "end": block.end,
-        "block_size": block.block_size,
-        "status": st.name if st is not None else None,
-        "block_type": block.block_type.name,
-        "prev_block_id": prev_id,
-        "num_mask_tokens": block.num_mask_tokens,
-        "progress": block.progress,
-        "token_ids": list(block.token_ids),
-    }
-
-
-def dllm_block_buffer_to_trace_dict(buf: DllmBlockBuffer) -> dict:
-    """JSON-friendly decode-window (buffer) snapshot."""
-    return {
-        "buffer_size": buf.buffer_size,
-        "cursor_slot_idx": buf.cursor_slot_idx,
-        "block_ids": list(buf.block_ids),
-        "should_add_block": buf.should_add_block,
-        "is_overflow": buf.is_overflow,
-        "prev_step_popped": buf.prev_step_popped,
-        "blocks": [dllm_block_to_trace_dict(b) for b in buf.dllm_blocks],
-    }

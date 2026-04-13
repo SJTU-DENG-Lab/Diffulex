@@ -1,25 +1,40 @@
 from types import SimpleNamespace
 
 import torch
-import torch.nn.functional as F
-from einops import rearrange
-
 import diffulex.attention.attn_impl as attn_impl
-from diffulex.attention.attn_impl import Attention, reference_multi_block_attn
-from diffulex.mixin.multi_block.engine.model_runner import ModelRunnerMultiBlockMixin
+from diffulex.attention.attn_impl import Attention
 from diffulex.sampler.sdar import SDARSampler
 from diffulex.sampler.base import SampleOutputBase
+from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
 
 
-class _Runner(ModelRunnerMultiBlockMixin):
+class _MultiBlockRunnerTestBase(MultiBlockModelRunnerTemplate):
+    def __init__(self):
+        pass
+
+    def prepare_prefill(self, reqs):
+        pass
+
+    def prepare_decode(self, reqs):
+        pass
+
+    def run_model(self, input_ids, positions):
+        pass
+
+    def run(self, reqs):
+        pass
+
+    def capture_cudagraph(self):
+        pass
+
+
+class _Runner(_MultiBlockRunnerTestBase):
     page_size = 4
     block_size = 4
 
 
-class _BatchRunner(ModelRunnerMultiBlockMixin):
+class _BatchRunner(_MultiBlockRunnerTestBase):
     rank = 0
-    _serialize_multi_block_reqs = False
-
     def __init__(self) -> None:
         self.calls: list[list[int]] = []
 
@@ -168,66 +183,28 @@ def test_sampler_greedy_tie_break_prefers_higher_token_id() -> None:
     assert confidence.tolist() == initial_confidence.tolist()
 
 
-def test_reference_cached_prefix_attn_matches_full_sequence_block_causal() -> None:
-    torch.manual_seed(0)
+def test_sdar_sampler_forces_topk_for_initial_block() -> None:
+    sampler = SDARSampler()
+    block = SimpleNamespace(block_id=0, prev_block=None, should_force_decode_topk=False)
+    confidence = torch.tensor([0.2, 0.7, 0.4])
+    initial_confidence = torch.tensor([0.2, 0.7, 0.4])
+    sampled_tokens = torch.tensor([10, 11, 12])
 
-    seq_len = 8
-    ctx_len = 4
-    num_heads = 2
-    head_dim = 4
+    accepted = sampler._compute_accepted_ids(block, confidence, initial_confidence, sampled_tokens, threshold=0.95)
 
-    q_full = torch.randn(seq_len, num_heads, head_dim, dtype=torch.float32)
-    k_full = torch.randn(seq_len, num_heads, head_dim, dtype=torch.float32)
-    v_full = torch.randn(seq_len, num_heads, head_dim, dtype=torch.float32)
+    assert accepted.tolist() == [1]
 
-    q_suffix = q_full[ctx_len:].clone()
-    k_suffix = k_full[ctx_len:].clone()
-    v_suffix = v_full[ctx_len:].clone()
 
-    k_cache = torch.zeros(1, ctx_len, num_heads, head_dim, dtype=torch.float32)
-    v_cache = torch.zeros(1, ctx_len, num_heads, head_dim, dtype=torch.float32)
-    k_cache[0, :ctx_len] = k_full[:ctx_len]
-    v_cache[0, :ctx_len] = v_full[:ctx_len]
+def test_sdar_sampler_does_not_force_topk_for_later_block_without_ready_prev() -> None:
+    sampler = SDARSampler()
+    block = SimpleNamespace(block_id=1, prev_block=object(), should_force_decode_topk=False)
+    confidence = torch.tensor([0.2, 0.7, 0.4])
+    initial_confidence = torch.tensor([0.2, 0.7, 0.4])
+    sampled_tokens = torch.tensor([10, 11, 12])
 
-    metadata = SimpleNamespace(
-        page_tables=torch.tensor([[0]], dtype=torch.int32),
-        context_lens=torch.tensor([ctx_len], dtype=torch.int32),
-        cu_seqlens_q=torch.tensor([0, seq_len - ctx_len], dtype=torch.int32),
-        valid_slices=torch.tensor([seq_len - ctx_len], dtype=torch.int32),
-        page_size=ctx_len,
-        block_size=ctx_len,
-        is_prefix_full=False,
-        status_table=torch.tensor([0], dtype=torch.int32),
-        prefix_lens=torch.tensor([0], dtype=torch.int32),
-        padded_prefix_lens=torch.tensor([0], dtype=torch.int32),
-    )
+    accepted = sampler._compute_accepted_ids(block, confidence, initial_confidence, sampled_tokens, threshold=0.95)
 
-    cached_out = reference_multi_block_attn(
-        q_suffix,
-        k_suffix,
-        v_suffix,
-        k_cache,
-        v_cache,
-        metadata,
-        scale=1.0 / (head_dim**0.5),
-    )
-
-    abs_q = torch.arange(seq_len)
-    abs_k = torch.arange(seq_len)
-    block_mask = abs_k[None, :] < ((((abs_q // ctx_len) + 1) * ctx_len)[:, None])
-    full_out = F.scaled_dot_product_attention(
-        rearrange(q_full, "s h d -> 1 h s d"),
-        rearrange(k_full, "s h d -> 1 h s d"),
-        rearrange(v_full, "s h d -> 1 h s d"),
-        attn_mask=block_mask.unsqueeze(0).unsqueeze(0),
-        dropout_p=0.0,
-        is_causal=False,
-        scale=1.0 / (head_dim**0.5),
-        enable_gqa=True,
-    )
-    full_out = rearrange(full_out, "1 h s d -> s h d")[ctx_len:]
-
-    torch.testing.assert_close(cached_out, full_out, atol=1e-5, rtol=1e-5)
+    assert accepted.tolist() == []
 
 
 def test_attention_uses_kernel_for_cached_prefix_prefill(monkeypatch) -> None:
@@ -258,11 +235,7 @@ def test_attention_uses_kernel_for_cached_prefix_prefill(monkeypatch) -> None:
         kernel_called["value"] = True
         return torch.zeros_like(q)
 
-    def _fail_reference(*args, **kwargs):
-        raise AssertionError("cached-prefix prefill should stay on the Triton kernel path")
-
     monkeypatch.setattr(attn_impl, "chunked_prefill_attn_unified", _fake_kernel)
-    monkeypatch.setattr(attn_impl, "reference_multi_block_attn", _fail_reference)
 
     qkv = torch.randn(4, 8)
     out = attn(qkv, qkv, qkv)

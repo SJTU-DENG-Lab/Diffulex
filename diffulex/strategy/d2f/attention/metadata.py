@@ -2,11 +2,11 @@ import torch
 
 from dataclasses import dataclass
 
-from diffulex.attention.metadata import AttnMetaDataBase
+from diffulex.strategy_template.multi_block.attention.metadata import MultiBlockAttnMetaDataTemplate
 
 
 @dataclass
-class D2fAttnMetaData(AttnMetaDataBase):
+class D2fAttnMetaData(MultiBlockAttnMetaDataTemplate):
     def __post_init__(self):
         self.init_multi_block()
 

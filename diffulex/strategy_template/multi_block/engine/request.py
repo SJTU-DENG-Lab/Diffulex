@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from diffulex.config import Config
 from diffulex.engine.dllm_block import DllmBlock, DllmBlockBuffer
+from diffulex.engine.request import DllmReq
 from diffulex.engine.status import DllmBlockStatus, DllmReqStatus
 from diffulex.attention.metadata import is_warming_up
 
-if TYPE_CHECKING:
-    from diffulex.engine.request import DllmReq
 
-
-class DllmReqMultiBlockMixin:
+class MultiBlockReqTemplate(DllmReq):
     def _restore_req_runtime_state(self):
         super()._restore_req_runtime_state()
 

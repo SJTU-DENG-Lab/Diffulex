@@ -3,16 +3,13 @@ from __future__ import annotations
 import torch
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from diffulex.config import SUPPORTED_PAGE_BLOCK_SIZES
-
-if TYPE_CHECKING:
-    from diffulex.attention.metadata import AttnMetaDataBase
+from diffulex.attention.metadata import AttnMetaDataBase
 
 
 @dataclass
-class MultiBlockAttnMetaDataMixin:
+class MultiBlockAttnMetaDataTemplate(AttnMetaDataBase):
     def init_multi_block(
         self: AttnMetaDataBase,
         valid_slices: torch.Tensor | None = None,

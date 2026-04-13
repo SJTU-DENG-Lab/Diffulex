@@ -3,11 +3,9 @@ import torch
 from typing import Callable
 from dataclasses import dataclass, field
 
-from diffulex.mixin.multi_block.attention.metadata import MultiBlockAttnMetaDataMixin
-
 
 @dataclass
-class AttnMetaDataBase(MultiBlockAttnMetaDataMixin):
+class AttnMetaDataBase:
     is_prefill: list[bool] = field(default_factory=lambda: [False])
     enforce_eager: bool = False
     cu_seqlens_q: torch.Tensor | None = None

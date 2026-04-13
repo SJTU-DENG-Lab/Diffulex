@@ -12,14 +12,14 @@ from diffulex.sampling_params import SamplingParams
 from diffulex.engine.request import AutoReq
 from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
 from diffulex.engine.model_runner import AutoModelRunner
-from diffulex.mixin.async_engine.engine.tp_worker import DiffulexTPWorkerAsyncMixin
+from diffulex.mixin.async_engine.engine.serving_worker import DiffulexServingWorkerMixin
 from diffulex.utils.output import GenerationOutputs
 from diffulex.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class DiffulexTPWorker(DiffulexTPWorkerAsyncMixin):
+class DiffulexTPWorker(DiffulexServingWorkerMixin):
     def __init__(self, model, **kwargs):
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
@@ -35,6 +35,15 @@ class DiffulexTPWorker(DiffulexTPWorkerAsyncMixin):
             self.events.append(event)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
         config.eos = self.tokenizer.eos_token_id
+        
+        if getattr(self.tokenizer, "mask_token_id", None) is not None and config.mask_token_id != self.tokenizer.mask_token_id:
+            logger.warning(
+                "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
+                config.mask_token_id,
+                self.tokenizer.mask_token_id,
+            )
+            config.mask_token_id = self.tokenizer.mask_token_id
+            
         self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
         self.scheduler: SchedulerBase = AutoScheduler.from_config(config)
         self._exited = False
@@ -76,6 +85,9 @@ class DiffulexTPWorker(DiffulexTPWorkerAsyncMixin):
 
     def is_finished(self):
         return self.scheduler.is_finished()
+
+    def abort_request(self, req_id: int) -> bool:
+        return self.scheduler.abort_request(req_id)
 
     def generate(
         self,

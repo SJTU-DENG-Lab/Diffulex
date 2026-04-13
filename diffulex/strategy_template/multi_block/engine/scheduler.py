@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from diffulex.engine.request import DllmReq, DllmReqStatus
+from diffulex.engine.request import DllmReq
+from diffulex.engine.scheduler import SchedulerBase
+from diffulex.engine.status import DllmReqStatus
 from diffulex.logger import get_logger
 
-if TYPE_CHECKING:
-    from diffulex.engine.scheduler import SchedulerBase
 
-
-class SchedulerMultiBlockMixin:
+class MultiBlockSchedulerTemplate(SchedulerBase):
     _logger = get_logger(__name__)
+
     def init_multi_block(self: SchedulerBase) -> None:
         self.block_size = self.config.block_size
 
@@ -112,13 +110,6 @@ class SchedulerMultiBlockMixin:
             true_ids_map = sample_output.true_local_ids_map.get(req_id_str, {})
             accepted_ids_map = sample_output.accepted_ids_map.get(req_id_str, {})
             sampled_tokens_map = sample_output.sampled_tokens_map.get(req_id_str, {})
-            sampler_debug_map = getattr(sample_output, "sampler_debug_map", {}).get(req_id_str, {})
-            req._sampler_trace = {
-                "true_local_ids_map": true_ids_map,
-                "accepted_ids_map": accepted_ids_map,
-                "sampled_tokens_map": sampled_tokens_map,
-                "sampler_debug_map": sampler_debug_map,
-            }
             for block_id, accepted_ids in accepted_ids_map.items():
                 if not accepted_ids:
                     continue

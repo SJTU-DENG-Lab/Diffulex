@@ -1,36 +1,44 @@
 from __future__ import annotations
 
-import os
 import torch
 
 from tqdm import tqdm
-
-from typing import TYPE_CHECKING
 
 from diffulex.attention.metadata import (
     AttnMetaDataBase,
     set_warming_up,
     reset_warming_up,
 )
+from diffulex.engine.request import AutoReq, DllmReq
+from diffulex.engine.status import DllmReqStatus
+from diffulex.engine.model_runner import ModelRunnerBase
 from diffulex.logger import get_logger
-from diffulex.engine.request import DllmReq
-from diffulex.engine.dllm_block import dllm_block_buffer_to_trace_dict, dllm_block_to_trace_dict
-from diffulex.sampler.base import SampleOutputBase
 
-if TYPE_CHECKING:
-    from diffulex.engine.model_runner import ModelRunnerBase
+logger = get_logger(__name__)
 
 
-class ModelRunnerMultiBlockMixin:
-    _logger = get_logger(__name__)
-    _validate_slot_mapping = os.environ.get("DIFFULEX_VALIDATE_SLOT_MAPPING", "0") == "1"
-    _trace_step_details = os.environ.get("DIFFULEX_TRACE_STEP_DETAILS", "0") == "1"
-    _serialize_multi_block_reqs = os.environ.get("DIFFULEX_SERIALIZE_MULTI_BLOCK_REQS", "0") == "1"
-    _trace_req_ids = {
-        int(x.strip())
-        for x in os.environ.get("DIFFULEX_TRACE_REQ_IDS", "").split(",")
-        if x.strip().isdigit()
-    }
+class MultiBlockModelRunnerTemplate(ModelRunnerBase):
+    def _prefill_warmup(self):
+        logger.info("Warming up prefill...")
+
+        max_num_batched_tokens, max_model_len = (
+            self.config.max_num_batched_tokens,
+            self.config.max_model_len,
+        )
+        num_reqs = min(max_num_batched_tokens // max_model_len, self.config.max_num_reqs)
+        test_input_ids = [0] * max_model_len
+        reqs = [AutoReq.create(config=self.config, token_ids=test_input_ids) for _ in range(num_reqs)]
+
+        for req in reqs:
+            req.init_multi_block(self.config)
+            req.status = DllmReqStatus.PENDING  # so step() can transition to PREFILLING
+
+        self.run(reqs)
+
+        for req in reqs:
+            req.postprocess()
+
+        torch.cuda.empty_cache()
 
     @staticmethod
     def _graph_seq_batch_sizes(max_num_seqs: int) -> list[int]:
@@ -142,39 +150,6 @@ class ModelRunnerMultiBlockMixin:
             padded_prefix_len=0,
         )
 
-    def _assert_prepared_slot_mapping(self: ModelRunnerBase, req: DllmReq, prepared: dict) -> None:
-        slot_mapping = prepared["slot_mapping"]
-        input_ids = prepared["input_ids"]
-        if len(slot_mapping) != len(input_ids):
-            raise RuntimeError(
-                f"slot_mapping length mismatch: len(slot_mapping)={len(slot_mapping)} "
-                f"!= len(input_ids)={len(input_ids)}, req_id={getattr(req, 'req_id', '?')}"
-            )
-
-        max_slot = self.config.num_pages * self.page_size
-        allowed_slots = set()
-        for page_id in req.page_table:
-            start = page_id * self.page_size
-            allowed_slots.update(range(start, start + self.page_size))
-
-        valid_slots = [s for s in slot_mapping if s >= 0]
-        for s in valid_slots:
-            if s >= max_slot:
-                raise RuntimeError(
-                    f"slot_mapping out of kv range: slot={s}, max_slot={max_slot - 1}, "
-                    f"req_id={getattr(req, 'req_id', '?')}"
-                )
-            if s not in allowed_slots:
-                raise RuntimeError(
-                    f"slot_mapping points to page outside req.page_table: slot={s}, "
-                    f"req_id={getattr(req, 'req_id', '?')}, page_table_len={len(req.page_table)}"
-                )
-
-        if len(valid_slots) != len(set(valid_slots)):
-            raise RuntimeError(
-                f"slot_mapping has duplicated write slots in one step, req_id={getattr(req, 'req_id', '?')}"
-            )
-
     def prepare_chunked_prefill_multi_block(self: ModelRunnerBase, reqs: list[DllmReq]):
         input_ids: list[int] = []
         positions: list[int] = []
@@ -193,36 +168,6 @@ class ModelRunnerMultiBlockMixin:
         for req in reqs:
             req.step()
             prepared = self._prepare_prefill_req(req) if req.is_prefilling else self._prepare_decode_req(req)
-            if self._validate_slot_mapping:
-                self._assert_prepared_slot_mapping(req, prepared)
-            if self._trace_step_details and (
-                not self._trace_req_ids or getattr(req, "req_id", -1) in self._trace_req_ids
-            ):
-                prepared_slot_mapping = prepared["slot_mapping"]
-                nonneg_slots = [s for s in prepared_slot_mapping if s >= 0]
-                req._kv_mapping_trace = {
-                    "req_id": int(getattr(req, "req_id", -1)),
-                    "status": "prefill" if req.is_prefilling else "decode",
-                    "input_len": int(len(prepared["input_ids"])),
-                    "context_len": int(prepared["context_len"]),
-                    "prefix_len": int(prepared["prefix_len"]),
-                    "padded_prefix_len": int(prepared["padded_prefix_len"]),
-                    "running_len": int(getattr(req, "running_len", 0) or 0),
-                    "in_cache_len": int(getattr(req, "in_cache_len", 0) or 0),
-                    "cache_len": int(getattr(req, "cache_len", 0) or 0),
-                    "positions_start": int(prepared["positions"][0]) if prepared["positions"] else -1,
-                    "positions_end": int(prepared["positions"][-1]) if prepared["positions"] else -1,
-                    "page_table_len": int(len(getattr(req, "page_table", []))),
-                    "page_table": list(getattr(req, "page_table", [])),
-                    "slot_mapping_nonneg_count": int(len(nonneg_slots)),
-                    "slot_mapping_len": int(len(prepared_slot_mapping)),
-                    "slot_mapping_first16": list(prepared_slot_mapping[:16]),
-                    "slot_mapping_last16": (
-                        list(prepared_slot_mapping[-16:])
-                        if len(prepared_slot_mapping) > 16
-                        else list(prepared_slot_mapping)
-                    ),
-                }
             status_table.append(prepared["status"])
             prefix_lens_list.append(prepared["prefix_len"])
             padded_prefix_lens_list.append(prepared["padded_prefix_len"])
@@ -361,13 +306,6 @@ class ModelRunnerMultiBlockMixin:
         return self.model.compute_logits(graph_vars["outputs"][:num_tokens])
 
     def run_multi_block(self: ModelRunnerBase, reqs: list[DllmReq]) -> list[int]:
-        if self._serialize_multi_block_reqs and len(reqs) > 1:
-            if self.rank == 0:
-                self._logger.warning("Serializing all multi-block requests for debug safety: num_reqs=%s", len(reqs))
-            sample_outputs = [self._run_multi_block_subgroup([req]) for req in reqs]
-            if self.rank != 0:
-                return None
-            return self._merge_sample_outputs(sample_outputs)
         return self._run_multi_block_subgroup(reqs)
 
     def _run_multi_block_subgroup(self: ModelRunnerBase, reqs: list[DllmReq]):
@@ -377,24 +315,6 @@ class ModelRunnerMultiBlockMixin:
         sample_output = self.sampler(reqs, logits, temperatures) if self.rank == 0 else None
         self.reset_attn_metadata()
         return sample_output
-
-    @staticmethod
-    def _merge_sample_outputs(sample_outputs: list[SampleOutputBase | None]) -> SampleOutputBase:
-        merged = dict(
-            true_local_ids_map={},
-            accepted_ids_map={},
-            sampled_tokens_map={},
-            mask_token_rel_ids_map={},
-            confidence_map={},
-            initial_confidence_map={},
-            sampler_debug_map={},
-        )
-        for sample_output in sample_outputs:
-            if sample_output is None:
-                continue
-            for key in merged:
-                merged[key].update(getattr(sample_output, key, {}) or {})
-        return SampleOutputBase(**merged)
 
     @torch.inference_mode()
     def capture_cudagraph_multi_block(self: ModelRunnerBase):

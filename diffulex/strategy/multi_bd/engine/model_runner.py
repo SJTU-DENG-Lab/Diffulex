@@ -7,7 +7,8 @@ import torch
 from diffulex.config import Config
 from diffulex.engine.request import DllmReq
 from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
-from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
+from diffulex.engine.model_runner import AutoModelRunner
+from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
 from diffulex.strategy.multi_bd.attention.metadata import (
     fetch_multi_bd_attn_metadata,
     set_multi_bd_attn_metadata,
@@ -16,7 +17,7 @@ from diffulex.strategy.multi_bd.attention.metadata import (
 
 
 @AutoModelRunner.register("multi_bd", is_default=True)
-class MultiBDModelRunner(ModelRunnerBase):
+class MultiBDModelRunner(MultiBlockModelRunnerTemplate):
     """Reference implementation of Multi-Block Diffusion decoding strategy."""
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):

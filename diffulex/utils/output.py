@@ -29,8 +29,6 @@ class ReqStep:
 
     block_size: int
     buffer_bids: list[int]
-    kv_mapping_trace: dict | None = None
-    sampler_trace: dict | None = None
 
     def to_dict(self) -> dict:
         return dict(
@@ -41,8 +39,6 @@ class ReqStep:
             running_token_ids=self.running_token_ids,
             block_size=self.block_size,
             buffer_bids=self.buffer_bids,
-            kv_mapping_trace=self.kv_mapping_trace,
-            sampler_trace=self.sampler_trace,
         )
 
 
@@ -112,30 +108,56 @@ class GenerationOutputs:
     @property
     def batch_step_count(self) -> int:
         return self._batch_step_count
+
+    @staticmethod
+    def _mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
     
     @property
     def tpf(self) -> float:
-        return self._batch_generated_tokens / self._batch_step_count if self._batch_step_count > 0 else 0
+        per_req_tpf = []
+        for trajectory in self.trajectories:
+            if not trajectory.trajectory:
+                continue
+            num_generated_tokens = sum(step.num_generated_tokens for step in trajectory.trajectory)
+            per_req_tpf.append(num_generated_tokens / len(trajectory.trajectory))
+        return self._mean(per_req_tpf)
 
     @property
     def ttft(self) -> float:
-        num_generated_tokens = 0
-        total_time = 0.0
+        per_req_ttft = []
         for trajectory in self.trajectories:
-            if len(trajectory.trajectory) == 0:
-                continue
-
-            prefill_step = trajectory.trajectory[0]
-            if not prefill_step.is_prefill:
-                continue
-
-            num_generated_tokens += prefill_step.num_generated_tokens
-            total_time += prefill_step.step_time
-        return total_time / num_generated_tokens if num_generated_tokens > 0 else 0
+            elapsed = 0.0
+            for step in trajectory.trajectory:
+                elapsed += step.step_time
+                if step.num_generated_tokens > 0:
+                    per_req_ttft.append(elapsed)
+                    break
+        return self._mean(per_req_ttft)
 
     @property
     def tpot(self) -> float:
-        return 1 / self.decode_throughput if self.decode_throughput > 0 else 0
+        per_req_tpot = []
+        for trajectory in self.trajectories:
+            total_time = sum(step.step_time for step in trajectory.trajectory)
+            total_generated_tokens = sum(step.num_generated_tokens for step in trajectory.trajectory)
+            if total_generated_tokens <= 1:
+                continue
+
+            elapsed = 0.0
+            ttft = None
+            for step in trajectory.trajectory:
+                elapsed += step.step_time
+                if step.num_generated_tokens > 0:
+                    ttft = elapsed
+                    break
+            if ttft is not None:
+                per_req_tpot.append((total_time - ttft) / (total_generated_tokens - 1))
+        return self._mean(per_req_tpot)
+
+    @property
+    def throughput(self) -> float:
+        return self._batch_generated_tokens / self._batch_total_time if self._batch_total_time > 0 else 0
 
     @property
     def prefill_throughput(self) -> float:
@@ -195,8 +217,6 @@ class GenerationOutputs:
                     ),
                     block_size=req.block_size,
                     buffer_bids=[block.block_id for block in req.dllm_block_buffer.dllm_blocks],
-                    kv_mapping_trace=getattr(req, "_kv_mapping_trace", None),
-                    sampler_trace=getattr(req, "_sampler_trace", None),
                 )
             )
             cur_trajectory.token_ids = req.truncated_response.copy() if req.truncated_response else []
@@ -215,11 +235,12 @@ class GenerationOutputs:
 
     def postfix(self) -> dict:
         return dict(
-            tpf=f"{int(self.tpf)}",
-            ttft=f"{self.ttft:.2f}",
-            tpot=f"{self.tpot:.2f}",
-            ptps=f"{int(self.prefill_throughput)}tok/sec",
-            dtps=f"{int(self.decode_throughput)}tok/sec",
+            tpf=f"{self.tpf:.2f}tok/step",
+            ttft=f"{self.ttft:.2f}s",
+            tpot=f"{self.tpot:.2f}s",
+            ptps=f"{self.prefill_throughput:.2f}tok/s",
+            dtps=f"{self.decode_throughput:.2f}tok/s",
+            tps=f"{self.throughput:.2f}tok/s",
         )
 
     def log_summary(self):
@@ -230,8 +251,9 @@ class GenerationOutputs:
         logger.info(f"Total NFEs: {self.batch_step_count} nfes (steps)")
         logger.info(f"Total Time: {self.total_time} sec")
         logger.info(f"TPF: {self.tpf:.2f} tok/step")
-        logger.info(f"TTFT: {self.ttft:.2f} tok/sec")
-        logger.info(f"TPOT: {self.tpot:.2f} tok/sec")
+        logger.info(f"TTFT: {self.ttft:.2f} sec")
+        logger.info(f"TPOT: {self.tpot:.2f} sec")
+        logger.info(f"Throughput: {self.throughput:.2f} tok/sec")
         logger.info(f"Prefill Throughput: {self.prefill_throughput:.2f} tok/sec")
         logger.info(f"Decode Throughput: {self.decode_throughput:.2f} tok/sec")
         logger.info("--------------------------------")

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from diffulex.engine.request import DllmReq
-    from diffulex.engine.kv_cache_manager import KVCacheManagerBase
+from diffulex.engine.request import DllmReq
+from diffulex.engine.kv_cache_manager import KVCacheManagerBase
 
 
-class MultiBlockKVCacheManagerMixin:
+class MultiBlockKVCacheManagerTemplate(KVCacheManagerBase):
     def _missing_cache_pages_multi_block(self: KVCacheManagerBase, req: DllmReq) -> int:
         total_cache_pages = req.num_pages_with_seq_len(req.cache_len)
         return max(0, total_cache_pages - len(req.page_table))

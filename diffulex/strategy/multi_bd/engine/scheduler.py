@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from diffulex.config import Config
-from diffulex.engine.scheduler import AutoScheduler, SchedulerBase
+from diffulex.engine.scheduler import AutoScheduler
 from diffulex.engine.request import DllmReq
+from diffulex.strategy_template.multi_block.engine.scheduler import MultiBlockSchedulerTemplate
 
 
 @AutoScheduler.register("multi_bd", is_default=True)
-class MultiBDScheduler(SchedulerBase):
+class MultiBDScheduler(MultiBlockSchedulerTemplate):
     def __init__(self, config: Config):
         super().__init__(config)
         self.init_multi_block()

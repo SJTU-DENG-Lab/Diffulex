@@ -11,9 +11,6 @@ from dataclasses import dataclass, field
 from diffulex.config import Config
 from diffulex.engine.request import DllmReq
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
-from diffulex.mixin.multi_block.engine.kv_cache_manager import (
-    MultiBlockKVCacheManagerMixin,
-)
 
 
 @dataclass
@@ -39,7 +36,7 @@ class Page:
         self.req = weakref.ref(req)
 
 
-class KVCacheManagerBase(ABC, MultiBlockKVCacheManagerMixin):
+class KVCacheManagerBase(ABC):
     def __init__(self, config: Config):
         num_pages = config.num_pages
         page_size = config.page_size

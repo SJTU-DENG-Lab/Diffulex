@@ -17,7 +17,8 @@ class SDARSampler(DllmSamplerNoShiftBase):
         **kwargs,
     ) -> torch.Tensor:
         high_conf_indices = torch.where(initial_confidence > threshold)[0]
-        if block.should_force_decode_topk:
+        is_initial_block = getattr(block, "block_id", None) == 0 and getattr(block, "prev_block", None) is None
+        if block.should_force_decode_topk or is_initial_block:
             topk_idx = (
                 torch.topk(confidence, 1)[1]
                 if len(high_conf_indices) == 0

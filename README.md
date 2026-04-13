@@ -73,21 +73,6 @@ for output in outputs:
 
 For more examples, check out the [examples](examples/) directory.
 
-## Prefix Caching Validation
-
-Use the following scripts to validate `multi_bd + prefix caching`:
-
-```bash
-# Fast CI gate: engine + kernel regressions only
-./script/test_multi_bd_prefix_caching_ci.sh
-
-# Full local validation: engine + kernel + real-model comparison
-./script/test_multi_bd_prefix_caching.sh
-
-# Nightly/full check with explicit model path
-MODEL_PATH=/data1/ckpts/JetLM/SDAR-1.7B-Chat-b32 ./script/test_multi_bd_prefix_caching_nightly.sh
-```
-
 ## Upcoming Features
 
 Check our [Diffulex v0.0.1 release plan](https://github.com/SJTU-DENG-Lab/Diffulex/issues/14) for upcoming features.
@@ -100,4 +85,4 @@ Welcome to join our Discord community for discussions, support, and collaboratio
 
 ## Acknowledgments
 
-We would like to express our gratitude to [Nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), which serves as the primary codebase foundation for this project, and [vLLM](https://github.com/vllm-project/vllm), from which we draw the core architectural concepts, particularly the Paged Attention mechanism. The initial version of this project was mainly developed by [Yijie Jin](https://github.com/drewjin0827) with supervision from Prof. [Zhijie Deng](https://thudzj.github.io) at Shanghai Jiao Tong University.
+We would like to express our gratitude to [Nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), which inspired the initial backend implementation of this project, and [vLLM](https://github.com/vllm-project/vllm), from which we draw core architectural concepts, particularly the Paged Attention mechanism. Our server design also references [mini-sglang](https://github.com/sgl-project/mini-sglang); although Diffulex has diverged significantly from these projects, we remain grateful for their contributions to the open-source inference community. The initial version of this project was mainly developed by [Yijie Jin](https://github.com/drewjin0827) with supervision from Prof. [Zhijie Deng](https://thudzj.github.io) at Shanghai Jiao Tong University.

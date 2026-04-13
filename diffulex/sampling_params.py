@@ -4,8 +4,8 @@ from dataclasses import dataclass
 @dataclass
 class SamplingParams:
     temperature: float = 1.0
-    max_tokens: int = 64
-    max_nfe: int | None = None
+    max_tokens: int = 512
+    max_nfe: int | None = 512
     max_repetition_run: int | None = None
     ignore_eos: bool = False
 

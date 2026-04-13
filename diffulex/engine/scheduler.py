@@ -4,12 +4,12 @@ from abc import ABC, abstractmethod
 
 from diffulex.config import Config
 from diffulex.engine.request import DllmReq
+from diffulex.engine.status import DllmReqStatus
 from diffulex.engine.kv_cache_manager import AutoKVCacheManager
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
-from diffulex.mixin.multi_block.engine.scheduler import SchedulerMultiBlockMixin
 
 
-class SchedulerBase(ABC, SchedulerMultiBlockMixin):
+class SchedulerBase(ABC):
     def __init__(self, config: Config):
         self.config = config
         self.max_num_reqs = config.max_num_reqs
@@ -21,6 +21,24 @@ class SchedulerBase(ABC, SchedulerMultiBlockMixin):
 
     def is_finished(self) -> bool:
         return not self.waiting_reqs and not self.running_reqs
+
+    def abort_request(self, req_id: int) -> bool:
+        for req in list(self.waiting_reqs):
+            if req.req_id == req_id:
+                self.waiting_reqs.remove(req)
+                req.status = DllmReqStatus.FINISHED
+                setattr(req, "completion_reason", "aborted")
+                return True
+
+        for req in list(self.running_reqs):
+            if req.req_id == req_id:
+                self.running_reqs.remove(req)
+                setattr(req, "completion_reason", "aborted")
+                req.status = DllmReqStatus.FINISHED
+                self.kv_cache_manager.free(req)
+                return True
+
+        return False
 
     @abstractmethod
     def add(self, req: DllmReq) -> None:
