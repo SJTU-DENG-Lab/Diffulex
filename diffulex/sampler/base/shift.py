@@ -118,6 +118,7 @@ class DllmSamplerShiftBase(SamplerShiftLogits):
                     top_k=top_k,
                     neg_entropy=(neg_entropy == "neg_entropy"),
                     margin_confidence=(margin_confidence == "margin_confidence"),
+                    forbidden_token_ids=[int(block.mask_token_id)],
                 )
                 accepted_ids = self._compute_accepted_ids(
                     block, confidence, initial_confidence, sampled_tokens, **kwargs

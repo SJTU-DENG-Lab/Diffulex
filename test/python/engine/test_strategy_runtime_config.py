@@ -105,6 +105,60 @@ def test_bench_cli_forwards_sampling_mode_to_engine_config():
     assert config.engine.sampling_mode == "edit"
 
 
+def test_bench_cli_accepts_llada_and_dmax_choices():
+    parser = create_argument_parser()
+    args = parser.parse_args(
+        [
+            "--model-path",
+            MODEL_PATH,
+            "--model-name",
+            "llada",
+            "--decoding-strategy",
+            "dmax",
+            "--sampling-mode",
+            "edit",
+        ]
+    )
+
+    config = load_config_from_args(args)
+
+    assert config.engine.model_name == "llada"
+    assert config.engine.decoding_strategy == "dmax"
+    assert config.engine.sampling_mode == "edit"
+
+
+def test_bench_cli_forwards_explicit_engine_fields():
+    parser = create_argument_parser()
+    args = parser.parse_args(
+        [
+            "--model-path",
+            MODEL_PATH,
+            "--expert-parallel-size",
+            "2",
+            "--page-size",
+            "16",
+            "--token-merge-mode",
+            "iter_smooth_topk",
+            "--token-merge-top-k",
+            "3",
+            "--no-token-merge-renormalize",
+            "--token-merge-weight",
+            "0.75",
+            "--no-enable-prefix-caching",
+        ]
+    )
+
+    config = load_config_from_args(args)
+
+    assert config.engine.expert_parallel_size == 2
+    assert config.engine.page_size == 16
+    assert config.engine.token_merge_mode == "iter_smooth_topk"
+    assert config.engine.token_merge_top_k == 3
+    assert config.engine.token_merge_renormalize is False
+    assert config.engine.token_merge_weight == 0.75
+    assert config.engine.enable_prefix_caching is False
+
+
 def test_config_rejects_edit_sampling_for_non_llada2_model(config_no_model_load):
     with pytest.raises(ValueError, match="sampling_mode='edit' is only supported"):
         Config(

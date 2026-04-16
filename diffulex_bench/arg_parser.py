@@ -5,6 +5,21 @@ Argument Parser - Command line argument parsing for benchmark
 import argparse
 from pathlib import Path
 
+MODEL_NAME_CHOICES = [
+    "dream",
+    "sdar",
+    "sdar_moe",
+    "fast_dllm_v2",
+    "llada",
+    "llada2",
+    "llada2_moe",
+    "llada2_mini",
+    "llada2dot1_mini",
+]
+
+DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
+TOKEN_MERGE_MODE_CHOICES = ["dmax_topk", "iter_smooth_topk"]
+
 
 def create_argument_parser() -> argparse.ArgumentParser:
     """
@@ -77,15 +92,15 @@ Examples:
         "--model-name",
         type=str,
         default="dream",
-        choices=["dream", "sdar", "fast_dllm_v2"],
+        choices=MODEL_NAME_CHOICES,
         help="Model name",
     )
     parser.add_argument(
         "--decoding-strategy",
         type=str,
         default="d2f",
-        choices=["d2f", "multi_bd"],
-        help="Decoding strategy (d2f, multi_bd)",
+        choices=DECODING_STRATEGY_CHOICES,
+        help="Decoding strategy (d2f, multi_bd, dmax)",
     )
     parser.add_argument(
         "--sampling-mode",
@@ -113,6 +128,12 @@ Examples:
         type=int,
         default=1,
         help="Data parallel size",
+    )
+    parser.add_argument(
+        "--expert-parallel-size",
+        type=int,
+        default=None,
+        help="Expert parallel size",
     )
     parser.add_argument(
         "--gpu-memory-utilization",
@@ -272,6 +293,43 @@ Examples:
         default="unified",
         choices=["unified", "distinct"],
         help="KV cache layout",
+    )
+    parser.add_argument(
+        "--enable-prefix-caching",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whether to enable prefix caching",
+    )
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=None,
+        help="KV cache page size",
+    )
+    parser.add_argument(
+        "--token-merge-mode",
+        type=str,
+        default=None,
+        choices=TOKEN_MERGE_MODE_CHOICES,
+        help="Token merge mode for DMax/token-merge strategies",
+    )
+    parser.add_argument(
+        "--token-merge-top-k",
+        type=int,
+        default=None,
+        help="Top-k count for token merge metadata",
+    )
+    parser.add_argument(
+        "--token-merge-renormalize",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whether to renormalize token merge probabilities",
+    )
+    parser.add_argument(
+        "--token-merge-weight",
+        type=float,
+        default=None,
+        help="Interpolation weight for token merge",
     )
 
     # D2F-specific arguments

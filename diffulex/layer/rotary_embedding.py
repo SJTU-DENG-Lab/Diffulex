@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from functools import lru_cache
+from typing import Any
 
 
 def apply_rotary_emb(
@@ -65,14 +66,63 @@ class RotaryEmbedding(nn.Module):
         return query, key
 
 
-@lru_cache(1)
+def _normalize_rope_scaling(
+    rope_scaling: dict[str, Any] | tuple[tuple[str, Any], ...] | None,
+) -> tuple[tuple[str, Any], ...] | None:
+    if rope_scaling is None:
+        return None
+    if isinstance(rope_scaling, tuple):
+        return rope_scaling
+    if not isinstance(rope_scaling, dict):
+        raise TypeError(f"rope_scaling must be a dict, tuple, or None, got: {type(rope_scaling)!r}")
+    return tuple(sorted(rope_scaling.items()))
+
+
+def _validate_rope_scaling(
+    rope_scaling: tuple[tuple[str, Any], ...] | None,
+) -> None:
+    if rope_scaling is None:
+        return
+
+    rope_scaling_dict = dict(rope_scaling)
+    rope_type = rope_scaling_dict.get("rope_type", rope_scaling_dict.get("type", "default"))
+
+    # HF configs may standardize default rope into a dict form. We accept that and
+    # treat it identically to rope_scaling=None because Diffulex currently only
+    # implements the default rotary embedding path here.
+    if rope_type in ("default", None):
+        return
+
+    raise NotImplementedError(
+        "Diffulex RotaryEmbedding currently supports only the default rope variant, "
+        f"got rope_scaling={rope_scaling_dict}."
+    )
+
+
+@lru_cache(16)
+def _get_rope_cached(
+    head_size: int,
+    rotary_dim: int,
+    max_position: int,
+    base: float,
+    rope_scaling: tuple[tuple[str, Any], ...] | None = None,
+):
+    _validate_rope_scaling(rope_scaling)
+    rotary_emb = RotaryEmbedding(head_size, rotary_dim, max_position, base)
+    return rotary_emb
+
+
 def get_rope(
     head_size: int,
     rotary_dim: int,
     max_position: int,
     base: float,
-    rope_scaling: dict | None = None,
+    rope_scaling: dict | tuple[tuple[str, Any], ...] | None = None,
 ):
-    assert rope_scaling is None
-    rotary_emb = RotaryEmbedding(head_size, rotary_dim, max_position, base)
-    return rotary_emb
+    return _get_rope_cached(
+        head_size=head_size,
+        rotary_dim=rotary_dim,
+        max_position=max_position,
+        base=base,
+        rope_scaling=_normalize_rope_scaling(rope_scaling),
+    )

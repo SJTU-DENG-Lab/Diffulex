@@ -395,6 +395,24 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.model_path = args.model_path
         if was_provided("tokenizer_path") and getattr(args, "tokenizer_path", None):
             config.engine.tokenizer_path = args.tokenizer_path
+        if was_provided("model_name") and getattr(args, "model_name", None):
+            config.engine.model_name = args.model_name
+        if was_provided("decoding_strategy") and getattr(args, "decoding_strategy", None):
+            config.engine.decoding_strategy = args.decoding_strategy
+        if was_provided("mask_token_id") and getattr(args, "mask_token_id", None) is not None:
+            config.engine.mask_token_id = args.mask_token_id
+        if was_provided("tensor_parallel_size") and getattr(args, "tensor_parallel_size", None) is not None:
+            config.engine.tensor_parallel_size = args.tensor_parallel_size
+        if was_provided("data_parallel_size") and getattr(args, "data_parallel_size", None) is not None:
+            config.engine.data_parallel_size = args.data_parallel_size
+        if was_provided("gpu_memory_utilization") and getattr(args, "gpu_memory_utilization", None) is not None:
+            config.engine.gpu_memory_utilization = args.gpu_memory_utilization
+        if was_provided("use_lora"):
+            config.engine.use_lora = bool(args.use_lora)
+        if was_provided("lora_path"):
+            config.engine.lora_path = args.lora_path
+        if was_provided("pre_merge_lora"):
+            config.engine.pre_merge_lora = bool(args.pre_merge_lora)
         if was_provided("dataset") and args.dataset:
             config.eval.dataset_name = args.dataset
         if was_provided("dataset_limit") and args.dataset_limit is not None:
@@ -421,18 +439,32 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.enforce_eager = bool(args.enforce_eager)
         if getattr(args, "kv_cache_layout", None) is not None:
             config.engine.kv_cache_layout = args.kv_cache_layout
+        if getattr(args, "enable_prefix_caching", None) is not None:
+            config.engine.enable_prefix_caching = bool(args.enable_prefix_caching)
         if getattr(args, "sampling_mode", None) is not None:
             config.engine.sampling_mode = args.sampling_mode
+        if getattr(args, "expert_parallel_size", None) is not None:
+            config.engine.expert_parallel_size = args.expert_parallel_size
         if getattr(args, "max_model_len", None) is not None:
             config.engine.max_model_len = args.max_model_len
         if max_num_reqs is not None:
             config.engine.max_num_reqs = max_num_reqs
         if getattr(args, "max_num_batched_tokens", None) is not None:
             config.engine.max_num_batched_tokens = args.max_num_batched_tokens
+        if getattr(args, "page_size", None) is not None:
+            config.engine.page_size = args.page_size
         if getattr(args, "buffer_size", None) is not None:
             config.engine.buffer_size = args.buffer_size
         if getattr(args, "block_size", None) is not None:
             config.engine.block_size = args.block_size
+        if getattr(args, "token_merge_mode", None) is not None:
+            config.engine.token_merge_mode = args.token_merge_mode
+        if getattr(args, "token_merge_top_k", None) is not None:
+            config.engine.token_merge_top_k = args.token_merge_top_k
+        if getattr(args, "token_merge_renormalize", None) is not None:
+            config.engine.token_merge_renormalize = bool(args.token_merge_renormalize)
+        if getattr(args, "token_merge_weight", None) is not None:
+            config.engine.token_merge_weight = args.token_merge_weight
         if getattr(args, "multi_block_prefix_full", None) is not None:
             config.engine.multi_block_prefix_full = bool(args.multi_block_prefix_full)
         apply_engine_arg_overrides(config.engine)
@@ -451,6 +483,11 @@ def load_config_from_args(args) -> BenchmarkConfig:
             mask_token_id=args.mask_token_id,
             tensor_parallel_size=args.tensor_parallel_size,
             data_parallel_size=args.data_parallel_size,
+            expert_parallel_size=(
+                getattr(args, "expert_parallel_size", None)
+                if getattr(args, "expert_parallel_size", None) is not None
+                else 1
+            ),
             gpu_memory_utilization=args.gpu_memory_utilization,
             max_model_len=args.max_model_len,
             max_num_batched_tokens=getattr(args, "max_num_batched_tokens", 4096),
@@ -458,7 +495,31 @@ def load_config_from_args(args) -> BenchmarkConfig:
             use_lora=args.use_lora,
             lora_path=args.lora_path,
             pre_merge_lora=getattr(args, "pre_merge_lora", True),
+            enable_prefix_caching=(
+                bool(args.enable_prefix_caching)
+                if getattr(args, "enable_prefix_caching", None) is not None
+                else True
+            ),
             kv_cache_layout=getattr(args, "kv_cache_layout", "unified"),
+            page_size=(args.page_size if getattr(args, "page_size", None) is not None else 32),
+            token_merge_mode=(
+                getattr(args, "token_merge_mode", None) or "dmax_topk"
+            ),
+            token_merge_top_k=(
+                getattr(args, "token_merge_top_k", None)
+                if getattr(args, "token_merge_top_k", None) is not None
+                else 1
+            ),
+            token_merge_renormalize=(
+                bool(args.token_merge_renormalize)
+                if getattr(args, "token_merge_renormalize", None) is not None
+                else True
+            ),
+            token_merge_weight=(
+                getattr(args, "token_merge_weight", None)
+                if getattr(args, "token_merge_weight", None) is not None
+                else 1.0
+            ),
             decoding_thresholds={
                 "add_block_threshold": getattr(args, "add_block_threshold", 0.1),
                 "semi_complete_threshold": getattr(args, "semi_complete_threshold", 0.9),

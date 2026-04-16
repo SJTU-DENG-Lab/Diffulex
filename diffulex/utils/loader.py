@@ -332,9 +332,9 @@ def load_lora_weights(
                         logger.warning(f"Failed to load LoRA weights for {name}: {e}")
 
         if pre_merge_lora:
-            for module in model.modules():
-                if hasattr(module, "merge_lora"):
-                    module.merge_lora()
+            mergeable_modules = [module for module in model.modules() if hasattr(module, "merge_lora")]
+            for module in tqdm(mergeable_modules, desc="Merging LoRA"):
+                module.merge_lora()
             logger.info(f"LoRA weights applied to {applied_count} layers and merged into base")
         else:
             logger.info(f"LoRA weights applied to {applied_count} layers (unmerged, applied per forward)")
@@ -344,4 +344,3 @@ def load_lora_weights(
         logger.warning("Continuing with base model only")
 
     return model
-

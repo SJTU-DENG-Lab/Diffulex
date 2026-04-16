@@ -46,6 +46,7 @@ class ServerArgs:
 
     use_lora: bool = False
     lora_path: str = ""
+    pre_merge_lora: bool = False
 
     def engine_kwargs(self) -> dict:
         if self.data_parallel_size != 1:
@@ -79,6 +80,7 @@ class ServerArgs:
             },
             "use_lora": self.use_lora,
             "lora_path": self.lora_path,
+            "pre_merge_lora": self.pre_merge_lora,
         }
 
 
@@ -117,6 +119,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--lora-path", default="")
+    parser.add_argument("--pre-merge-lora", action="store_true")
     return parser
 
 
@@ -153,4 +156,5 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         remask_threshold=ns.remask_threshold,
         use_lora=ns.use_lora,
         lora_path=ns.lora_path,
+        pre_merge_lora=ns.pre_merge_lora,
     )

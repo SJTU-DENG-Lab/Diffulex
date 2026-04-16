@@ -101,4 +101,5 @@ class AutoSampler:
                 f"decoding_strategy='{config.decoding_strategy}', "
                 f"sampling_mode='{config.sampling_mode}'."
             )
+        setattr(sampler, "tokenizer_vocab_size", getattr(config, "tokenizer_vocab_size", None))
         return sampler

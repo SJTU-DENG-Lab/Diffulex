@@ -62,8 +62,8 @@ class LoRAMixin:
         if not hasattr(self, "r") or self.r == 0 or self.merged:
             return base_output
 
-        lora_out = F.linear(self.lora_dropout(x), self.lora_A.T)
-        lora_out = F.linear(lora_out, self.lora_B.T)
+        lora_out = F.linear(self.lora_dropout(x), self.lora_A)
+        lora_out = F.linear(lora_out, self.lora_B)
         return base_output + lora_out * self.scaling
 
 
@@ -263,6 +263,13 @@ class RowParallelLinear(LinearBase, LoRAMixin):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias if self.tp_rank == 0 else None
         y = self._forward_base(x, bias)
+        if hasattr(self, "r") and self.r > 0 and not self.merged:
+            lora_out = F.linear(self.lora_dropout(x), self.lora_A)
+            lora_out = F.linear(lora_out, self.lora_B)
+            if self.tp_size > 1:
+                dist.all_reduce(y)
+                dist.all_reduce(lora_out)
+            return y + lora_out * self.scaling
         if self.tp_size > 1:
             dist.all_reduce(y)
-        return self.lora_forward(x, y)
+        return y

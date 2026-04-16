@@ -96,6 +96,8 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def eos_token_generated(self) -> bool:
+        if self.ignore_eos:
+            return False
         # Only inspect generated segment; prompt tokens may also contain chat delimiters
         # such as <|im_end|>, which must not trigger immediate completion.
         generated_seq = self.token_ids[self.prefix_len :]

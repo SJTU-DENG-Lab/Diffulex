@@ -8,8 +8,8 @@ Benchmark framework for evaluating Diffulex inference engine using lm-evaluation
 - ✅ **YAML Configuration**: Clean and readable configuration files
 - ✅ **Professional Logging**: Colored output with rich formatting
 - ✅ **Flexible Configuration**: Support both config files and command-line arguments
-- ✅ **Multiple Models**: Support for Dream, SDAR, Fast-dLLM-v2 models
-- ✅ **Multiple Strategies**: D2F, Block Diffusion, Fast-dLLM decoding strategies
+- ✅ **Multiple Models**: Support for Dream, SDAR, LLaDA, LLaDA2, Fast-dLLM-v2 and related variants
+- ✅ **Multiple Strategies**: D2F, Multi-Block Diffusion, DMax and related decoding strategies
 
 ## Quick Start
 
@@ -130,14 +130,16 @@ See [lm-evaluation-harness tasks](https://github.com/EleutherAI/lm-evaluation-ha
 ### Model Types
 
 - `dream`: Dream model
-- `sdar`: SDAR model
+- `sdar`, `sdar_moe`: SDAR variants
 - `fast_dllm_v2`: Fast-dLLM-v2 model
+- `llada`: LLaDA / instruct LoRA path
+- `llada2`, `llada2_moe`, `llada2_mini`, `llada2dot1_mini`: LLaDA2 variants
 
 ### Decoding Strategies
 
 - `d2f`: Discrete Diffusion Forcing
-- `block_diffusion`: Block Diffusion
-- `fast_dllm`: Fast-dLLM
+- `multi_bd`: Multi-Block Diffusion
+- `dmax`: DMax token-merging diffusion decoding
 
 ### Example: Dream with D2F
 

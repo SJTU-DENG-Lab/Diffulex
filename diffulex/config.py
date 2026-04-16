@@ -65,6 +65,7 @@ class Config:
 
     enforce_eager: bool = False
     hf_config: AutoConfig | None = None
+    tokenizer_vocab_size: int | None = None
     eos: int = -1
     page_size: int = 32
     enable_prefix_caching: bool = True

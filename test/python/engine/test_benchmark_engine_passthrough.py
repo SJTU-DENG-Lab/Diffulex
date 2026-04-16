@@ -64,6 +64,12 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
                 "buffer_size": 4,
                 "page_size": 64,
                 "device_ids": [0, 1],
+                "expert_parallel_size": 2,
+                "enable_prefix_caching": False,
+                "token_merge_mode": "iter_smooth_topk",
+                "token_merge_top_k": 3,
+                "token_merge_renormalize": False,
+                "token_merge_weight": 0.75,
                 "decoding_thresholds": {
                     "add_block_threshold": 0.2,
                     "semi_complete_threshold": 0.8,
@@ -90,6 +96,12 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
     assert captured["wait_ready"] is True
     assert forwarded["page_size"] == 64
     assert forwarded["device_ids"] == [0, 1]
+    assert forwarded["expert_parallel_size"] == 2
+    assert forwarded["enable_prefix_caching"] is False
+    assert forwarded["token_merge_mode"] == "iter_smooth_topk"
+    assert forwarded["token_merge_top_k"] == 3
+    assert forwarded["token_merge_renormalize"] is False
+    assert forwarded["token_merge_weight"] == 0.75
     assert forwarded["block_size"] == 4
     assert forwarded["decoding_thresholds"]["accept_threshold"] == 0.95
     assert lm.max_new_tokens == 123
@@ -122,6 +134,12 @@ def test_model_arg_obj_round_trip_extra_engine_fields(monkeypatch) -> None:
                 "buffer_size": 4,
                 "page_size": 64,
                 "device_ids": [0, 1],
+                "expert_parallel_size": 2,
+                "enable_prefix_caching": False,
+                "token_merge_mode": "iter_smooth_topk",
+                "token_merge_top_k": 3,
+                "token_merge_renormalize": False,
+                "token_merge_weight": 0.75,
                 "decoding_thresholds": {
                     "add_block_threshold": 0.2,
                     "semi_complete_threshold": 0.8,
@@ -149,6 +167,12 @@ def test_model_arg_obj_round_trip_extra_engine_fields(monkeypatch) -> None:
     assert captured["wait_ready"] is True
     assert forwarded["page_size"] == 64
     assert forwarded["device_ids"] == [0, 1]
+    assert forwarded["expert_parallel_size"] == 2
+    assert forwarded["enable_prefix_caching"] is False
+    assert forwarded["token_merge_mode"] == "iter_smooth_topk"
+    assert forwarded["token_merge_top_k"] == 3
+    assert forwarded["token_merge_renormalize"] is False
+    assert forwarded["token_merge_weight"] == 0.75
     assert forwarded["decoding_thresholds"]["semi_complete_threshold"] == 0.8
 
 

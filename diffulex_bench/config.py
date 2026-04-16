@@ -119,6 +119,7 @@ class EngineConfig:
     # Parallelism configuration
     tensor_parallel_size: int = 1
     data_parallel_size: int = 1
+    expert_parallel_size: int = 1
 
     # Memory and capacity configuration
     gpu_memory_utilization: float = 0.9
@@ -128,7 +129,13 @@ class EngineConfig:
 
     # Engine behavior configuration
     enforce_eager: bool = False
+    enable_prefix_caching: bool = True
     kv_cache_layout: str = "unified"  # Options: unified, distinct
+    page_size: int = 32
+    token_merge_mode: str = "dmax_topk"
+    token_merge_top_k: int = 1
+    token_merge_renormalize: bool = True
+    token_merge_weight: float = 1.0
 
     # D2F/MultiBD-specific configuration
     decoding_thresholds: Optional[Dict[str, float]] = (

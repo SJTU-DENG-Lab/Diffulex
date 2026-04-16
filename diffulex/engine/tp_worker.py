@@ -39,6 +39,7 @@ class DiffulexTPWorker(DiffulexServingWorkerMixin):
             self.ps.append(process)
             self.events.append(event)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+        config.tokenizer_vocab_size = len(self.tokenizer)
         config.eos = self.tokenizer.eos_token_id
         
         if getattr(self.tokenizer, "mask_token_id", None) is not None and config.mask_token_id != self.tokenizer.mask_token_id:

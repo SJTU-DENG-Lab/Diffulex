@@ -7,6 +7,7 @@ from diffulex.attention.attn_impl import Attention
 from diffulex.mixin.edit.sampler import EditSamplerMixin
 from diffulex.mixin.token_merge.sampler import TokenMergeSamplerMixin
 from diffulex.sampler.auto_sampler import AutoSampler
+from diffulex.sampler.dream import DreamSampler
 from diffulex.sampler.llada import LLaDASampler
 from diffulex.sampler.llada2 import LLaDA2DMaxSampler, LLaDA2Sampler, LLaDA2dot1Sampler
 from diffulex.sampler.sdar import SDARSampler
@@ -158,6 +159,7 @@ def test_sampler_prefill_localizes_mask_token_indices_after_cached_prefix() -> N
         block_id=1,
         is_active=True,
         num_mask_tokens=4,
+        mask_token_id=-1,
         mask_token_global_ids=[4, 5, 6, 7],
         mask_token_relative_ids=[0, 1, 2, 3],
         should_force_decode_topk=False,
@@ -398,3 +400,103 @@ def test_llada2dmax_sampler_emits_edit_writes_and_token_merge_map() -> None:
     assert req_merge[4] is None
     assert req_merge[5]["topk_ids"] == [1]
     assert req_merge[6]["topk_ids"] == [2]
+
+
+def test_llada_sampler_does_not_resample_mask_token() -> None:
+    sampler = LLaDASampler()
+    sampler.fetch_attn_metadata = lambda: SimpleNamespace(is_prefill=[True], cu_seqlens_q=None)
+
+    block = SimpleNamespace(
+        block_id=0,
+        is_active=True,
+        num_mask_tokens=1,
+        mask_token_id=0,
+        mask_token_global_ids=[0],
+        mask_token_relative_ids=[0],
+        prev_block=None,
+        should_force_decode_topk=False,
+        thresholds=SimpleNamespace(accept_threshold=0.99),
+    )
+    req = SimpleNamespace(
+        req_id=0,
+        running_sequence=[0],
+        chunk_size=1,
+        dllm_blocks=[block],
+        contiguous_in_cache_prefix_len=0,
+    )
+
+    logits = torch.tensor([[10.0, 5.0, 4.0]], dtype=torch.float32)
+    temperatures = torch.tensor([0.0], dtype=torch.float32)
+
+    out = sampler([req], logits, temperatures)
+
+    assert out.sampled_tokens_map["0"]["0"] == [1]
+
+
+def test_llada_sampler_does_not_sample_tokenizer_padding_vocab() -> None:
+    sampler = LLaDASampler()
+    sampler.tokenizer_vocab_size = 3
+
+    logits = torch.tensor([[0.1, 0.2, 0.3, 10.0]], dtype=torch.float32)
+
+    _, sampled_tokens, _ = sampler.sample_tokens(logits, temperature=0.0)
+
+    assert sampled_tokens.tolist() == [2]
+
+
+def test_llada_sampler_sanitizes_nan_logits_before_sampling() -> None:
+    sampler = LLaDASampler()
+    sampler.tokenizer_vocab_size = 3
+
+    logits = torch.tensor([[1.0, 2.0, 3.0, float("nan")]], dtype=torch.float32)
+
+    _, sampled_tokens, _ = sampler.sample_tokens(logits, temperature=0.0)
+
+    assert sampled_tokens.tolist() == [2]
+
+
+def test_llada_sampler_forces_topk_for_initial_block() -> None:
+    sampler = LLaDASampler()
+    block = SimpleNamespace(
+        block_id=0,
+        prev_block=None,
+        should_force_decode_topk=False,
+        thresholds=SimpleNamespace(accept_threshold=0.95),
+    )
+    confidence = torch.tensor([0.2, 0.7, 0.4])
+    initial_confidence = torch.tensor([0.2, 0.7, 0.4])
+    sampled_tokens = torch.tensor([10, 11, 12])
+
+    accepted = sampler._compute_accepted_ids(block, confidence, initial_confidence, sampled_tokens)
+
+    assert accepted.tolist() == [1]
+
+
+def test_dream_sampler_forces_topk_when_prev_block_is_complete() -> None:
+    sampler = DreamSampler()
+    block = SimpleNamespace(
+        prev_block=SimpleNamespace(is_semi_complete=True),
+        thresholds=SimpleNamespace(accept_threshold=0.95),
+    )
+    confidence = torch.tensor([0.2, 0.7, 0.4])
+    initial_confidence = torch.tensor([0.2, 0.7, 0.4])
+    sampled_tokens = torch.tensor([10, 11, 12])
+
+    accepted = sampler._compute_accepted_ids(block, confidence, initial_confidence, sampled_tokens)
+
+    assert accepted.tolist() == [1]
+
+
+def test_dream_sampler_does_not_force_topk_when_prev_block_not_complete() -> None:
+    sampler = DreamSampler()
+    block = SimpleNamespace(
+        prev_block=SimpleNamespace(is_semi_complete=False),
+        thresholds=SimpleNamespace(accept_threshold=0.95),
+    )
+    confidence = torch.tensor([0.2, 0.7, 0.4])
+    initial_confidence = torch.tensor([0.2, 0.7, 0.4])
+    sampled_tokens = torch.tensor([10, 11, 12])
+
+    accepted = sampler._compute_accepted_ids(block, confidence, initial_confidence, sampled_tokens)
+
+    assert accepted.tolist() == []

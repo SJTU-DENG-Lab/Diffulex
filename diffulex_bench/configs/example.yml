@@ -6,8 +6,8 @@ engine:
   # Model and weights
   model_path: "Dream-org/Dream-v0-Base-7B"
   tokenizer_path: null  # Optional, defaults to model_path
-  model_name: "dream"  # Options: dream, sdar, fast_dllm_v2
-  decoding_strategy: "d2f"  # Options: d2f, multi_bd
+  model_name: "dream"  # Options include dream, sdar, sdar_moe, fast_dllm_v2, llada, llada2, ...
+  decoding_strategy: "d2f"  # Options: d2f, multi_bd, dmax
   sampling_mode: "naive"  # Options: naive, edit
   mask_token_id: 151666
 
@@ -19,6 +19,7 @@ engine:
   # Parallelism configuration
   tensor_parallel_size: 1
   data_parallel_size: 1
+  expert_parallel_size: 1
 
   # Memory and capacity configuration
   gpu_memory_utilization: 0.7
@@ -28,7 +29,13 @@ engine:
 
   # Engine behavior configuration
   enforce_eager: true
+  enable_prefix_caching: true
   kv_cache_layout: "unified"  # Options: unified, distinct
+  page_size: 32
+  token_merge_mode: "dmax_topk"
+  token_merge_top_k: 1
+  token_merge_renormalize: true
+  token_merge_weight: 1.0
 
   # D2F-specific configuration
   decoding_thresholds:

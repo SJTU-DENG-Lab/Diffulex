@@ -152,7 +152,7 @@ class LLaDABlock(nn.Module):
             num_kv_heads=config.n_kv_heads,
             max_position=config.max_sequence_length,
             rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=True,
+            qkv_bias=getattr(config, "include_qkv_bias", getattr(config, "use_qkv_bias", False)),
             head_dim=getattr(config, "head_dim", None),
             rope_theta=getattr(config, "rope_theta", 10000),
             rope_scaling=getattr(config, "rope_scaling", None),
@@ -192,7 +192,7 @@ class LLaDAModel(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
-        self.transformer = nn.Moduledict(
+        self.transformer = nn.ModuleDict(
             dict(
                 wte=VocabParallelEmbedding(config.embedding_size or config.vocab_size, config.d_model),
                 emb_drop=nn.Dropout(config.embedding_dropout),

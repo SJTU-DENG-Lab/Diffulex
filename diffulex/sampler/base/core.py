@@ -12,6 +12,7 @@ class SamplerBase(nn.Module):
         from diffulex.attention import fetch_attn_metadata
 
         self.fetch_attn_metadata = fetch_attn_metadata
+        self.tokenizer_vocab_size: int | None = None
 
     def top_p_logits(self, logits, top_p):
         sorted_logits, sorted_indices = torch.sort(logits, descending=True)
@@ -41,7 +42,25 @@ class SamplerBase(nn.Module):
         top_k=None,
         margin_confidence=False,
         neg_entropy=False,
+        forbidden_token_ids: list[int] | None = None,
     ):
+        logits_min = torch.finfo(logits.dtype).min
+        logits_neg_inf = torch.tensor(float("-inf"), dtype=logits.dtype, device=logits.device)
+
+        if not torch.isfinite(logits).all():
+            logits = logits.clone()
+            logits = torch.where(torch.isfinite(logits), logits, torch.full_like(logits, logits_min))
+
+        if self.tokenizer_vocab_size is not None and 0 <= self.tokenizer_vocab_size < logits.size(-1):
+            logits = logits.clone()
+            logits[..., self.tokenizer_vocab_size :] = logits_neg_inf
+
+        if forbidden_token_ids:
+            logits = logits.clone()
+            for token_id in forbidden_token_ids:
+                if 0 <= token_id < logits.size(-1):
+                    logits[..., token_id] = logits_neg_inf
+
         if temperature > 0:
             logits = logits / temperature
 
@@ -60,12 +79,13 @@ class SamplerBase(nn.Module):
             except Exception:
                 initial_confidence, x0 = probs.max(dim=-1)
         else:
-            initial_confidence = probs.max(dim=-1).values
-            tie_mask = probs == initial_confidence.unsqueeze(-1)
+            max_logits = logits.max(dim=-1).values
+            tie_mask = logits == max_logits.unsqueeze(-1)
             # Greedy decode should be deterministic even when bf16 quantization makes
             # multiple vocab entries exactly tie for top-1. Prefer the highest token id
-            # to avoid `torch.max`'s default low-id bias on equal values.
-            x0 = probs.size(-1) - 1 - tie_mask.flip(dims=[-1]).to(torch.int32).argmax(dim=-1)
+            # among the surviving logits after sanitization and masking.
+            x0 = logits.size(-1) - 1 - tie_mask.flip(dims=[-1]).to(torch.int32).argmax(dim=-1)
+            initial_confidence = torch.gather(probs, -1, x0.unsqueeze(-1)).squeeze(-1)
 
         confidence = initial_confidence.clone()
 

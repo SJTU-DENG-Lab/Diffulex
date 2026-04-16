@@ -85,9 +85,11 @@ class DiffulexLM(LM):
         temperature: Optional[float] = 0.0,
         model_name: Optional[str] = "dream",
         decoding_strategy: Optional[str] = "d2f",
+        sampling_mode: Optional[str] = "naive",
         mask_token_id: Optional[int] = 151666,
         tensor_parallel_size: Optional[int] = 1,
         data_parallel_size: Optional[int] = 1,
+        expert_parallel_size: Optional[int] = 1,
         gpu_memory_utilization: Optional[float] = 0.9,
         max_model_len: Optional[int] = 2048,
         max_num_batched_tokens: Optional[int] = 4096,
@@ -96,7 +98,13 @@ class DiffulexLM(LM):
         lora_path: Optional[str] = "",
         pre_merge_lora: Optional[bool] = True,
         enforce_eager: Optional[bool] = False,
+        enable_prefix_caching: Optional[bool] = True,
         kv_cache_layout: Optional[str] = "unified",
+        page_size: Optional[int] = 32,
+        token_merge_mode: Optional[str] = "dmax_topk",
+        token_merge_top_k: Optional[int] = 1,
+        token_merge_renormalize: Optional[bool] = True,
+        token_merge_weight: Optional[float] = 1.0,
         decoding_thresholds: Optional[dict] = None,
         add_block_threshold: Optional[float] = None,
         semi_complete_threshold: Optional[float] = None,
@@ -137,6 +145,7 @@ class DiffulexLM(LM):
         # Diffulex-specific parameters
         self.model_name = model_name
         self.decoding_strategy = decoding_strategy
+        self.sampling_mode = sampling_mode
         self.mask_token_id = mask_token_id
 
         # Statistics tracking
