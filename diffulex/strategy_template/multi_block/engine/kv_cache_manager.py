@@ -29,7 +29,7 @@ class MultiBlockKVCacheManagerTemplate(KVCacheManagerBase):
         prefix = self.pages[page_table[-2]].hash if len(page_table) > 1 else -1
         h = self.compute_hash(token_ids, prefix)
         last_page.update(h, token_ids)
-        if getattr(self, "enable_prefix_caching", True):
+        if self.enable_prefix_caching:
             self.hash_to_page_id[h] = last_page.page_id
 
     def may_append_multi_block(self: KVCacheManagerBase, req: DllmReq) -> None:
@@ -43,7 +43,7 @@ class MultiBlockKVCacheManagerTemplate(KVCacheManagerBase):
                 "Insufficient free KV cache pages for may_append_multi_block: "
                 f"missing_pages={missing_pages}, free_pages={len(self.free_page_ids)}, "
                 f"cache_len={req.cache_len}, to_cache_len={req.to_cache_len}, "
-                f"page_table_len={len(page_table)}, req_id={getattr(req, 'req_id', '?')}"
+                f"page_table_len={len(page_table)}, req_id={req.req_id}"
             )
 
         for _ in range(missing_pages):

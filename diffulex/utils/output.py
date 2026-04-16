@@ -220,18 +220,14 @@ class GenerationOutputs:
                 )
             )
             cur_trajectory.token_ids = req.truncated_response.copy() if req.truncated_response else []
-            if hasattr(req, "full_response"):
-                try:
-                    cur_trajectory.full_token_ids = list(req.full_response)
-                except Exception:
-                    pass
+            cur_trajectory.full_token_ids = list(req.full_response)
             cur_trajectory.is_truncated = req.is_truncated
             cur_trajectory.max_new_tokens_reached = req.max_new_tokens_reached
             cur_trajectory.max_model_len_reached = req.max_model_len_reached
-            cur_trajectory.max_nfe_reached = getattr(req, "max_nfe_reached", False)
-            cur_trajectory.max_repetition_run_reached = getattr(req, "max_repetition_run_reached", False)
+            cur_trajectory.max_nfe_reached = req.max_nfe_reached
+            cur_trajectory.max_repetition_run_reached = req.max_repetition_run_reached
             cur_trajectory.eos_token_generated = req.eos_token_generated
-            cur_trajectory.completion_reason = getattr(req, "completion_reason", None)
+            cur_trajectory.completion_reason = req.completion_reason
 
     def postfix(self) -> dict:
         return dict(

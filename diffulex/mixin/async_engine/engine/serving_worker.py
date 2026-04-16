@@ -97,9 +97,7 @@ class DiffulexServingWorkerMixin:
         for engine_req_id, state in list(self.serving_state.requests.items()):
             if state.rid == command.rid:
                 del self.serving_state.requests[engine_req_id]
-                abort_request = getattr(self, "abort_request", None)
-                if abort_request is not None:
-                    abort_request(engine_req_id)
+                self.abort_request(engine_req_id)
                 break
 
     def step_serving_requests(self) -> list[ServingEvent]:
@@ -142,7 +140,7 @@ class DiffulexServingWorkerMixin:
             token_offset=state.emitted_token_count,
             text=text[state.emitted_text_len :],
             token_ids=token_ids[state.emitted_token_count :],
-            nfe=int(getattr(req, "nfe", 0) or 0),
+            nfe=int(req.nfe),
             finished=req.is_finished,
         )
         state.emitted_token_count = len(token_ids)
@@ -163,19 +161,19 @@ class DiffulexServingWorkerMixin:
             absolute_end=absolute_end,
             text=decode_token_ids_robust(self.tokenizer, token_ids),
             token_ids=token_ids,
-            nfe=int(getattr(req, "nfe", 0) or 0),
+            nfe=int(req.nfe),
             finished=req.is_finished,
         )
 
     def stable_generated_token_ids(self, req) -> list[int]:
         if req.is_finished:
-            token_ids = list(getattr(req, "truncated_response", []) or [])
+            token_ids = list(req.truncated_response)
             return self.trim_at_first_mask_token(token_ids, req)
 
-        if not getattr(req, "is_multi_block", False):
+        if not req.is_multi_block:
             return []
 
-        buffer = getattr(req, "dllm_block_buffer", None)
+        buffer = req.dllm_block_buffer
         if buffer is None:
             return []
 
@@ -197,7 +195,7 @@ class DiffulexServingWorkerMixin:
         return [token_id for token_id in token_ids if token_id != mask_token_id]
 
     def mask_token_id(self, req) -> int | None:
-        req_mask = getattr(req, "mask_token_id", None)
+        req_mask = req.mask_token_id if req.is_multi_block else None
         if req_mask is not None:
             return int(req_mask)
         tokenizer_mask = getattr(self.tokenizer, "mask_token_id", None)
@@ -205,8 +203,8 @@ class DiffulexServingWorkerMixin:
 
     def current_buffer_snapshot(self, req) -> tuple[int, int, list[int]] | None:
         prefix_len = self.prompt_len(req)
-        if getattr(req, "is_multi_block", False):
-            buffer = getattr(req, "dllm_block_buffer", None)
+        if req.is_multi_block:
+            buffer = req.dllm_block_buffer
             if buffer is None:
                 return None
             absolute_start = prefix_len
@@ -215,17 +213,17 @@ class DiffulexServingWorkerMixin:
                 return None
             return absolute_start, absolute_end, list(req.token_ids[absolute_start:absolute_end])
 
-        token_ids = list(getattr(req, "truncated_response", []) or [])
+        token_ids = list(req.truncated_response)
         if not token_ids:
             return None
         return prefix_len, prefix_len + len(token_ids), token_ids
 
     def prompt_len(self, req) -> int:
-        return int(getattr(req, "prefix_len", getattr(req, "num_prompt_tokens", 0)) or 0)
+        return int(req.prefix_len if req.is_multi_block else req.num_prompt_tokens)
 
     def build_serving_reply(self, rid: str, req) -> ServingReply:
-        token_ids = self.drop_mask_tokens(list(getattr(req, "truncated_response", []) or []), req)
-        full_token_ids = self.drop_mask_tokens(list(getattr(req, "full_response", []) or token_ids), req)
+        token_ids = self.drop_mask_tokens(list(req.truncated_response), req)
+        full_token_ids = self.drop_mask_tokens(list(req.full_response), req)
         eos = getattr(self.tokenizer, "eos_token", None) or ""
 
         raw_text = decode_token_ids_robust(self.tokenizer, token_ids)
@@ -236,8 +234,8 @@ class DiffulexServingWorkerMixin:
             rid=rid,
             text=text,
             token_ids=token_ids,
-            nfe=int(getattr(req, "nfe", 0) or 0),
-            finish_reason=getattr(req, "completion_reason", None),
+            nfe=int(req.nfe),
+            finish_reason=req.completion_reason,
             full_text=full_text,
             full_token_ids=full_token_ids,
         )

@@ -25,7 +25,7 @@ class FakeReq:
 
 
 def _build_manager() -> MultiBDKVCacheManager:
-    config = SimpleNamespace(num_pages=16, page_size=32)
+    config = SimpleNamespace(num_pages=16, page_size=32, enable_prefix_caching=True)
     return MultiBDKVCacheManager(config)
 
 
@@ -133,7 +133,7 @@ def test_apply_cached_prefix_pages_marks_prefix_blocks_in_cache() -> None:
         decoding_thresholds=SimpleNamespace(
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
-            decoding_threshold=0.9,
+            accept_threshold=0.9,
         ),
         eos=-1,
         max_model_len=2048,
@@ -167,12 +167,12 @@ def test_apply_cached_prefix_page_marks_all_blocks_inside_cached_page() -> None:
         decoding_thresholds=SimpleNamespace(
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
-            decoding_threshold=0.9,
+            accept_threshold=0.9,
         ),
         eos=-1,
         max_model_len=2048,
     )
-    manager = MultiBDKVCacheManager(SimpleNamespace(num_pages=16, page_size=8))
+    manager = MultiBDKVCacheManager(SimpleNamespace(num_pages=16, page_size=8, enable_prefix_caching=True))
 
     token_ids = list(range(16))
     req1 = MultiBDReq(token_ids)
@@ -203,7 +203,7 @@ def test_first_block_does_not_force_decode_topk_without_prev_block() -> None:
         thresholds=SimpleNamespace(
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
-            decoding_threshold=0.9,
+            accept_threshold=0.9,
         ),
         prev_block=None,
     )
@@ -219,7 +219,7 @@ def test_request_last_block_finished_is_false_without_prev_block() -> None:
         decoding_thresholds=SimpleNamespace(
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
-            decoding_threshold=0.9,
+            accept_threshold=0.9,
         ),
         eos=-1,
         max_model_len=2048,

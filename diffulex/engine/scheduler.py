@@ -68,10 +68,8 @@ class AutoScheduler(DiffulexStrategyRegistry):
         cls._ensure_strategies_loaded()
         cls._MODULE_MAPPING: dict[str, SchedulerFactory]
         candidates: list[str] = []
-        for attr in ("decoding_strategy",):
-            value = getattr(config, attr, None)
-            if isinstance(value, str) and value:
-                candidates.append(value)
+        if config.decoding_strategy:
+            candidates.append(config.decoding_strategy)
         candidates.append(cls._DEFAULT_KEY)
 
         for key in candidates:
@@ -82,5 +80,5 @@ class AutoScheduler(DiffulexStrategyRegistry):
         available = ", ".join(cls.available_modules()) or "<none>"
         raise ValueError(
             "No scheduler registered for decoding_strategy="
-            f"'{getattr(config, 'decoding_strategy', None)}'. Available schedulers: {available}."
+            f"'{config.decoding_strategy}'. Available schedulers: {available}."
         )

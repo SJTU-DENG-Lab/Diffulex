@@ -22,6 +22,7 @@ class ServerArgs:
 
     model_name: str = "dream"
     decoding_strategy: str = "d2f"
+    sampling_mode: str = "naive"
     tensor_parallel_size: int = 1
     data_parallel_size: int = 1
     master_addr: str = "localhost"
@@ -40,7 +41,8 @@ class ServerArgs:
     kv_cache_layout: str = "unified"
     add_block_threshold: float | None = None
     semi_complete_threshold: float | None = None
-    decoding_threshold: float | None = None
+    accept_threshold: float | None = None
+    remask_threshold: float | None = None
 
     use_lora: bool = False
     lora_path: str = ""
@@ -51,6 +53,7 @@ class ServerArgs:
         return {
             "model_name": self.model_name,
             "decoding_strategy": self.decoding_strategy,
+            "sampling_mode": self.sampling_mode,
             "tensor_parallel_size": self.tensor_parallel_size,
             "data_parallel_size": self.data_parallel_size,
             "master_addr": self.master_addr,
@@ -71,7 +74,8 @@ class ServerArgs:
                 "semi_complete_threshold": 0.9
                 if self.semi_complete_threshold is None
                 else self.semi_complete_threshold,
-                "decoding_threshold": 0.9 if self.decoding_threshold is None else self.decoding_threshold,
+                "accept_threshold": 0.9 if self.accept_threshold is None else self.accept_threshold,
+                "remask_threshold": 0.4 if self.remask_threshold is None else self.remask_threshold,
             },
             "use_lora": self.use_lora,
             "lora_path": self.lora_path,
@@ -89,6 +93,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--model-name", default="dream")
     parser.add_argument("--decoding-strategy", default="d2f")
+    parser.add_argument("--sampling-mode", default="naive", choices=["naive", "edit"])
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--data-parallel-size", type=int, default=1)
     parser.add_argument("--master-addr", default="localhost")
@@ -107,7 +112,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kv-cache-layout", default="unified", choices=["unified", "distinct"])
     parser.add_argument("--add-block-threshold", type=float, default=None)
     parser.add_argument("--semi-complete-threshold", type=float, default=None)
-    parser.add_argument("--decoding-threshold", type=float, default=None)
+    parser.add_argument("--accept-threshold", type=float, default=None)
+    parser.add_argument("--remask-threshold", type=float, default=None)
 
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--lora-path", default="")
@@ -125,6 +131,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         zmq_event_addr=ns.zmq_event_addr,
         model_name=ns.model_name,
         decoding_strategy=ns.decoding_strategy,
+        sampling_mode=ns.sampling_mode,
         tensor_parallel_size=ns.tensor_parallel_size,
         data_parallel_size=ns.data_parallel_size,
         master_addr=ns.master_addr,
@@ -142,7 +149,8 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         kv_cache_layout=ns.kv_cache_layout,
         add_block_threshold=ns.add_block_threshold,
         semi_complete_threshold=ns.semi_complete_threshold,
-        decoding_threshold=ns.decoding_threshold,
+        accept_threshold=ns.accept_threshold,
+        remask_threshold=ns.remask_threshold,
         use_lora=ns.use_lora,
         lora_path=ns.lora_path,
     )

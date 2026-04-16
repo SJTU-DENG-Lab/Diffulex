@@ -119,9 +119,6 @@ class AutoModelForDiffusionLM:
 
     @classmethod
     def from_config(cls, config: Config):
-        if not hasattr(config, "model_name"):
-            raise AttributeError("Config must define 'model_name' to build a model.")
-
         try:
             factory, use_full_config = cls.MODEL_MAPPING[config.model_name]
         except KeyError as err:

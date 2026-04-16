@@ -82,9 +82,6 @@ class AutoSampler:
 
     @classmethod
     def from_config(cls, config: Config):
-        if not hasattr(config, "model_name"):
-            raise AttributeError("Config must define 'model_name' to build a sampler.")
-
         try:
             factory, use_full_config = cls.SAMPLER_MAPPING[config.model_name]
         except KeyError as err:
@@ -96,6 +93,12 @@ class AutoSampler:
         if factory is None:
             raise ValueError(f"Sampler '{config.model_name}' is reserved but not implemented yet.")
 
-        # Samplers don't require initialization arguments, they are nn.Module subclasses
-        sampler = factory()
+        sampler = factory(config) if use_full_config else factory()
+        if sampler is None:
+            raise ValueError(
+                "Unsupported sampler configuration for "
+                f"model_name='{config.model_name}', "
+                f"decoding_strategy='{config.decoding_strategy}', "
+                f"sampling_mode='{config.sampling_mode}'."
+            )
         return sampler

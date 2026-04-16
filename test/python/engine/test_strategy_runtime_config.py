@@ -79,14 +79,109 @@ def test_runtime_builds_default_decoding_thresholds_when_flat_keys_are_none():
         decoding_thresholds=None,
         add_block_threshold=None,
         semi_complete_threshold=None,
-        decoding_threshold=None,
+        accept_threshold=None,
         tensor_parallel_size=1,
         data_parallel_size=1,
     )
 
     assert cfg.decoding_thresholds.add_block_threshold == 0.1
     assert cfg.decoding_thresholds.semi_complete_threshold == 0.9
-    assert cfg.decoding_thresholds.decoding_threshold == 0.9
+    assert cfg.decoding_thresholds.accept_threshold == 0.9
+
+
+def test_bench_cli_forwards_sampling_mode_to_engine_config():
+    parser = create_argument_parser()
+    args = parser.parse_args(
+        [
+            "--model-path",
+            MODEL_PATH,
+            "--sampling-mode",
+            "edit",
+        ]
+    )
+
+    config = load_config_from_args(args)
+
+    assert config.engine.sampling_mode == "edit"
+
+
+def test_config_rejects_edit_sampling_for_non_llada2_model(config_no_model_load):
+    with pytest.raises(ValueError, match="sampling_mode='edit' is only supported"):
+        Config(
+            str(config_no_model_load),
+            model_name="dream",
+            sampling_mode="edit",
+            tensor_parallel_size=1,
+            data_parallel_size=1,
+            device_ids=[0],
+        )
+
+
+def test_config_rejects_dmax_without_edit_sampling(config_no_model_load):
+    with pytest.raises(ValueError, match="decoding_strategy='dmax' requires sampling_mode='edit'"):
+        Config(
+            str(config_no_model_load),
+            model_name="llada2",
+            decoding_strategy="dmax",
+            sampling_mode="naive",
+            tensor_parallel_size=1,
+            data_parallel_size=1,
+            device_ids=[0],
+        )
+
+
+def test_config_rejects_llada2dot1_mini_without_edit_sampling(config_no_model_load):
+    with pytest.raises(ValueError, match="model_name='llada2dot1_mini' requires sampling_mode='edit'"):
+        Config(
+            str(config_no_model_load),
+            model_name="llada2dot1_mini",
+            sampling_mode="naive",
+            tensor_parallel_size=1,
+            data_parallel_size=1,
+            device_ids=[0],
+        )
+
+
+def test_config_accepts_sdar_naive_sampling(config_no_model_load):
+    cfg = Config(
+        str(config_no_model_load),
+        model_name="sdar",
+        sampling_mode="naive",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.model_name == "sdar"
+    assert cfg.sampling_mode == "naive"
+
+
+def test_config_accepts_fast_dllm_v2_naive_sampling(config_no_model_load):
+    cfg = Config(
+        str(config_no_model_load),
+        model_name="fast_dllm_v2",
+        sampling_mode="naive",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.model_name == "fast_dllm_v2"
+    assert cfg.sampling_mode == "naive"
+
+
+def test_config_accepts_distinct_kv_cache_layout_independently(config_no_model_load):
+    cfg = Config(
+        str(config_no_model_load),
+        model_name="sdar",
+        kv_cache_layout="distinct",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.model_name == "sdar"
+    assert cfg.kv_cache_layout == "distinct"
 
 
 @pytest.fixture

@@ -8,11 +8,24 @@ import torch.nn as nn
 from diffulex.model.sdar import SDARAttention
 from diffulex.model.sdar_moe import SDARMoEDecoderLayer, SDARMoEForDiffusionLM
 from diffulex.moe import SparseMoEBlock, build_mlp_or_moe, is_moe_layer
+from diffulex.moe.layer.trivial_impl import TrivialFusedMoE
+from diffulex.utils import parallelism
 
 
 def _mock_tp(monkeypatch):
     monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 1)
+    parallelism.reset_model_parallelism_metadata()
+    monkeypatch.setattr(
+        parallelism,
+        "_MODEL_PARALLELISM_METADATA",
+        parallelism.ModelParallelismMetadata.from_world(
+            tp_size=1,
+            ep_size=1,
+            world_size=1,
+            global_rank=0,
+        ),
+    )
 
 
 def _make_config(**overrides):
@@ -67,9 +80,8 @@ def test_sdar_moe_parameter_names_match_reference_layout(monkeypatch):
     param_names = set(model.state_dict().keys())
 
     assert "model.layers.1.mlp.gate.weight" in param_names
-    assert "model.layers.1.mlp.experts.0.gate_proj.weight" in param_names
-    assert "model.layers.1.mlp.experts.0.up_proj.weight" in param_names
-    assert "model.layers.1.mlp.experts.0.down_proj.weight" in param_names
+    assert "model.layers.1.mlp.w13" in param_names
+    assert "model.layers.1.mlp.w2" in param_names
     assert "model.layers.0.mlp.gate_proj.weight" in param_names
 
 
@@ -79,6 +91,11 @@ def test_sdar_moe_forward_shape(monkeypatch):
         SDARAttention,
         "forward",
         lambda self, positions, hidden_states, mask=None: hidden_states,
+    )
+    monkeypatch.setattr(
+        TrivialFusedMoE,
+        "forward",
+        lambda self, hidden_states: (hidden_states, None),
     )
     model = SDARMoEForDiffusionLM(_make_config())
     model.eval()

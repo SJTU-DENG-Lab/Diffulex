@@ -29,6 +29,8 @@ class _Req:
     def __init__(self, req_id: int, token_id: int):
         self.req_id = req_id
         self._token_id = token_id
+        self.is_multi_block = False
+        self.num_prompt_tokens = 0
         self.mask_token_id = -1
         self.is_finished = False
         self.nfe = 0

@@ -88,6 +88,13 @@ Examples:
         help="Decoding strategy (d2f, multi_bd)",
     )
     parser.add_argument(
+        "--sampling-mode",
+        type=str,
+        default=None,
+        choices=["naive", "edit"],
+        help="Sampler behavior mode",
+    )
+    parser.add_argument(
         "--mask-token-id",
         type=int,
         default=151666,
@@ -281,10 +288,16 @@ Examples:
         help="Semi-complete threshold for D2F",
     )
     parser.add_argument(
-        "--decoding-threshold",
+        "--accept-threshold",
         type=float,
         default=0.9,
-        help="Decoding threshold for D2F",
+        help="Accept threshold for D2F",
+    )
+    parser.add_argument(
+        "--remask-threshold",
+        type=float,
+        default=0.4,
+        help="Remask threshold for DMax-style edit decode",
     )
     parser.add_argument(
         "--block-size",

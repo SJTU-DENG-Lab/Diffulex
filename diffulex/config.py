@@ -6,13 +6,22 @@ from diffulex.logger import get_logger
 
 logger = get_logger(__name__)
 SUPPORTED_PAGE_BLOCK_SIZES = (4, 8, 16, 32)
+EDIT_SAMPLING_MODEL_NAMES = {
+    "llada2",
+    "llada2_moe",
+    "llada2_mini",
+    "llada2dot1_mini",
+    "llada2_mini_dmax",
+}
+DMAX_MODEL_NAMES = EDIT_SAMPLING_MODEL_NAMES
 
 
 @dataclass
 class DecodingThresholds:
     add_block_threshold: float  # whether add a new block
     semi_complete_threshold: float  # whether unleash the decoding of the next block
-    decoding_threshold: float  # whether the token should be decoded
+    accept_threshold: float  # whether the token should be decoded
+    remask_threshold: float = 0.4  # whether a filled token should be remasked
 
 
 @dataclass
@@ -26,12 +35,17 @@ class Config:
     block_size: int = 32
     buffer_size: int = 4
     multi_block_prefix_full: bool = True
-
+    token_merge_mode: str = "dmax_topk"  # "dmax_topk" or "iter_smooth_topk"
+    token_merge_top_k: int = 1
+    token_merge_renormalize: bool = True
+    token_merge_weight: float = 1.0
+    sampling_mode: str = "naive"  # "naive" or "edit"
     decoding_thresholds: DecodingThresholds | dict | None = None
     # TODO: Should be deprecated in the future
     add_block_threshold: float | None = None
     semi_complete_threshold: float | None = None
-    decoding_threshold: float | None = None
+    accept_threshold: float | None = None
+    remask_threshold: float | None = None
 
     use_lora: bool = False
     pre_merge_lora: bool = False
@@ -58,6 +72,27 @@ class Config:
     k_cache_hdim_split_factor_x: int = 8
     kv_cache_layout: str = "unified"  # "unified" or "distinct"
 
+    def _validate_sampling_mode(self) -> None:
+        if self.sampling_mode == "edit" and self.model_name not in EDIT_SAMPLING_MODEL_NAMES:
+            allowed = ", ".join(sorted(EDIT_SAMPLING_MODEL_NAMES))
+            raise ValueError(
+                f"sampling_mode='edit' is only supported for model_name in {{{allowed}}}, "
+                f"got: {self.model_name}"
+            )
+
+        if self.model_name == "llada2dot1_mini" and self.sampling_mode != "edit":
+            raise ValueError("model_name='llada2dot1_mini' requires sampling_mode='edit'.")
+
+        if self.decoding_strategy == "dmax":
+            allowed = ", ".join(sorted(DMAX_MODEL_NAMES))
+            if self.model_name not in DMAX_MODEL_NAMES:
+                raise ValueError(
+                    f"decoding_strategy='dmax' is only supported for model_name in {{{allowed}}}, "
+                    f"got: {self.model_name}"
+                )
+            if self.sampling_mode != "edit":
+                raise ValueError("decoding_strategy='dmax' requires sampling_mode='edit'.")
+
     def __post_init__(self):
         if not os.path.isdir(self.model):
             raise ValueError(f"model must be an existing directory, got: {self.model}")
@@ -69,12 +104,12 @@ class Config:
                 logger.warning("Disabling prefix caching for decoding_strategy=d2f.")
             self.multi_block_prefix_full = True
             self.enable_prefix_caching = False
-        elif self.decoding_strategy == "multi_bd":
+        elif self.decoding_strategy in ("multi_bd", "dmax"):
             if self.multi_block_prefix_full:
-                logger.warning("Forcing multi_block_prefix_full=False for decoding_strategy=multi_bd.")
+                logger.warning(f"Forcing multi_block_prefix_full=False for decoding_strategy={self.decoding_strategy}.")
             self.multi_block_prefix_full = False
             if self.enable_prefix_caching:
-                logger.info("Enabling prefix caching for decoding_strategy=multi_bd.")
+                logger.info(f"Enabling prefix caching for decoding_strategy={self.decoding_strategy}.")
 
         if self.page_size not in SUPPORTED_PAGE_BLOCK_SIZES:
             raise ValueError(
@@ -110,11 +145,37 @@ class Config:
                 f"got: {self.expert_parallel_size}"
             )
 
+
+        if self.token_merge_top_k <= 0:
+            raise ValueError(f"token_merge_top_k must be positive, got: {self.token_merge_top_k}")
+        
+        if self.token_merge_mode not in ("dmax_topk", "iter_smooth_topk"):
+            raise ValueError(
+                "token_merge_mode must be one of {'dmax_topk', 'iter_smooth_topk'}, "
+                f"got: {self.token_merge_mode}"
+            )
+            
+        if self.token_merge_weight < 0:
+            raise ValueError(f"token_merge_weight must be non-negative, got: {self.token_merge_weight}")
+        
+        if self.sampling_mode not in ("naive", "edit"):
+            raise ValueError(
+                "sampling_mode must be one of {'naive', 'edit'}, "
+                f"got: {self.sampling_mode}"
+            )
+        self._validate_sampling_mode()
+        if self.kv_cache_layout not in {"unified", "distinct"}:
+            raise ValueError(
+                "kv_cache_layout must be one of {'unified', 'distinct'}, "
+                f"got: {self.kv_cache_layout}"
+            )
+            
         if not (isinstance(self.master_port, int) and 0 < self.master_port < 65536):
             raise ValueError(
                 "master_port must be an int in (0, 65536), "
                 f"got: {self.master_port}"
             )
+            
             
         if not (isinstance(self.device_start, int) and self.device_start >= 0):
             raise ValueError(
@@ -147,7 +208,6 @@ class Config:
 
         if not self.device_ids:
             import torch
-
             # When CUDA_VISIBLE_DEVICES is set, PyTorch maps physical devices to logical device 0, 1, ...
             # So we should use logical device indices (0, 1, ...) instead of physical device IDs
             self.device_ids = list(range(torch.cuda.device_count()))
@@ -156,26 +216,38 @@ class Config:
         # Build decoding_thresholds: dict or flat keys -> DecodingThresholds
         d = self.__dict__
         if isinstance(self.decoding_thresholds, dict):
+            if "remask_threshold" not in self.decoding_thresholds:
+                self.decoding_thresholds["remask_threshold"] = 0.4
             self.decoding_thresholds = DecodingThresholds(**self.decoding_thresholds)
         elif self.decoding_thresholds is None:
             add_block_threshold = d.get("add_block_threshold")
             semi_complete_threshold = d.get("semi_complete_threshold")
-            decoding_threshold = d.get("decoding_threshold")
+            accept_threshold = d.get("accept_threshold")
+            remask_threshold = d.get("remask_threshold")
             self.decoding_thresholds = DecodingThresholds(
                 add_block_threshold=0.1 if add_block_threshold is None else add_block_threshold,
                 semi_complete_threshold=0.9 if semi_complete_threshold is None else semi_complete_threshold,
-                decoding_threshold=0.9 if decoding_threshold is None else decoding_threshold,
+                accept_threshold=0.9 if accept_threshold is None else accept_threshold,
+                remask_threshold=0.4 if remask_threshold is None else remask_threshold,
             )
+
+        if not 0.0 <= self.decoding_thresholds.accept_threshold <= 1.0:
+            raise ValueError(
+                "decoding_thresholds.accept_threshold must be in [0, 1], "
+                f"got: {self.decoding_thresholds.accept_threshold}"
+            )
+        if not 0.0 <= self.decoding_thresholds.remask_threshold <= 1.0:
+            raise ValueError(
+                "decoding_thresholds.remask_threshold must be in [0, 1], "
+                f"got: {self.decoding_thresholds.remask_threshold}"
+            )
+        self.accept_threshold = self.decoding_thresholds.accept_threshold
+        self.remask_threshold = self.decoding_thresholds.remask_threshold
 
     @property
     def kv_cache_page_size(self) -> int:
         """Alias for page_size, used by engine/model_runner/tp_worker."""
         return self.page_size
-
-    # TODO: Should be deprecated in the future
-    @property
-    def accept_threshold(self) -> float:
-        return self.decoding_thresholds.decoding_threshold
 
     @property
     def add_new_block_threshold(self) -> float:

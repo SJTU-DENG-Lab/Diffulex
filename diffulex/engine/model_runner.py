@@ -43,10 +43,10 @@ class ModelRunnerBase(
         self.rank = rank
         self.event = event
 
-        if getattr(config, "device_ids", None):
+        if config.device_ids:
             device_id = config.device_ids[rank]
         else:
-            device_id = (getattr(config, "device_start", 0) or 0) + rank
+            device_id = config.device_start + rank
         assert 0 <= device_id < torch.cuda.device_count(), f"Invalid device_id {device_id}."
 
         # Initialize model, sampler, and kv cache
@@ -341,10 +341,8 @@ class AutoModelRunner(DiffulexStrategyRegistry):
         cls._ensure_strategies_loaded()
         cls._MODULE_MAPPING: dict[str, RunnerFactory]
         candidates: list[str] = []
-        for attr in ("decoding_strategy",):
-            value = getattr(config, attr, None)
-            if isinstance(value, str) and value:
-                candidates.append(value)
+        if config.decoding_strategy:
+            candidates.append(config.decoding_strategy)
         candidates.append(cls._DEFAULT_KEY)
 
         for key in candidates:
@@ -355,5 +353,5 @@ class AutoModelRunner(DiffulexStrategyRegistry):
         available = ", ".join(cls.available_modules()) or "<none>"
         raise ValueError(
             "No model runner registered for decoding_strategy="
-            f"'{getattr(config, 'decoding_strategy', None)}'. Available runners: {available}."
+            f"'{config.decoding_strategy}'. Available runners: {available}."
         )

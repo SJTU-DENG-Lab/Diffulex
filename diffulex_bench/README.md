@@ -289,6 +289,7 @@ engine = EngineConfig(
     model_path="/path/to/model",
     model_name="dream",
     decoding_strategy="d2f",
+    sampling_mode="naive",
 )
 eval_config = EvalConfig(
     dataset_name="gsm8k",

@@ -14,7 +14,7 @@ class DreamSampler(DllmSamplerShiftBase):
         sampled_tokens: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        accept_threshold = block.thresholds.decoding_threshold
+        accept_threshold = block.thresholds.accept_threshold
         pre_block_complete = block.prev_block.is_semi_complete if block.prev_block else True
 
         high_conf_indices = torch.where(initial_confidence > accept_threshold)[0]

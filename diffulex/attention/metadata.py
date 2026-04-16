@@ -15,11 +15,21 @@ class AttnMetaDataBase:
     slot_mapping: torch.Tensor | None = None
     context_lens: torch.Tensor | None = None
     page_tables: torch.Tensor | None = None
+    status_table: torch.Tensor | None = None
 
     page_size: int = 32
     block_size: int = 32
 
     kv_cache_layout: str = "unified"
+    token_merge_enabled: bool = False
+    token_merge_mask: torch.Tensor | None = None
+    token_merge_topk_ids: torch.Tensor | None = None
+    token_merge_topk_probs: torch.Tensor | None = None
+    token_merge_residual_probs: torch.Tensor | None = None
+    token_merge_mask_token_id: int | None = None
+    token_merge_renormalize: bool = True
+    token_merge_mode: str = "dmax_topk"
+    token_merge_weight: float = 1.0
 
     @property
     def num_reqs(self) -> int:

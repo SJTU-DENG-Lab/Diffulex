@@ -421,6 +421,8 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.enforce_eager = bool(args.enforce_eager)
         if getattr(args, "kv_cache_layout", None) is not None:
             config.engine.kv_cache_layout = args.kv_cache_layout
+        if getattr(args, "sampling_mode", None) is not None:
+            config.engine.sampling_mode = args.sampling_mode
         if getattr(args, "max_model_len", None) is not None:
             config.engine.max_model_len = args.max_model_len
         if max_num_reqs is not None:
@@ -445,6 +447,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
             tokenizer_path=args.tokenizer_path,
             model_name=args.model_name,
             decoding_strategy=args.decoding_strategy,
+            sampling_mode=getattr(args, "sampling_mode", None) or "naive",
             mask_token_id=args.mask_token_id,
             tensor_parallel_size=args.tensor_parallel_size,
             data_parallel_size=args.data_parallel_size,
@@ -459,7 +462,8 @@ def load_config_from_args(args) -> BenchmarkConfig:
             decoding_thresholds={
                 "add_block_threshold": getattr(args, "add_block_threshold", 0.1),
                 "semi_complete_threshold": getattr(args, "semi_complete_threshold", 0.9),
-                "decoding_threshold": getattr(args, "decoding_threshold", 0.9),
+                "accept_threshold": getattr(args, "accept_threshold", 0.9),
+                "remask_threshold": getattr(args, "remask_threshold", 0.4),
             },
             block_size=(args.block_size if getattr(args, "block_size", None) is not None else 32),
             buffer_size=getattr(args, "buffer_size", 4),

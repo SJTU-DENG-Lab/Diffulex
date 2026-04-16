@@ -18,12 +18,14 @@ MODEL_ARG_COMPLEX_PREFIX = "b64json:"
 DEFAULT_DECODING_THRESHOLDS = {
     "add_block_threshold": 0.1,
     "semi_complete_threshold": 0.9,
-    "decoding_threshold": 0.9,
+    "accept_threshold": 0.9,
+    "remask_threshold": 0.4,
 }
 FLAT_THRESHOLD_KEYS = (
     "add_block_threshold",
     "semi_complete_threshold",
-    "decoding_threshold",
+    "accept_threshold",
+    "remask_threshold",
 )
 
 
@@ -106,6 +108,7 @@ class EngineConfig:
     tokenizer_path: Optional[str] = None
     model_name: str = "dream"  # Options: dream, sdar, fast_dllm_v2, llada
     decoding_strategy: str = "d2f"  # Options: d2f, multi_bd
+    sampling_mode: str = "naive"  # Options: naive, edit
     mask_token_id: int = 151666
 
     # LoRA configuration
@@ -129,7 +132,7 @@ class EngineConfig:
 
     # D2F/MultiBD-specific configuration
     decoding_thresholds: Optional[Dict[str, float]] = (
-        None  # {add_block_threshold, semi_complete_threshold, decoding_threshold}
+        None  # {add_block_threshold, semi_complete_threshold, accept_threshold, remask_threshold}
     )
     block_size: int = 32  # Aligned with diffulex.config.Config.block_size
     buffer_size: int = 4

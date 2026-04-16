@@ -11,15 +11,15 @@ class MultiBlockReqTemplate(DllmReq):
     def _restore_req_runtime_state(self):
         super()._restore_req_runtime_state()
 
-        if not getattr(self, "is_multi_block", False):
+        if not self.is_multi_block:
             return
 
-        dllm_blocks = getattr(self, "dllm_blocks", None) or []
-        dllm_block_buffer = getattr(self, "dllm_block_buffer", None)
+        dllm_blocks = self.dllm_blocks
+        dllm_block_buffer = self.dllm_block_buffer
         if dllm_block_buffer is not None:
             dllm_block_buffer.bind_req(self)
 
-        buffer_block_ids = {id(block) for block in getattr(dllm_block_buffer, "dllm_blocks", [])}
+        buffer_block_ids = {id(block) for block in dllm_block_buffer.dllm_blocks} if dllm_block_buffer is not None else set()
         for block in dllm_blocks:
             block.bind_req(self)
             block.bind_buffer(dllm_block_buffer if id(block) in buffer_block_ids else None)
@@ -440,7 +440,7 @@ class MultiBlockReqTemplate(DllmReq):
             self.dllm_blocks[block_id].in_cache()
 
     def apply_cached_prefix_pages(self):
-        if not getattr(self, "is_multi_block", False):
+        if not self.is_multi_block:
             return
         if not self.page_cache_missed:
             return

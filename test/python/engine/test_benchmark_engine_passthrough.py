@@ -28,7 +28,7 @@ def test_engine_config_preserves_extra_diffulex_fields() -> None:
             "decoding_thresholds": {
                 "add_block_threshold": 0.2,
                 "semi_complete_threshold": 0.8,
-                "decoding_threshold": 0.95,
+                "accept_threshold": 0.95,
             },
         }
     )
@@ -67,7 +67,7 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
                 "decoding_thresholds": {
                     "add_block_threshold": 0.2,
                     "semi_complete_threshold": 0.8,
-                    "decoding_threshold": 0.95,
+                    "accept_threshold": 0.95,
                 },
             },
             "eval": {
@@ -91,7 +91,7 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
     assert forwarded["page_size"] == 64
     assert forwarded["device_ids"] == [0, 1]
     assert forwarded["block_size"] == 4
-    assert forwarded["decoding_thresholds"]["decoding_threshold"] == 0.95
+    assert forwarded["decoding_thresholds"]["accept_threshold"] == 0.95
     assert lm.max_new_tokens == 123
     assert lm.max_nfe == 17
     assert lm.max_repetition_run == 9
@@ -125,7 +125,7 @@ def test_model_arg_obj_round_trip_extra_engine_fields(monkeypatch) -> None:
                 "decoding_thresholds": {
                     "add_block_threshold": 0.2,
                     "semi_complete_threshold": 0.8,
-                    "decoding_threshold": 0.95,
+                    "accept_threshold": 0.95,
                 },
             },
             "eval": {
@@ -164,7 +164,7 @@ def test_model_args_parser_decodes_complex_values_for_logging() -> None:
                 "decoding_thresholds": {
                     "add_block_threshold": 0.2,
                     "semi_complete_threshold": 0.8,
-                    "decoding_threshold": 0.95,
+                    "accept_threshold": 0.95,
                 },
             },
             "eval": {
@@ -189,7 +189,7 @@ def test_lm_eval_merge_dict_action_decodes_complex_values() -> None:
     ns = parser.parse_args(
         [
             "--model_args",
-            "decoding_thresholds=b64json:eyJhZGRfYmxvY2tfdGhyZXNob2xkIjowLjEsInNlbWlfY29tcGxldGVfdGhyZXNob2xkIjowLjUsImRlY29kaW5nX3RocmVzaG9sZCI6MC45NX0=,page_size=32",
+            "decoding_thresholds=b64json:eyJhZGRfYmxvY2tfdGhyZXNob2xkIjowLjEsInNlbWlfY29tcGxldGVfdGhyZXNob2xkIjowLjUsImFjY2VwdF90aHJlc2hvbGQiOjAuOTV9,page_size=32",
         ]
     )
 

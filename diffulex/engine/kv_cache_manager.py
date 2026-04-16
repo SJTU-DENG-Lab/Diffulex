@@ -43,7 +43,7 @@ class KVCacheManagerBase(ABC):
         assert num_pages > 0
         self.config = config
         self.page_size = page_size
-        self.enable_prefix_caching = bool(getattr(config, "enable_prefix_caching", True))
+        self.enable_prefix_caching = bool(config.enable_prefix_caching)
         self.pages: list[Page] = [Page(page_id=i) for i in range(num_pages)]
         self.hash_to_page_id: dict[int, int] = dict()
         self.free_page_ids: deque[int] = deque(range(num_pages))
@@ -141,10 +141,8 @@ class AutoKVCacheManager(DiffulexStrategyRegistry):
         cls._ensure_strategies_loaded()
         cls._MODULE_MAPPING: dict[str, KVCacheManagerFactory]
         candidates: list[str] = []
-        for attr in ("decoding_strategy",):
-            value = getattr(config, attr, None)
-            if isinstance(value, str) and value:
-                candidates.append(value)
+        if config.decoding_strategy:
+            candidates.append(config.decoding_strategy)
         candidates.append(cls._DEFAULT_KEY)
 
         for key in candidates:
@@ -155,5 +153,5 @@ class AutoKVCacheManager(DiffulexStrategyRegistry):
         available = ", ".join(cls.available_modules()) or "<none>"
         raise ValueError(
             "No page manager registered for decoding_strategy="
-            f"'{getattr(config, 'decoding_strategy', None)}'. Available page managers: {available}."
+            f"'{config.decoding_strategy}'. Available page managers: {available}."
         )

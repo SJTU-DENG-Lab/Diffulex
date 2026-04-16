@@ -1,6 +1,8 @@
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
+
 from diffulex.engine.status import DllmReqStatus
 from diffulex.strategy_template.multi_block.engine.request import MultiBlockReqTemplate
 from diffulex.strategy_template.multi_block.engine.scheduler import MultiBlockSchedulerTemplate
@@ -43,6 +45,7 @@ class _Req:
         self.max_model_len_reached = False
         self.truncated_response = []
         self.completion_reason = None
+        self.token_ids = []
 
     @property
     def max_nfe_reached(self) -> bool:
@@ -72,9 +75,10 @@ def test_scheduler_postprocess_kills_req_when_max_nfe_is_reached() -> None:
     req = _Req(req_id=7, max_nfe=2)
     scheduler.running_reqs.append(req)
     sample_output = SimpleNamespace(
-        true_local_ids_map={},
-        accepted_ids_map={},
-        sampled_tokens_map={},
+        true_local_ids_map={"7": {}},
+        accepted_ids_map={"7": {}},
+        sampled_tokens_map={"7": {}},
+        edit_writes_map={"7": {}},
     )
 
     scheduler.postprocess_multi_block([req], sample_output)
@@ -95,9 +99,10 @@ def test_scheduler_postprocess_kills_req_when_repetition_run_is_too_long() -> No
     req.repetition_run_length = 3
     scheduler.running_reqs.append(req)
     sample_output = SimpleNamespace(
-        true_local_ids_map={},
-        accepted_ids_map={},
-        sampled_tokens_map={},
+        true_local_ids_map={"9": {}},
+        accepted_ids_map={"9": {}},
+        sampled_tokens_map={"9": {}},
+        edit_writes_map={"9": {}},
     )
 
     scheduler.postprocess_multi_block([req], sample_output)
@@ -114,3 +119,50 @@ def test_repetition_run_length_counts_trailing_identical_tokens() -> None:
     run_length = MultiBlockReqTemplate.repetition_run_length.fget(req)
 
     assert run_length == 3
+
+
+def test_scheduler_postprocess_applies_edit_writes_map() -> None:
+    scheduler = _Scheduler()
+    req = _Req(req_id=11)
+    req.token_ids = [9, 0, 0]
+
+    class _Block:
+        def __init__(self, req):
+            self.req = req
+            self.start = 0
+            self.mask_token_id = 0
+
+        @property
+        def token_ids(self):
+            return self.req.token_ids
+
+        def write_token(self, token_id, rel_idx):
+            self.req.token_ids[rel_idx] = token_id
+
+    req.dllm_blocks = [_Block(req)]
+    sample_output = SimpleNamespace(
+        true_local_ids_map={"11": {}},
+        accepted_ids_map={"11": {}},
+        sampled_tokens_map={"11": {}},
+        edit_writes_map={"11": {"0": {0: 0, 1: 5, 2: 6}}},
+    )
+
+    scheduler.postprocess_multi_block([req], sample_output)
+
+    assert req.token_ids == [0, 5, 6]
+    assert req.new_tokens == 2
+
+
+def test_scheduler_postprocess_raises_when_req_id_map_is_missing() -> None:
+    scheduler = _Scheduler()
+    req = _Req(req_id=13)
+    scheduler.running_reqs.append(req)
+    sample_output = SimpleNamespace(
+        true_local_ids_map={},
+        accepted_ids_map={},
+        sampled_tokens_map={},
+        edit_writes_map={},
+    )
+
+    with pytest.raises(KeyError, match="13"):
+        scheduler.postprocess_multi_block([req], sample_output)

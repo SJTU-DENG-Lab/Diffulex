@@ -91,10 +91,8 @@ class AutoReq(DiffulexStrategyRegistry):
     ) -> DllmReq:
         cls._MODULE_MAPPING: dict[str, ReqFactory]
         candidates: list[str] = []
-        for attr in ("decoding_strategy",):
-            value = getattr(config, attr, None)
-            if isinstance(value, str) and value:
-                candidates.append(value)
+        if config.decoding_strategy:
+            candidates.append(config.decoding_strategy)
         candidates.append(cls._DEFAULT_KEY)
 
         for key in candidates:
@@ -105,5 +103,5 @@ class AutoReq(DiffulexStrategyRegistry):
         available = ", ".join(cls.available_modules()) or "<none>"
         raise ValueError(
             "No req registered for decoding_strategy="
-            f"'{getattr(config, 'decoding_strategy', None)}'. Available reqs: {available}."
+            f"'{config.decoding_strategy}'. Available reqs: {available}."
         )

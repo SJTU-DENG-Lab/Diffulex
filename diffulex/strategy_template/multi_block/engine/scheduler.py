@@ -4,9 +4,10 @@ from diffulex.engine.request import DllmReq
 from diffulex.engine.scheduler import SchedulerBase
 from diffulex.engine.status import DllmReqStatus
 from diffulex.logger import get_logger
+from diffulex.mixin.edit.scheduler import EditSchedulerMixin
 
 
-class MultiBlockSchedulerTemplate(SchedulerBase):
+class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
     _logger = get_logger(__name__)
 
     def init_multi_block(self: SchedulerBase) -> None:
@@ -81,8 +82,8 @@ class MultiBlockSchedulerTemplate(SchedulerBase):
                 details.append(
                     f"[{idx}] status={candidate.status.name}, len={len(candidate)}, "
                     f"block_size={self.block_size}, "
-                    f"new_tokens={getattr(candidate, 'new_tokens', '?')}, "
-                    f"cached={getattr(candidate, 'num_cached_tokens', '?')}, "
+                    f"new_tokens={candidate.new_tokens}, "
+                    f"cached={candidate.num_cached_tokens}, "
                     f"can_append={can_append}"
                 )
             raise RuntimeError(
@@ -107,20 +108,22 @@ class MultiBlockSchedulerTemplate(SchedulerBase):
             req.reset_new_tokens()
 
             req_id_str = str(req.req_id)
-            true_ids_map = sample_output.true_local_ids_map.get(req_id_str, {})
-            accepted_ids_map = sample_output.accepted_ids_map.get(req_id_str, {})
-            sampled_tokens_map = sample_output.sampled_tokens_map.get(req_id_str, {})
+            true_ids_map = sample_output.true_local_ids_map[req_id_str]
+            accepted_ids_map = sample_output.accepted_ids_map[req_id_str]
+            sampled_tokens_map = sample_output.sampled_tokens_map[req_id_str]
             for block_id, accepted_ids in accepted_ids_map.items():
                 if not accepted_ids:
                     continue
 
                 dllm_block = req.dllm_blocks[int(block_id)]
-                sampled_tokens = sampled_tokens_map.get(block_id, [])
-                true_local_ids = true_ids_map.get(block_id, [])
+                sampled_tokens = sampled_tokens_map[block_id]
+                true_local_ids = true_ids_map[block_id]
                 for true_local_id, accepted_id in zip(true_local_ids, accepted_ids):
                     token = sampled_tokens[accepted_id]
                     dllm_block.write_token(token, true_local_id)
                 req.new_tokens += len(accepted_ids)
+
+            self.apply_edit_writes_map(req, sample_output)
 
             req.postprocess()
             req.nfe += 1
@@ -128,7 +131,7 @@ class MultiBlockSchedulerTemplate(SchedulerBase):
                 reason = "max_nfe_reached" if req.max_nfe_reached else "max_repetition_run_reached"
                 req.force_deactivate(reason=reason)
             if req.is_completed:
-                if getattr(req, "completion_reason", None) is None:
+                if req.completion_reason is None:
                     req.completion_reason = "completed_without_reason"
                 self._logger.info(
                     "Req %s marked FINISHED (reason=%s, eos=%s, max_new=%s, max_model_len=%s, max_nfe=%s, max_repeat=%s, nfe=%s, gen_tokens=%s)",

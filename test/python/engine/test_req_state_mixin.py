@@ -12,7 +12,7 @@ def _multi_block_config():
         decoding_thresholds=SimpleNamespace(
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
-            decoding_threshold=0.9,
+            accept_threshold=0.9,
         ),
         eos=-1,
         max_model_len=2048,

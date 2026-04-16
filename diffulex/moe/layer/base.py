@@ -99,11 +99,11 @@ class FusedMoE(nn.Module, ABC):
         if attn_metadata is None:
             return "unknown"
 
-        phase = self._phase_from_prefill_flags(getattr(attn_metadata, "is_prefill", None))
+        phase = self._phase_from_prefill_flags(attn_metadata.is_prefill)
         if phase != "unknown":
             return phase
 
-        status_table = getattr(attn_metadata, "status_table", None)
+        status_table = attn_metadata.status_table
         if status_table is None:
             return "unknown"
 

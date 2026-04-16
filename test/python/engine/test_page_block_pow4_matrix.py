@@ -96,7 +96,7 @@ base = dict(
     decoding_thresholds={{
         "add_block_threshold": 0.1,
         "semi_complete_threshold": 0.5,
-        "decoding_threshold": 0.95,
+        "accept_threshold": 0.95,
     }},
     buffer_size=4,
     multi_block_prefix_full=True,

@@ -61,7 +61,7 @@ strategy_config:
 decoding_thresholds:
   add_block_threshold: 0.1
   semi_complete_threshold: 0.9
-  decoding_threshold: 0.95
+  accept_threshold: 0.95
 
 # Diffulex engine kwargs shared by all test cases
 engine:

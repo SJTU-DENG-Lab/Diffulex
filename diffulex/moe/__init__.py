@@ -9,6 +9,8 @@ from diffulex.moe.config import (
 from diffulex.moe.layer import FusedMoE, build_moe_block
 from diffulex.utils.parallelism import is_ep_enabled, is_tp_enabled
 
+SparseMoEBlock = FusedMoE
+
 
 def build_mlp_or_moe(config, layer_idx: int, dense_factory):
     """Build a dense MLP or MoE block according to the config."""
@@ -26,6 +28,7 @@ def build_mlp_or_moe(config, layer_idx: int, dense_factory):
 
 __all__ = [
     "FusedMoE",
+    "SparseMoEBlock",
 
     "build_mlp_or_moe",
     

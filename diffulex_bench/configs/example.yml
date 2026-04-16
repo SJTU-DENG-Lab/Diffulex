@@ -8,6 +8,7 @@ engine:
   tokenizer_path: null  # Optional, defaults to model_path
   model_name: "dream"  # Options: dream, sdar, fast_dllm_v2
   decoding_strategy: "d2f"  # Options: d2f, multi_bd
+  sampling_mode: "naive"  # Options: naive, edit
   mask_token_id: 151666
 
   # LoRA configuration
@@ -33,7 +34,7 @@ engine:
   decoding_thresholds:
     add_block_threshold: 0.1
     semi_complete_threshold: 0.9
-    decoding_threshold: 0.9
+    accept_threshold: 0.9
 
   block_size: 32  # Aligned with diffulex Config.block_size
   buffer_size: 4

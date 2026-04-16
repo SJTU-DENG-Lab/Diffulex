@@ -53,14 +53,7 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
 
     @staticmethod
     def _cached_prefix_len(req: DllmReq) -> int:
-        return int(
-            getattr(
-                req,
-                "contiguous_in_cache_prefix_len",
-                getattr(req, "in_cache_len", 0),
-            )
-            or 0
-        )
+        return int(req.contiguous_in_cache_prefix_len)
 
     def _prepare_prefill_req(self: ModelRunnerBase, req: DllmReq):
         input_ids = list(req.running_sequence)
@@ -376,7 +369,7 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             attn_metadata.init_multi_block(
                 valid_slices=valid_slices[:num_seqs],
                 buffer_size=buffer_size,
-                is_prefix_full=getattr(self, "is_prefix_full", False),
+                is_prefix_full=self.is_prefix_full,
                 status_table=status_table[:num_seqs],
                 prefix_lens=prefix_lens[:num_seqs],
                 padded_prefix_lens=padded_prefix_lens[:num_seqs],

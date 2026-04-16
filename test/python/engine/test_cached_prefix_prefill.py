@@ -1,8 +1,14 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 import diffulex.attention.attn_impl as attn_impl
 from diffulex.attention.attn_impl import Attention
+from diffulex.mixin.edit.sampler import EditSamplerMixin
+from diffulex.mixin.token_merge.sampler import TokenMergeSamplerMixin
+from diffulex.sampler.auto_sampler import AutoSampler
+from diffulex.sampler.llada import LLaDASampler
+from diffulex.sampler.llada2 import LLaDA2DMaxSampler, LLaDA2Sampler, LLaDA2dot1Sampler
 from diffulex.sampler.sdar import SDARSampler
 from diffulex.sampler.base import SampleOutputBase
 from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
@@ -50,6 +56,7 @@ class _BatchRunner(_MultiBlockRunnerTestBase):
 def test_prepare_prefill_req_uses_suffix_positions_and_lengths_for_cached_prefix() -> None:
     req = SimpleNamespace(
         running_sequence=list(range(8, 20)),
+        contiguous_in_cache_prefix_len=8,
         in_cache_len=8,
         running_len=20,
         page_table=[0, 1, 2, 3, 4],
@@ -81,6 +88,7 @@ def test_prepare_prefill_req_maps_multiple_blocks_to_one_page() -> None:
     runner.block_size = 4
     req = SimpleNamespace(
         running_sequence=list(range(8)),
+        contiguous_in_cache_prefix_len=0,
         in_cache_len=0,
         running_len=8,
         page_table=[3],
@@ -144,7 +152,7 @@ def test_prepare_prefill_req_keeps_active_uncached_tail_in_valid_slice() -> None
 
 def test_sampler_prefill_localizes_mask_token_indices_after_cached_prefix() -> None:
     sampler = SDARSampler()
-    sampler.fetch_attn_metadata = lambda: SimpleNamespace(is_prefill=[True])
+    sampler.fetch_attn_metadata = lambda: SimpleNamespace(is_prefill=[True], cu_seqlens_q=None)
 
     block = SimpleNamespace(
         block_id=1,
@@ -159,6 +167,7 @@ def test_sampler_prefill_localizes_mask_token_indices_after_cached_prefix() -> N
         running_sequence=[-1, -1, -1, -1],
         chunk_size=4,
         dllm_blocks=[block],
+        contiguous_in_cache_prefix_len=4,
         in_cache_len=4,
     )
 
@@ -254,3 +263,138 @@ def test_run_multi_block_keeps_prefill_batch_together() -> None:
     runner.run_multi_block(reqs)
 
     assert runner.calls == [[1, 2]]
+
+
+def test_llada_and_llada2_use_separate_sampler_classes() -> None:
+    llada_cfg = SimpleNamespace(model_name="llada")
+    llada2_cfg = SimpleNamespace(model_name="llada2", sampling_mode="naive", token_merge_top_k=1)
+    llada2_moe_cfg = SimpleNamespace(model_name="llada2_moe", sampling_mode="naive", token_merge_top_k=1)
+    llada2_mini_cfg = SimpleNamespace(model_name="llada2_mini", sampling_mode="naive", token_merge_top_k=1)
+    edit_llada2_cfg = SimpleNamespace(model_name="llada2", sampling_mode="edit", token_merge_top_k=1)
+    dmax_llada2_cfg = SimpleNamespace(
+        model_name="llada2",
+        sampling_mode="edit",
+        token_merge_top_k=1,
+        decoding_strategy="dmax",
+    )
+
+    llada_sampler = AutoSampler.from_config(llada_cfg)
+    llada2_sampler = AutoSampler.from_config(llada2_cfg)
+    llada2_moe_sampler = AutoSampler.from_config(llada2_moe_cfg)
+    llada2_mini_sampler = AutoSampler.from_config(llada2_mini_cfg)
+    edit_llada2_sampler = AutoSampler.from_config(edit_llada2_cfg)
+    dmax_llada2_sampler = AutoSampler.from_config(dmax_llada2_cfg)
+
+    assert isinstance(llada_sampler, LLaDASampler)
+    assert isinstance(llada2_sampler, LLaDA2Sampler)
+    assert isinstance(llada2_moe_sampler, LLaDA2Sampler)
+    assert isinstance(llada2_mini_sampler, LLaDA2Sampler)
+    assert isinstance(edit_llada2_sampler, LLaDA2dot1Sampler)
+    assert isinstance(edit_llada2_sampler, EditSamplerMixin)
+    assert isinstance(dmax_llada2_sampler, LLaDA2DMaxSampler)
+    assert isinstance(dmax_llada2_sampler, EditSamplerMixin)
+    assert isinstance(dmax_llada2_sampler, TokenMergeSamplerMixin)
+    assert type(llada_sampler) is not type(llada2_sampler)
+    assert type(llada2_sampler) is LLaDA2Sampler
+    assert type(edit_llada2_sampler) is LLaDA2dot1Sampler
+    assert type(dmax_llada2_sampler) is LLaDA2DMaxSampler
+
+
+def test_auto_sampler_rejects_invalid_sampling_mode_combo() -> None:
+    with pytest.raises(ValueError, match="Unsupported sampler configuration"):
+        AutoSampler.from_config(
+            SimpleNamespace(model_name="llada2dot1_mini", decoding_strategy=None, sampling_mode="naive")
+        )
+
+
+def test_llada2dot1_edit_sampler_emits_edit_writes_map() -> None:
+    sampler = LLaDA2dot1Sampler(SimpleNamespace(sampling_mode="edit", token_merge_top_k=1))
+    sampler.fetch_attn_metadata = lambda: SimpleNamespace(is_prefill=[True], cu_seqlens_q=None)
+
+    block = SimpleNamespace(
+        block_id=1,
+        start=4,
+        end=6,
+        block_size=2,
+        is_active=True,
+        num_mask_tokens=2,
+        mask_token_global_ids=[4, 5],
+        mask_token_relative_ids=[0, 1],
+        token_ids=[0, 0],
+        mask_token_id=0,
+        prev_block=SimpleNamespace(is_semi_complete=True),
+        thresholds=SimpleNamespace(accept_threshold=0.6, remask_threshold=0.4),
+    )
+    req = SimpleNamespace(
+        req_id=0,
+        running_sequence=[-1, -1],
+        chunk_size=2,
+        dllm_blocks=[block],
+        contiguous_in_cache_prefix_len=4,
+        in_cache_len=4,
+    )
+
+    logits = torch.tensor(
+        [
+            [0.1, 3.0, 0.0],
+            [0.1, 0.0, 3.0],
+        ],
+        dtype=torch.float32,
+    )
+    temperatures = torch.tensor([0.0], dtype=torch.float32)
+
+    out = sampler([req], logits, temperatures)
+
+    assert out.edit_writes_map["0"]["0"] == {0: 1, 1: 2}
+    assert not hasattr(out, "token_merge_map")
+
+
+def test_llada2dmax_sampler_emits_edit_writes_and_token_merge_map() -> None:
+    sampler = LLaDA2DMaxSampler(
+        SimpleNamespace(
+            sampling_mode="edit",
+            token_merge_top_k=1,
+        )
+    )
+    sampler.fetch_attn_metadata = lambda: SimpleNamespace(is_prefill=[True], cu_seqlens_q=None)
+
+    block = SimpleNamespace(
+        block_id=0,
+        start=4,
+        end=7,
+        block_size=3,
+        is_active=True,
+        num_mask_tokens=2,
+        mask_token_global_ids=[5, 6],
+        mask_token_relative_ids=[1, 2],
+        token_ids=[9, 0, 0],
+        mask_token_id=0,
+        prev_block=SimpleNamespace(is_semi_complete=True),
+        thresholds=SimpleNamespace(accept_threshold=0.9, remask_threshold=0.5),
+    )
+    req = SimpleNamespace(
+        req_id=0,
+        running_sequence=[9, 0, 0],
+        chunk_size=3,
+        dllm_blocks=[block],
+        contiguous_in_cache_prefix_len=4,
+        in_cache_len=4,
+    )
+
+    logits = torch.tensor(
+        [
+            [0.0, 0.4, 0.3],  # low confidence non-mask position -> remask
+            [0.0, 4.0, 0.0],  # confident fill
+            [0.0, 0.0, 3.0],  # confident fill
+        ],
+        dtype=torch.float32,
+    )
+    temperatures = torch.tensor([0.0], dtype=torch.float32)
+
+    out = sampler([req], logits, temperatures)
+
+    assert out.edit_writes_map["0"]["0"] == {0: 0, 1: 1, 2: 2}
+    req_merge = out.token_merge_map["0"]
+    assert req_merge[4] is None
+    assert req_merge[5]["topk_ids"] == [1]
+    assert req_merge[6]["topk_ids"] == [2]
