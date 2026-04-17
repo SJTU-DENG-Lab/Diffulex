@@ -13,7 +13,7 @@ jobs:
   docs:
     name: Build and Publish Docs
     if: |
-      github.repository_owner == 'zhijie-group' &&
+      github.repository_owner == 'SJTU-DENG-Lab' &&
       (
         (
           github.event_name == 'pull_request_target' &&
@@ -37,7 +37,7 @@ jobs:
 
       - name: Build docs
         run: |
-          bash -ex scripts/build_docs.sh
+          bash -ex script/build_docs.sh
 
       - name: Push built docs to another repo
         run: |
