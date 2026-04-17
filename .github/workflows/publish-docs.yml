@@ -51,7 +51,16 @@ jobs:
           # Hide sensitive info in logs
           echo "::add-mask::${{ secrets.TARGET_TOKEN }}"
           echo "::add-mask::${{ secrets.TARGET_REPO }}"
+          if [[ -z "${{ secrets.TARGET_REPO }}" ]]; then
+            echo "TARGET_REPO secret is empty"
+            exit 1
+          fi
+          if [[ -z "${{ secrets.TARGET_TOKEN }}" ]]; then
+            echo "TARGET_TOKEN secret is empty"
+            exit 1
+          fi
           TARGET_REPO_URL="https://github.com/${{ secrets.TARGET_REPO }}.git"
+          echo "Publishing docs to configured target repository"
 
           git clone "${TARGET_REPO_URL}" -b main target_repo
           cd target_repo
