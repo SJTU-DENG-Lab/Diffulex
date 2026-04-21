@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -360,17 +361,32 @@ class LLaDA2Model(nn.Module):
         return output
 
 
-@AutoModelForDiffusionLM.register("llada2")
-@AutoModelForDiffusionLM.register("llada2_moe")
-@AutoModelForDiffusionLM.register("llada2_mini")
+def build_llada2_runtime_config(config):
+    runtime_config = copy.copy(config.hf_config)
+    for name in (
+        "moe_dispatcher_backend",
+        "deepep_mode",
+        "deepep_num_max_dispatch_tokens_per_rank",
+        "expert_parallel_size",
+        "tensor_parallel_size",
+        "data_parallel_size",
+    ):
+        setattr(runtime_config, name, getattr(config, name))
+    return runtime_config
+
+
+@AutoModelForDiffusionLM.register("llada2", use_full_config=True)
+@AutoModelForDiffusionLM.register("llada2_moe", use_full_config=True)
+@AutoModelForDiffusionLM.register("llada2_mini", use_full_config=True)
 class LLaDA2ForDiffusionLM(nn.Module):
     packed_modules_mapping = {}
 
     def __init__(self, config) -> None:
         super().__init__()
-        self.model = LLaDA2Model(config)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
-        if getattr(config, "tie_word_embeddings", False):
+        runtime_config = build_llada2_runtime_config(config)
+        self.model = LLaDA2Model(runtime_config)
+        self.lm_head = ParallelLMHead(runtime_config.vocab_size, runtime_config.hidden_size)
+        if getattr(runtime_config, "tie_word_embeddings", False):
             self.lm_head.weight.data = self.model.word_embeddings.weight.data
 
     def forward(
