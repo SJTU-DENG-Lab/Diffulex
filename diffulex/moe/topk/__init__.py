@@ -1,7 +1,7 @@
-from diffulex.moe.topk.datatype import TopKOutput
+from diffulex.moe.topk.output import TopKOutput
 from diffulex.moe.topk.base import TopKRouter
-from diffulex.moe.topk.triton import TritonFusedTopKRouter
-from diffulex.moe.topk.trivial import TrivialTopKRouter
+from diffulex.moe.topk.naive import NaiveTopKRouter
+from diffulex.moe.topk.group_limited import GroupLimitedTopKRouter
 
 
 def build_topk_router(
@@ -9,19 +9,18 @@ def build_topk_router(
         *args,
         **kwargs,
 ) -> TopKRouter:
-    if impl == "trivial":
-        return TrivialTopKRouter(*args, **kwargs)
-    elif impl == "triton":
-        return TritonFusedTopKRouter(*args, **kwargs)
+    if impl in {"naive", "triton"}:
+        return NaiveTopKRouter(*args, **kwargs)
+    elif impl == "group_limited":
+        return GroupLimitedTopKRouter(*args, **kwargs)
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unsupported topk router impl: {impl!r}.")
 
 
 __all__ = [
     "build_topk_router",
     "TopKRouter",
     "TopKOutput",
-
-    "TrivialTopKRouter",
-    "TritonFusedTopKRouter",
+    "NaiveTopKRouter",
+    "GroupLimitedTopKRouter",
 ]

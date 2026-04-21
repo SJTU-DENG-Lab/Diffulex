@@ -32,6 +32,8 @@ def main() -> None:
     tp_size = _env_int("DIFFULEX_TP_SIZE", 4)
     dp_size = _env_int("DIFFULEX_DP_SIZE", 1)
     ep_size = _env_int("DIFFULEX_EP_SIZE", 8)
+    block_size = _env_int("DIFFULEX_BLOCK_SIZE", 32)
+    page_size = _env_int("DIFFULEX_PAGE_SIZE", 32)
     buffer_size = _env_int("DIFFULEX_BUFFER_SIZE", 1)
     max_model_len = _env_int("DIFFULEX_MAX_MODEL_LEN", 512)
     max_num_batched_tokens = _env_int("DIFFULEX_MAX_BATCHED_TOKENS", 512)
@@ -43,6 +45,8 @@ def main() -> None:
     moe_dispatcher_backend = os.environ.get("DIFFULEX_MOE_DISPATCHER_BACKEND", "standard")
     deepep_mode = os.environ.get("DIFFULEX_DEEPEP_MODE", "auto")
     deepep_num_max_dispatch_tokens_per_rank = _env_int("DIFFULEX_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", 256)
+    sampling_mode = os.environ.get("DIFFULEX_SAMPLING_MODE", "naive")
+    enable_prefix_caching = bool(_env_int("DIFFULEX_ENABLE_PREFIX_CACHING", 1))
     master_port = _pick_free_port()
 
     print(
@@ -52,6 +56,8 @@ def main() -> None:
             "tp_size": tp_size,
             "dp_size": dp_size,
             "ep_size": ep_size,
+            "block_size": block_size,
+            "page_size": page_size,
             "buffer_size": buffer_size,
             "max_model_len": max_model_len,
             "max_num_batched_tokens": max_num_batched_tokens,
@@ -63,6 +69,8 @@ def main() -> None:
             "moe_dispatcher_backend": moe_dispatcher_backend,
             "deepep_mode": deepep_mode,
             "deepep_num_max_dispatch_tokens_per_rank": deepep_num_max_dispatch_tokens_per_rank,
+            "sampling_mode": sampling_mode,
+            "enable_prefix_caching": enable_prefix_caching,
             "master_port": master_port,
         },
         flush=True,
@@ -80,8 +88,10 @@ def main() -> None:
         model_path,
         model_name=model_name,
         decoding_strategy="multi_bd",
+        block_size=block_size,
+        page_size=page_size,
         buffer_size=buffer_size,
-        sampling_mode="naive",
+        sampling_mode=sampling_mode,
         tensor_parallel_size=tp_size,
         data_parallel_size=dp_size,
         expert_parallel_size=ep_size,
@@ -91,6 +101,7 @@ def main() -> None:
         deepep_mode=deepep_mode,
         deepep_num_max_dispatch_tokens_per_rank=deepep_num_max_dispatch_tokens_per_rank,
         enforce_eager=bool(_env_int("DIFFULEX_ENFORCE_EAGER", 1)),
+        enable_prefix_caching=enable_prefix_caching,
         gpu_memory_utilization=gpu_memory_utilization,
         max_num_reqs=max_num_reqs,
         max_model_len=max_model_len,

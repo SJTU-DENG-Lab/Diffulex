@@ -9,7 +9,7 @@ import diffulex.distributed.parallel_state as parallel_state
 from diffulex.model.sdar import SDARAttention
 from diffulex.model.sdar_moe import SDARMoEDecoderLayer, SDARMoEForDiffusionLM
 from diffulex.moe import SparseMoEBlock, build_mlp_or_moe, is_moe_layer
-from diffulex.moe.layer.trivial_impl import TrivialFusedMoE
+from diffulex.moe.layer.naive_impl import NaiveFusedMoE
 
 
 def _mock_tp(monkeypatch):
@@ -94,7 +94,7 @@ def test_sdar_moe_forward_shape(monkeypatch):
         lambda self, positions, hidden_states, mask=None: hidden_states,
     )
     monkeypatch.setattr(
-        TrivialFusedMoE,
+        NaiveFusedMoE,
         "forward",
         lambda self, hidden_states: (hidden_states, None),
     )

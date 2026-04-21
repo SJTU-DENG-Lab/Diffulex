@@ -3,16 +3,16 @@
 # SDAR uses multi_bd, buffer_size=1
 
 engine:
-  model_path: "JetLM/SDAR-1.7B-Chat-b32"
+  model_path: "JetLM/SDAR-30B-A3B-Chat-b32"
   tokenizer_path: null
-  model_name: "sdar"
+  model_name: "sdar_moe"
   decoding_strategy: "multi_bd"
   mask_token_id: 151669
 
   use_lora: false
   lora_path: ""
 
-  tensor_parallel_size: 1
+  tensor_parallel_size: 4
   data_parallel_size: 1
   gpu_memory_utilization: 0.5
   max_model_len: 2048

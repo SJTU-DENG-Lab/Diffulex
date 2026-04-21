@@ -13,6 +13,24 @@ from diffulex.moe.config import (
 )
 from diffulex.moe.topk import build_topk_router
 from diffulex_kernel import fused_moe
+from diffulex.layer.activation import SiluAndMul
+from diffulex.layer.linear import ColumnParallelLinear, RowParallelLinear
+
+
+class SharedExpertMLP(nn.Module):
+    def __init__(self, hidden_size: int, intermediate_size: int, *, hidden_act: str = "silu") -> None:
+        super().__init__()
+        if hidden_act != "silu":
+            raise NotImplementedError("SharedExpertMLP currently supports only silu.")
+        self.gate_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = RowParallelLinear(intermediate_size, hidden_size, bias=False)
+        self.act_fn = SiluAndMul()
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(
+            self.act_fn(torch.cat((self.gate_proj(hidden_states), self.up_proj(hidden_states)), dim=-1))
+        )
 
 class FusedMoE(nn.Module, ABC):
 
@@ -25,6 +43,8 @@ class FusedMoE(nn.Module, ABC):
         *,
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
+        num_shared_experts: int = 0,
+        shared_expert_intermediate_size: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -37,6 +57,7 @@ class FusedMoE(nn.Module, ABC):
         self.top_k = top_k
         self.hidden_act = hidden_act
         self.norm_topk_prob = norm_topk_prob
+        self.num_shared_experts = num_shared_experts
 
         self.router = build_topk_router(
             "triton",
@@ -44,6 +65,14 @@ class FusedMoE(nn.Module, ABC):
             renormalize=norm_topk_prob,
             scoring_func="softmax",
         )
+        self.shared_experts = None
+        if num_shared_experts > 0:
+            shared_intermediate_size = int(shared_expert_intermediate_size or intermediate_size * num_shared_experts)
+            self.shared_experts = SharedExpertMLP(
+                hidden_size,
+                shared_intermediate_size,
+                hidden_act=hidden_act,
+            )
 
         self.fetch_attn_metadata = fetch_attn_metadata
 
@@ -56,11 +85,17 @@ class FusedMoE(nn.Module, ABC):
             top_k=get_num_experts_per_tok(config),
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
+            num_shared_experts=int(getattr(config, "num_shared_experts", 0) or 0),
         )
     
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # return final_hidden_states, router_logits
         raise NotImplementedError
+
+    def add_shared_experts(self, routed_states: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.shared_experts is None:
+            return routed_states
+        return routed_states + self.shared_experts(hidden_states)
 
     @staticmethod
     def _phase_from_prefill_flags(is_prefill) -> str:
@@ -136,7 +171,7 @@ class FusedMoE(nn.Module, ABC):
                 local_expert_start=local_expert_start,
                 hidden_act=hidden_act,
             )
-        if impl == "trivial":
+        if impl == "naive":
             num_tokens, hidden_size = hidden_states.shape
             num_local_experts = w13.shape[0]
             intermediate_size = w13.shape[1] // 2
@@ -173,4 +208,4 @@ class FusedMoE(nn.Module, ABC):
             return final_hidden_states
 
 
-__all__ = ["FusedMoE"]
+__all__ = ["FusedMoE", "SharedExpertMLP"]

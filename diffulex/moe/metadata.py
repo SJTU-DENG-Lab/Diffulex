@@ -5,7 +5,7 @@ from enum import Enum, auto
 
 import torch
 
-from diffulex.moe.topk.datatype import TopKOutput
+from diffulex.moe.topk.output import TopKOutput
 
 
 @dataclass(frozen=True)

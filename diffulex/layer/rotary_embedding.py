@@ -66,6 +66,54 @@ class RotaryEmbedding(nn.Module):
         return query, key
 
 
+class PartialRotaryEmbedding(nn.Module):
+    def __init__(
+        self,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        base: float,
+    ) -> None:
+        super().__init__()
+        if rotary_dim <= 0 or rotary_dim > head_size or rotary_dim % 2 != 0:
+            raise ValueError(f"Invalid rotary_dim={rotary_dim} for head_size={head_size}.")
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        inv_freq = 1.0 / (base ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim))
+        t = torch.arange(max_position_embeddings, dtype=torch.float)
+        freqs = torch.einsum("i,j -> ij", t, inv_freq)
+        cos = freqs.cos()
+        sin = freqs.sin()
+        cache = torch.cat((cos, sin), dim=-1)
+        self.register_buffer("cos_sin_cache", cache, persistent=False)
+
+    @torch.compile
+    def _apply_rope(
+        self,
+        positions: torch.Tensor,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        tokens = x.size(0)
+        x_shape = x.shape
+        nheads = x_shape[-1] // self.head_size
+        x = x.view(tokens, nheads, self.head_size)
+        x_rot = x[..., : self.rotary_dim]
+        x_pass = x[..., self.rotary_dim :]
+
+        cos_sin = self.cos_sin_cache[positions]
+        cos, sin = cos_sin.chunk(2, dim=-1)
+        x_rot = apply_rotary_emb(x_rot, cos, sin)
+        return torch.cat((x_rot, x_pass), dim=-1).view(x_shape)
+
+    def forward(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self._apply_rope(positions, query), self._apply_rope(positions, key)
+
+
 def _normalize_rope_scaling(
     rope_scaling: dict[str, Any] | tuple[tuple[str, Any], ...] | None,
 ) -> tuple[tuple[str, Any], ...] | None:
@@ -108,7 +156,8 @@ def _get_rope_cached(
     rope_scaling: tuple[tuple[str, Any], ...] | None = None,
 ):
     _validate_rope_scaling(rope_scaling)
-    rotary_emb = RotaryEmbedding(head_size, rotary_dim, max_position, base)
+    rotary_cls = RotaryEmbedding if rotary_dim == head_size else PartialRotaryEmbedding
+    rotary_emb = rotary_cls(head_size, rotary_dim, max_position, base)
     return rotary_emb
 
 

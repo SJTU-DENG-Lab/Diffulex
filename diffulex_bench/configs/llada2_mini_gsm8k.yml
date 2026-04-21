@@ -1,0 +1,42 @@
+# LLaDA2.0 mini model - MultiBD strategy on GSM8K
+# Aligned with sdar_chat_gsm8k.yml: multi_bd, block_size=32, buffer_size=1
+
+engine:
+  model_path: "inclusionAI/LLaDA2.0-mini"
+  tokenizer_path: null
+  model_name: "llada2_mini"
+  decoding_strategy: "multi_bd"
+  mask_token_id: 156895
+
+  use_lora: false
+  lora_path: ""
+
+  tensor_parallel_size: 4
+  data_parallel_size: 1
+  expert_parallel_size: 1
+  moe_dispatcher_backend: "standard"
+  gpu_memory_utilization: 0.5
+  max_model_len: 512
+  max_num_batched_tokens: 512
+  max_num_reqs: 1
+
+  enforce_eager: true
+  kv_cache_layout: "unified"
+
+  decoding_thresholds:
+    add_block_threshold: 0.1
+    semi_complete_threshold: 0.9
+    accept_threshold: 0.95
+  block_size: 32
+  page_size: 32
+  buffer_size: 1
+
+eval:
+  dataset_name: "gsm8k_diffulex"
+  dataset_split: "test"
+  dataset_limit: 10
+  temperature: 0.0
+  max_tokens: 256
+  add_bos_token: true
+  output_dir: "benchmark_results/llada2_mini_gsm8k_tp4_limit10"
+  save_results: true

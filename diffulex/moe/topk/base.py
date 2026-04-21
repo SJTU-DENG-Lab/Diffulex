@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
 
-from diffulex.moe.topk.datatype import TopKOutput
+from diffulex.moe.topk.output import TopKOutput
 
 
 class TopKRouter(nn.Module, ABC):

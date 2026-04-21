@@ -1,5 +1,5 @@
 from diffulex.moe.layer.base import FusedMoE
-from diffulex.moe.layer.trivial_impl import TrivialFusedMoE
+from diffulex.moe.layer.naive_impl import NaiveFusedMoE
 from diffulex.moe.layer.tp_impl import TPFusedMoE
 from diffulex.moe.layer.ep_impl import EPFusedMoE
 
@@ -18,8 +18,8 @@ def build_moe_block(
         impl: str,
         config,
 ) -> FusedMoE:
-    if impl == "trivial":
-        return TrivialFusedMoE.from_config(config)
+    if impl == "naive":
+        return NaiveFusedMoE.from_config(config)
     elif impl == "tp":
         return TPFusedMoE.from_config(config)
     elif impl == "ep":
@@ -32,7 +32,7 @@ __all__ = [
     "build_moe_block",
     "FusedMoE",
 
-    "TrivialFusedMoE",
+    "NaiveFusedMoE",
     "TPFusedMoE",
     "EPFusedMoE",
 ]

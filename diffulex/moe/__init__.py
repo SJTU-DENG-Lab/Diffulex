@@ -21,7 +21,7 @@ def build_mlp_or_moe(config, layer_idx: int, dense_factory):
         if parallel_state.is_tp_enabled():
             return build_moe_block("tp", config)
         
-        return build_moe_block("trivial", config)
+        return build_moe_block("naive", config)
     
     return dense_factory()
 

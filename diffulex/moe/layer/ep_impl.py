@@ -35,6 +35,8 @@ class EPFusedMoE(FusedMoE):
         dispatcher_backend: str = "naive",
         deepep_mode: str = "auto",
         deepep_num_max_dispatch_tokens_per_rank: int = 256,
+        num_shared_experts: int = 0,
+        shared_expert_intermediate_size: int | None = None,
     ) -> None:
         super().__init__(
             hidden_size,
@@ -42,7 +44,9 @@ class EPFusedMoE(FusedMoE):
             num_experts,
             top_k,
             hidden_act=hidden_act,
-            norm_topk_prob=norm_topk_prob
+            norm_topk_prob=norm_topk_prob,
+            num_shared_experts=num_shared_experts,
+            shared_expert_intermediate_size=shared_expert_intermediate_size,
         )
         
         parallel_state = fetch_parallel_state()
@@ -64,7 +68,7 @@ class EPFusedMoE(FusedMoE):
         if self.ep_size <= 1:
             raise RuntimeError(
                 "EPFusedMoE requires expert_parallel_size > 1. "
-                "Use TPFusedMoE for standard TP MoE or TrivialFusedMoE for single-rank MoE."
+                "Use TPFusedMoE for standard TP MoE or NaiveFusedMoE for single-rank MoE."
             )
         self.num_local_experts = divide(self.num_experts, self.ep_size)
         self.local_expert_start = self.ep_rank * self.num_local_experts
@@ -108,6 +112,7 @@ class EPFusedMoE(FusedMoE):
                 "deepep_num_max_dispatch_tokens_per_rank",
                 256,
             ),
+            num_shared_experts=int(getattr(config, "num_shared_experts", 0) or 0),
         )
 
     def shard_tokens(self, flat_hidden_states):
@@ -160,7 +165,9 @@ class EPFusedMoE(FusedMoE):
             router_logits[local_token_indices.long()] = local_router_logits.to(router_logits.dtype)
         dist.all_reduce(final_hidden_states, group=self.ep_group)
         dist.all_reduce(router_logits, group=self.ep_group)
-        return final_hidden_states.reshape(original_shape), router_logits
+        final_hidden_states = final_hidden_states.reshape(original_shape)
+        final_hidden_states = self.add_shared_experts(final_hidden_states, hidden_states)
+        return final_hidden_states, router_logits
 
     def _run_dispatched_experts(self, dispatched, weight_dtype: torch.dtype) -> torch.Tensor:
         dispatch_ctx = dispatched.metadata
@@ -171,6 +178,7 @@ class EPFusedMoE(FusedMoE):
                 device=dispatch_ctx.device,
                 dtype=dispatch_ctx.dtype,
             )
+            
         recv_hidden_states = dispatched.recv_hidden_states
         recv_local_expert = dispatched.recv_local_expert_ids
         if isinstance(dispatch_ctx, DeepEPDispatchMetadata):
@@ -184,6 +192,7 @@ class EPFusedMoE(FusedMoE):
             if not dispatch_ctx.low_latency:
                 recv_slot_outputs.mul_(dispatch_ctx.recv_weights.to(recv_slot_outputs.dtype).unsqueeze(-1))
             return recv_slot_outputs
+        
         recv_topk_ids_local = recv_local_expert[:, None].contiguous()
         recv_topk_weights_local = torch.ones(
             (total_recv_slots, 1),

@@ -8,7 +8,7 @@ from diffulex.moe.layer.base import FusedMoE
 from diffulex.utils.checkpoint import LoadContext, ResolvedWeight
 
 
-class TrivialFusedMoE(FusedMoE):
+class NaiveFusedMoE(FusedMoE):
     """
     single device moe layer
     """
@@ -22,6 +22,8 @@ class TrivialFusedMoE(FusedMoE):
         *,
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
+        num_shared_experts: int = 0,
+        shared_expert_intermediate_size: int | None = None,
     ) -> None:
         super().__init__(
             hidden_size,
@@ -29,7 +31,9 @@ class TrivialFusedMoE(FusedMoE):
             num_experts,
             top_k,
             hidden_act=hidden_act,
-            norm_topk_prob=norm_topk_prob
+            norm_topk_prob=norm_topk_prob,
+            num_shared_experts=num_shared_experts,
+            shared_expert_intermediate_size=shared_expert_intermediate_size,
         )
 
         self.gate = ReplicatedLinear(hidden_size, self.num_experts, bias=False)
@@ -59,7 +63,9 @@ class TrivialFusedMoE(FusedMoE):
             hidden_act=self.hidden_act,
         )
 
-        return final_hidden_states.reshape(original_shape), router_logits
+        final_hidden_states = final_hidden_states.reshape(original_shape)
+        final_hidden_states = self.add_shared_experts(final_hidden_states, hidden_states)
+        return final_hidden_states, router_logits
 
     def load_w1(self, loaded_weight: torch.Tensor, expert_idx: int) -> None:
         self.w13.data[expert_idx, 0 : self.intermediate_size].copy_(loaded_weight)
@@ -104,5 +110,4 @@ class TrivialFusedMoE(FusedMoE):
         
         return None
 
-
-__all__ = ["TrivialFusedMoE"]
+__all__ = ["NaiveFusedMoE"]

@@ -49,7 +49,9 @@ class Attention(nn.Module):
         # Reshape
         q = rearrange(q, "s (nh hd) -> s nh hd", **self.q_shape)
         k = rearrange(k, "s (nkvh hd) -> s nkvh hd", **self.kv_shape)
-        v = rearrange(v, "s (nkvh hd) -> s nkvh hd", **self.kv_shape)
+        # Some callers pass V as a strided view from packed QKV. The Triton
+        # chunked prefill kernel requires contiguous V rows for this layout.
+        v = rearrange(v, "s (nkvh hd) -> s nkvh hd", **self.kv_shape).contiguous()
         if q.shape[0] == 0:
             return rearrange(q, "s nh hd -> s (nh hd)").contiguous()
 

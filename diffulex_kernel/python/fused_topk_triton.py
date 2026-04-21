@@ -45,24 +45,6 @@ def _validate_fused_topk_inputs(
     return effective_topk
 
 
-def _validate_fused_topk_outputs(
-    topk_weights: torch.Tensor,
-    topk_ids: torch.Tensor,
-    *,
-    num_experts: int,
-) -> None:
-    invalid_id_mask = (topk_ids < 0) | (topk_ids >= num_experts)
-    if invalid_id_mask.any():
-        invalid_ids = topk_ids[invalid_id_mask][:16].detach().cpu().tolist()
-        raise RuntimeError(
-            "fused_topk produced out-of-range expert ids. "
-            f"num_experts={num_experts}, sample_invalid_ids={invalid_ids}."
-        )
-
-    if not torch.isfinite(topk_weights).all():
-        raise RuntimeError("fused_topk produced non-finite routing weights.")
-
-
 @triton.jit
 def _fused_topk(
     logits_ptr,
@@ -198,7 +180,7 @@ def fused_topk(
     )
 
 
-def _validate_llada2_group_limited_topk_inputs(
+def _validate_fused_group_limited_topk_inputs(
     router_logits: torch.Tensor,
     expert_bias: torch.Tensor,
     top_k: int,
@@ -206,44 +188,40 @@ def _validate_llada2_group_limited_topk_inputs(
     topk_group: int,
 ) -> int:
     if not router_logits.is_cuda or not expert_bias.is_cuda:
-        raise ValueError("llada2_group_limited_topk requires CUDA tensors.")
+        raise ValueError("fused_grouped_topk requires CUDA tensors.")
     if router_logits.dim() != 2:
         raise ValueError(
-            "llada2_group_limited_topk expects a 2D "
+            "fused_grouped_topk expects a 2D "
             f"[num_tokens, num_experts] tensor, got {router_logits.shape}."
         )
     if expert_bias.dim() != 1 or expert_bias.shape[0] != router_logits.shape[-1]:
         raise ValueError(
-            "llada2_group_limited_topk expects expert_bias shape "
+            "fused_grouped_topk expects expert_bias shape "
             f"[num_experts], got {expert_bias.shape} for logits {router_logits.shape}."
         )
     if router_logits.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         raise TypeError(
-            "llada2_group_limited_topk only supports fp16/bf16/fp32 router logits, "
+            "fused_grouped_topk only supports fp16/bf16/fp32 router logits, "
             f"got {router_logits.dtype}."
         )
     if expert_bias.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         raise TypeError(
-            "llada2_group_limited_topk only supports fp16/bf16/fp32 expert bias, "
+            "fused_grouped_topk only supports fp16/bf16/fp32 expert bias, "
             f"got {expert_bias.dtype}."
         )
     if top_k <= 0:
-        raise ValueError(f"llada2_group_limited_topk requires top_k > 0, got {top_k}.")
+        raise ValueError(f"fused_grouped_topk requires top_k > 0, got {top_k}.")
     if router_logits.shape[-1] > 4096:
-        raise NotImplementedError(
-            "llada2_group_limited_topk currently requires num_experts <= 4096."
-        )
+        raise NotImplementedError("fused_grouped_topk currently requires num_experts <= 4096.")
     if n_group > 1024:
-        raise NotImplementedError(
-            "llada2_group_limited_topk currently requires n_group <= 1024."
-        )
+        raise NotImplementedError("fused_grouped_topk currently requires n_group <= 1024.")
     if n_group < 0 or topk_group < 0:
-        raise ValueError("llada2_group_limited_topk requires non-negative group settings.")
+        raise ValueError("fused_grouped_topk requires non-negative group settings.")
     return min(top_k, router_logits.shape[-1])
 
 
 @triton.jit
-def _llada2_group_limited_topk(
+def _fused_group_limited_topk(
     logits_ptr,
     expert_bias_ptr,
     weights_ptr,
@@ -259,7 +237,6 @@ def _llada2_group_limited_topk(
     TOPK_GROUP: tl.constexpr,
     GROUP_BLOCK_SIZE: tl.constexpr,
     GROUP_LIMITED: tl.constexpr,
-    SCORE_DTYPE: tl.constexpr,
     ROUTED_SCALING_FACTOR: tl.constexpr,
     RENORMALIZE: tl.constexpr,
 ):
@@ -275,10 +252,6 @@ def _llada2_group_limited_topk(
     logits = tl.where(logits == logits, logits, -1.0e20)
     logits = tl.maximum(tl.minimum(logits, 1.0e20), -1.0e20)
     scores = 1.0 / (1.0 + tl.exp(-logits))
-    if SCORE_DTYPE == 1:
-        scores = scores.to(tl.float16).to(tl.float32)
-    elif SCORE_DTYPE == 2:
-        scores = scores.to(tl.bfloat16).to(tl.float32)
     scores = tl.where(expert_mask, scores, 0.0)
 
     bias = tl.load(expert_bias_ptr + offs, mask=expert_mask, other=0.0).to(tl.float32)
@@ -292,34 +265,28 @@ def _llada2_group_limited_topk(
 
         for group_idx in range(N_GROUP):
             in_group = expert_mask & (group_ids == group_idx)
-            group_values = tl.where(in_group, routing_scores, -1.0e20)
-            first_id = tl.argmax(group_values, axis=0).to(tl.int32)
-            first_score = tl.max(group_values, axis=0)
+            first_values = tl.where(in_group, routing_scores, -1.0e20)
+            first_id = tl.argmax(first_values, axis=0).to(tl.int32)
+            first_score = tl.max(first_values, axis=0)
             second_values = tl.where(in_group & (offs != first_id), routing_scores, -1.0e20)
             second_score = tl.max(second_values, axis=0)
             second_score = tl.where(experts_per_group > 1, second_score, 0.0)
             group_scores = tl.where(group_offs == group_idx, first_score + second_score, group_scores)
 
-        selected_expert_mask = tl.zeros((BLOCK_SIZE,), dtype=tl.int32)
+        selected_group_mask = tl.zeros((BLOCK_SIZE,), dtype=tl.int32)
         for _ in range(TOPK_GROUP):
             best_group = tl.argmax(group_scores, axis=0).to(tl.int32)
-            selected_expert_mask = selected_expert_mask | (group_ids == best_group).to(tl.int32)
+            selected_group_mask = selected_group_mask | (group_ids == best_group).to(tl.int32)
             group_scores = tl.where(group_offs == best_group, -1.0e20, group_scores)
-        routing_scores = tl.where(expert_mask & (selected_expert_mask != 0), routing_scores, -1.0e20)
+        routing_scores = tl.where(expert_mask & (selected_group_mask != 0), routing_scores, -1.0e20)
 
     selected_sum = tl.zeros((), dtype=tl.float32)
     for topk_idx in range(TOP_K):
         best_id = tl.argmax(routing_scores, axis=0).to(tl.int32)
         best_score = tl.max(tl.where(offs == best_id, scores, -1.0e20), axis=0)
 
-        tl.store(
-            weights_ptr + pid * stride_out_m + topk_idx * stride_out_k,
-            best_score,
-        )
-        tl.store(
-            ids_ptr + pid * stride_out_m + topk_idx * stride_out_k,
-            best_id,
-        )
+        tl.store(weights_ptr + pid * stride_out_m + topk_idx * stride_out_k, best_score)
+        tl.store(ids_ptr + pid * stride_out_m + topk_idx * stride_out_k, best_id)
         selected_sum += best_score
         routing_scores = tl.where(offs == best_id, -1.0e20, routing_scores)
 
@@ -334,7 +301,7 @@ def _llada2_group_limited_topk(
             tl.store(weight_ptr, tl.load(weight_ptr) * ROUTED_SCALING_FACTOR)
 
 
-def llada2_group_limited_topk(
+def fused_group_limited_topk(
     router_logits: torch.Tensor,
     expert_bias: torch.Tensor,
     top_k: int,
@@ -343,7 +310,7 @@ def llada2_group_limited_topk(
     routed_scaling_factor: float,
     renormalize: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    effective_topk = _validate_llada2_group_limited_topk_inputs(
+    effective_topk = _validate_fused_group_limited_topk_inputs(
         router_logits=router_logits,
         expert_bias=expert_bias,
         top_k=top_k,
@@ -376,14 +343,7 @@ def llada2_group_limited_topk(
     if block_size >= 1024:
         num_warps = 16
 
-    if router_logits.dtype == torch.float16:
-        score_dtype = 1
-    elif router_logits.dtype == torch.bfloat16:
-        score_dtype = 2
-    else:
-        score_dtype = 0
-
-    _llada2_group_limited_topk[(num_tokens,)](
+    _fused_group_limited_topk[(num_tokens,)](
         router_logits,
         expert_bias,
         topk_weights,
@@ -399,7 +359,6 @@ def llada2_group_limited_topk(
         TOPK_GROUP=min(max(1, topk_group), max(1, n_group)),
         GROUP_BLOCK_SIZE=group_block_size,
         GROUP_LIMITED=group_limited,
-        SCORE_DTYPE=score_dtype,
         ROUTED_SCALING_FACTOR=float(routed_scaling_factor),
         RENORMALIZE=renormalize and effective_topk > 1,
         num_warps=num_warps,

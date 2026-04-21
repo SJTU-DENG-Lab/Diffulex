@@ -10,12 +10,13 @@ from diffulex.model.auto_model import AutoModelForDiffusionLM
 from diffulex.model.llada2 import (
     LLaDA2DecoderLayer,
     LLaDA2ForDiffusionLM,
-    LLaDA2GroupLimitedRouter,
     LLaDA2Model,
+    LLaDA2NaiveMoE,
     LLaDA2TPMoE,
-    LLaDA2TrivialMoE,
 )
 from diffulex.moe import is_moe_layer
+from diffulex.moe.topk import GroupLimitedTopKRouter
+from diffulex.utils.loader import apply_resolved_weight, resolve_weight_spec
 
 
 def _mock_single_rank(monkeypatch):
@@ -98,8 +99,8 @@ def test_llada2_decoder_layer_uses_moe_after_dense_prefix(monkeypatch):
     dense_layer = LLaDA2DecoderLayer(_make_config(), layer_idx=0)
     moe_layer = LLaDA2DecoderLayer(_make_config(), layer_idx=1)
 
-    assert not isinstance(dense_layer.mlp, LLaDA2TrivialMoE)
-    assert isinstance(moe_layer.mlp, LLaDA2TrivialMoE)
+    assert not isinstance(dense_layer.mlp, LLaDA2NaiveMoE)
+    assert isinstance(moe_layer.mlp, LLaDA2NaiveMoE)
     assert moe_layer.mlp.shared_experts is not None
     assert tuple(moe_layer.mlp.gate.expert_bias.shape) == (4,)
 
@@ -139,6 +140,23 @@ def test_llada2_qkv_loader_accepts_combined_weight(monkeypatch):
     qkv.weight.weight_loader(qkv.weight, loaded)
 
     assert torch.equal(qkv.weight, loaded)
+
+
+def test_llada2_moe_loads_score_correction_bias_alias(monkeypatch):
+    _mock_single_rank(monkeypatch)
+    model = LLaDA2ForDiffusionLM(_make_config())
+    weight_name = "model.layers.1.mlp.gate.e_score_correction_bias"
+    loaded = torch.arange(4, dtype=torch.float32)
+
+    spec = resolve_weight_spec(
+        model,
+        weight_name,
+        config=SimpleNamespace(),
+    )
+
+    assert spec is not None
+    apply_resolved_weight(spec, loaded)
+    assert torch.equal(model.model.layers[1].mlp.gate.expert_bias, loaded)
 
 
 def test_llada2_token_merge_hook_uses_attention_metadata(monkeypatch):
@@ -229,7 +247,7 @@ def test_llada2_group_limited_router_triton_matches_torch(
 ):
     torch.manual_seed(0)
     expert_bias = torch.randn(num_experts, device="cuda", dtype=torch.float32) * 0.1
-    router = LLaDA2GroupLimitedRouter(
+    router = GroupLimitedTopKRouter(
         top_k=top_k,
         num_experts=num_experts,
         n_group=n_group,
@@ -241,7 +259,7 @@ def test_llada2_group_limited_router_triton_matches_torch(
     router_logits = torch.randn(11, num_experts, device="cuda", dtype=torch.float32)
 
     actual = router(router_logits)
-    expected = router._forward_torch(router_logits)
+    expected = router._forward_naive(router_logits)
 
     actual_order = actual.ids.argsort(dim=-1)
     expected_order = expected.ids.argsort(dim=-1)
@@ -252,3 +270,177 @@ def test_llada2_group_limited_router_triton_matches_torch(
 
     assert torch.equal(actual_ids, expected_ids.to(actual_ids.dtype))
     assert torch.allclose(actual_weights.float(), expected_weights.float(), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_llada2_router_matches_torch_at_mini_shape():
+    torch.manual_seed(0)
+    num_experts = 256
+    top_k = 8
+    expert_bias = torch.randn(num_experts, device="cuda", dtype=torch.float32) * 0.1
+    router = GroupLimitedTopKRouter(
+        top_k=top_k,
+        num_experts=num_experts,
+        n_group=8,
+        topk_group=4,
+        routed_scaling_factor=2.5,
+        renormalize=True,
+        expert_bias_getter=lambda: expert_bias,
+    )
+    router_logits = torch.randn(64, num_experts, device="cuda", dtype=torch.float32)
+
+    actual = router(router_logits)
+    expected = router._forward_naive(router_logits)
+
+    actual_order = actual.ids.argsort(dim=-1)
+    expected_order = expected.ids.argsort(dim=-1)
+    actual_ids = actual.ids.gather(1, actual_order).to(torch.long)
+    expected_ids = expected.ids.gather(1, expected_order).to(torch.long)
+    actual_weights = actual.weights.gather(1, actual_order)
+    expected_weights = expected.weights.gather(1, expected_order)
+
+    assert torch.equal(actual_ids, expected_ids.to(actual_ids.dtype))
+    assert torch.allclose(actual_weights.float(), expected_weights.float(), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_llada2_fused_grouped_topk_matches_naive_at_mini_shape():
+    from diffulex_kernel import fused_grouped_topk
+
+    torch.manual_seed(0)
+    num_experts = 256
+    top_k = 8
+    expert_bias = torch.randn(num_experts, device="cuda", dtype=torch.float32) * 0.1
+    router = GroupLimitedTopKRouter(
+        top_k=top_k,
+        num_experts=num_experts,
+        n_group=8,
+        topk_group=4,
+        routed_scaling_factor=2.5,
+        renormalize=True,
+        expert_bias_getter=lambda: expert_bias,
+    )
+    router_logits = torch.randn(64, num_experts, device="cuda", dtype=torch.float32)
+
+    actual_weights, actual_ids = fused_grouped_topk(
+        router_logits=router_logits,
+        expert_bias=expert_bias,
+        top_k=top_k,
+        n_group=8,
+        topk_group=4,
+        routed_scaling_factor=2.5,
+        renormalize=True,
+    )
+    expected = router._forward_naive(router_logits)
+
+    actual_order = actual_ids.argsort(dim=-1)
+    expected_order = expected.ids.argsort(dim=-1)
+    sorted_actual_ids = actual_ids.gather(1, actual_order).to(torch.long)
+    sorted_expected_ids = expected.ids.gather(1, expected_order).to(torch.long)
+    sorted_actual_weights = actual_weights.gather(1, actual_order)
+    sorted_expected_weights = expected.weights.gather(1, expected_order)
+
+    assert torch.equal(sorted_actual_ids, sorted_expected_ids.to(sorted_actual_ids.dtype))
+    assert torch.allclose(sorted_actual_weights.float(), sorted_expected_weights.float(), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_llada2_moe_triton_gemm_matches_naive_gemm_for_fixed_routing(monkeypatch):
+    _mock_single_rank(monkeypatch)
+    torch.manual_seed(0)
+    moe = LLaDA2NaiveMoE.from_config(
+        _make_config(
+            hidden_size=64,
+            moe_intermediate_size=128,
+            num_experts=16,
+            num_experts_per_tok=4,
+            n_group=4,
+            topk_group=2,
+            num_shared_experts=0,
+        )
+    ).cuda()
+    moe = moe.to(dtype=torch.bfloat16)
+    with torch.no_grad():
+        moe.w13.normal_(mean=0.0, std=0.02)
+        moe.w2.normal_(mean=0.0, std=0.02)
+    hidden_states = torch.randn((23, 64), device="cuda", dtype=torch.bfloat16)
+    topk_ids = torch.randint(0, moe.num_experts, (23, moe.top_k), device="cuda", dtype=torch.int32)
+    topk_weights = torch.rand((23, moe.top_k), device="cuda", dtype=torch.float32)
+    topk_weights = (topk_weights / topk_weights.sum(dim=-1, keepdim=True)).to(torch.bfloat16)
+
+    actual = moe.expert_gemm(
+        impl="triton",
+        hidden_states=hidden_states,
+        w13=moe.w13,
+        w2=moe.w2,
+        topk_ids=topk_ids,
+        topk_weights=topk_weights,
+        local_expert_start=0,
+        hidden_act=moe.hidden_act,
+    )
+    expected = moe.expert_gemm(
+        impl="naive",
+        hidden_states=hidden_states,
+        w13=moe.w13,
+        w2=moe.w2,
+        topk_ids=topk_ids,
+        topk_weights=topk_weights,
+        local_expert_start=0,
+        hidden_act=moe.hidden_act,
+    )
+
+    assert torch.allclose(actual.float(), expected.float(), rtol=3e-2, atol=5e-1)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_llada2_moe_triton_gemm_matches_naive_gemm_for_tp_shard_routing(monkeypatch):
+    _mock_tp_rank(monkeypatch, tp_size=4, global_rank=2)
+    torch.manual_seed(0)
+    moe = LLaDA2TPMoE.from_config(
+        _make_config(
+            hidden_size=64,
+            moe_intermediate_size=128,
+            num_experts=16,
+            num_experts_per_tok=4,
+            n_group=4,
+            topk_group=2,
+            num_shared_experts=0,
+        )
+    ).cuda()
+    moe = moe.to(dtype=torch.bfloat16)
+    with torch.no_grad():
+        moe.w13.normal_(mean=0.0, std=0.02)
+        moe.w2.normal_(mean=0.0, std=0.02)
+    hidden_states = torch.randn((23, 64), device="cuda", dtype=torch.bfloat16)
+    topk_ids = torch.randint(0, moe.num_experts, (23, moe.top_k), device="cuda", dtype=torch.int32)
+    topk_ids[: moe.num_local_experts, 0] = torch.arange(
+        moe.local_expert_start,
+        moe.local_expert_end,
+        device="cuda",
+        dtype=torch.int32,
+    )
+    topk_weights = torch.rand((23, moe.top_k), device="cuda", dtype=torch.float32)
+    topk_weights = (topk_weights / topk_weights.sum(dim=-1, keepdim=True)).to(torch.bfloat16)
+
+    actual = moe.expert_gemm(
+        impl="triton",
+        hidden_states=hidden_states,
+        w13=moe.w13,
+        w2=moe.w2,
+        topk_ids=topk_ids,
+        topk_weights=topk_weights,
+        local_expert_start=moe.local_expert_start,
+        hidden_act=moe.hidden_act,
+    )
+    expected = moe.expert_gemm(
+        impl="naive",
+        hidden_states=hidden_states,
+        w13=moe.w13,
+        w2=moe.w2,
+        topk_ids=topk_ids,
+        topk_weights=topk_weights,
+        local_expert_start=moe.local_expert_start,
+        hidden_act=moe.hidden_act,
+    )
+
+    assert torch.allclose(actual.float(), expected.float(), rtol=3e-2, atol=5e-1)

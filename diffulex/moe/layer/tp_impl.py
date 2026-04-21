@@ -29,6 +29,8 @@ class TPFusedMoE(FusedMoE):
         *,
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
+        num_shared_experts: int = 0,
+        shared_expert_intermediate_size: int | None = None,
     ) -> None:
         super().__init__(
             hidden_size,
@@ -36,7 +38,9 @@ class TPFusedMoE(FusedMoE):
             num_experts,
             top_k,
             hidden_act=hidden_act,
-            norm_topk_prob=norm_topk_prob
+            norm_topk_prob=norm_topk_prob,
+            num_shared_experts=num_shared_experts,
+            shared_expert_intermediate_size=shared_expert_intermediate_size,
         )
         
         parallel_state = fetch_parallel_state()
@@ -76,7 +80,9 @@ class TPFusedMoE(FusedMoE):
         if self.tp_size > 1:
             dist.all_reduce(final_hidden_states, group=self.tp_group)
 
-        return final_hidden_states.reshape(original_shape), router_logits
+        final_hidden_states = final_hidden_states.reshape(original_shape)
+        final_hidden_states = self.add_shared_experts(final_hidden_states, hidden_states)
+        return final_hidden_states, router_logits
 
     def _local_expert_idx(self, expert_idx: int) -> int | None:
         if expert_idx < self.local_expert_start or expert_idx >= self.local_expert_end:

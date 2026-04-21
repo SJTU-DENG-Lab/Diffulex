@@ -50,9 +50,9 @@ def __getattr__(name: str):
         from diffulex_kernel.python.fused_topk_triton import fused_topk
         return fused_topk
 
-    if name == "llada2_group_limited_topk":
-        from diffulex_kernel.python.fused_topk_triton import llada2_group_limited_topk
-        return llada2_group_limited_topk
+    if name == "fused_group_limited_topk":
+        from diffulex_kernel.python.fused_topk_triton import fused_group_limited_topk
+        return fused_group_limited_topk
 
     raise AttributeError(name)
 
@@ -66,5 +66,5 @@ __all__ = [
     "fused_moe",
     "fused_expert_packed",
     "fused_topk",
-    "llada2_group_limited_topk",
+    "fused_group_limited_topk",
 ]
