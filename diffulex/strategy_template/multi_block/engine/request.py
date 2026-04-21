@@ -28,6 +28,7 @@ class MultiBlockReqTemplate(DllmReq):
         self.is_multi_block = True
         self.status_history = [self.status]
         self.completion_reason = None
+        self._resume_prefill_until = 0
 
         self.block_size = config.block_size
         self.buffer_size = config.buffer_size
@@ -102,8 +103,6 @@ class MultiBlockReqTemplate(DllmReq):
     def eos_token_generated(self) -> bool:
         if self.ignore_eos:
             return False
-        # Only inspect generated segment; prompt tokens may also contain chat delimiters
-        # such as <|im_end|>, which must not trigger immediate completion.
         generated_seq = self.token_ids[self.prefix_len :]
         return self.eos_token_id in generated_seq
 
@@ -230,6 +229,8 @@ class MultiBlockReqTemplate(DllmReq):
     @property
     def running_len(self) -> int:
         if self.is_prefilling:
+            if self._resume_prefill_until > 0:
+                return self._resume_prefill_until
             return (
                 (self.padded_prefix_len - self.block_size) + self.dllm_block_buffer.num_valid_blocks * self.block_size
                 if self.is_padded
@@ -357,6 +358,20 @@ class MultiBlockReqTemplate(DllmReq):
     def preempt(self):
         self.lazy_activate()
         self.log_status()
+        if self.is_multi_block:
+            rebuild_until = 0
+            if self.is_decoding:
+                rebuild_until = int(self.running_seq_start)
+                self._resume_prefill_until = rebuild_until
+            # Scheduler preemption frees this req's page_table immediately after moving it
+            # back to WAITING. Any block still marked IN_CACHE would then point to KV pages
+            # that no longer belong to the req. Demote those blocks back to TO_CACHE so a
+            # resumed req rebuilds its cached prefix instead of reusing stale block state.
+            for block in self.dllm_blocks:
+                if rebuild_until > 0 and block.end <= rebuild_until and block.is_to_cache:
+                    continue
+                if block.is_in_cache:
+                    block.status = DllmBlockStatus.TO_CACHE
         self.status = DllmReqStatus.WAITING
 
     @property
@@ -370,6 +385,9 @@ class MultiBlockReqTemplate(DllmReq):
         self.log_status()
 
         self.status = self.status_history[-1]
+        if self._resume_prefill_until > 0:
+            self.status = DllmReqStatus.PREFILLING
+            return
         if self.is_pending:
             self.status = DllmReqStatus.PREFILLING
         elif self.is_prefilling:
@@ -399,6 +417,19 @@ class MultiBlockReqTemplate(DllmReq):
 
     def step(self):
         self.lazy_activate()
+
+        # Decode can livelock when the running buffer is fully occupied by
+        # IN_CACHE blocks (no ACTIVE/TO_CACHE block left). In that state we keep
+        # scheduling decode, but there is no writable frontier so no new token is
+        # ever accepted. Recycle the cached head block to reopen one slot.
+        if (
+            self.is_decoding
+            and not self.dllm_block_buffer.active_blocks
+            and not self.dllm_block_buffer.to_cache_blocks
+        ):
+            head_block = self.dllm_block_buffer.first_running_block
+            if head_block.is_in_cache and not head_block.is_last_in_context:
+                head_block.status = DllmBlockStatus.TO_CACHE
         
         # Condition to activate the next block, when buffer contains active blocks
         activate_cond = self.dllm_block_buffer.should_add_block and not self.dllm_block_buffer.is_overflow
@@ -446,6 +477,13 @@ class MultiBlockReqTemplate(DllmReq):
         for block_id in range(self.num_prefix_blocks):
             self.dllm_blocks[block_id].in_cache()
 
+        if self._resume_prefill_until > 0:
+            for block in self.dllm_blocks:
+                if block.end > self._resume_prefill_until:
+                    break
+                if block.is_to_cache and block.is_complete:
+                    block.in_cache()
+
     def apply_cached_prefix_pages(self):
         if not self.is_multi_block:
             return
@@ -481,6 +519,9 @@ class MultiBlockReqTemplate(DllmReq):
                 self.push_back_dummy_block()
             elif block.is_dummy or block.is_active or block.is_in_cache:
                 block_id += 1
+
+        if self._resume_prefill_until > 0 and self.contiguous_in_cache_prefix_len >= self._resume_prefill_until:
+            self._resume_prefill_until = 0
 
         if self.eos_token_generated:
             self.dllm_block_buffer.last_valid_block.make_last_in_context()
