@@ -110,7 +110,12 @@ def compute_metrics(
     metrics["avg_tokens_per_sample"] = total_tokens / len(outputs) if outputs else 0
     metrics["avg_nfe"] = avg_nfe
     metrics["total_time"] = total_time
-    metrics["throughput_tok_s"] = total_tokens / total_time if total_time > 0 else 0
+    metrics["e2e_total_time_s"] = outputs[0].get("e2e_total_time_s", 0.0) if outputs else 0.0
+    metrics["ttft_s"] = outputs[0].get("ttft_s", 0.0) if outputs else 0.0
+    metrics["tpot_s"] = outputs[0].get("tpot_s", 0.0) if outputs else 0.0
+    metrics["e2e_throughput_tok_s"] = outputs[0].get("e2e_throughput_tok_s", 0.0) if outputs else 0.0
+    metrics["prefill_throughput_tok_s"] = outputs[0].get("prefill_throughput_tok_s", 0.0) if outputs else 0.0
+    metrics["decode_throughput_tok_s"] = outputs[0].get("decode_throughput_tok_s", 0.0) if outputs else 0.0
 
     # Dataset-specific metrics
     if ground_truths and dataset_name == "gsm8k":

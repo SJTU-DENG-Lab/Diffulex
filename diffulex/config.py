@@ -190,13 +190,13 @@ class Config:
                 "deepep_num_max_dispatch_tokens_per_rank must be positive, "
                 f"got: {self.deepep_num_max_dispatch_tokens_per_rank}"
             )
-        if self.moe_dispatcher_backend == "standard" and self.expert_parallel_size != 1:
-            logger.warning(
-                "Ignoring expert_parallel_size=%s for moe_dispatcher_backend='standard'. "
-                "Standard TP MoE does not use EP token A2A; experts are sharded by tensor_parallel_size.",
-                self.expert_parallel_size,
+        if self.expert_parallel_size != 1 or self.moe_dispatcher_backend != "standard":
+            raise ValueError(
+                "MoE A2A backends are currently unsupported. Require expert_parallel_size == 1 "
+                "and moe_dispatcher_backend == 'standard', "
+                f"got expert_parallel_size={self.expert_parallel_size}, "
+                f"moe_dispatcher_backend={self.moe_dispatcher_backend}."
             )
-            self.expert_parallel_size = 1
             
         if not (isinstance(self.master_port, int) and 0 < self.master_port < 65536):
             raise ValueError(

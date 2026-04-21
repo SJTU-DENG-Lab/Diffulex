@@ -160,6 +160,15 @@ class GenerationOutputs:
         return self._batch_generated_tokens / self._batch_total_time if self._batch_total_time > 0 else 0
 
     @property
+    def e2e_total_time(self) -> float:
+        return sum(sum(step.step_time for step in trajectory.trajectory) for trajectory in self.trajectories)
+
+    @property
+    def e2e_throughput(self) -> float:
+        total_tokens = sum(len(trajectory.token_ids) for trajectory in self.trajectories)
+        return total_tokens / self.e2e_total_time if self.e2e_total_time > 0 else 0
+
+    @property
     def prefill_throughput(self) -> float:
         return self._prefill_batch_tokens / self._prefill_batch_time if self._prefill_batch_time > 0 else 0
 
@@ -234,6 +243,7 @@ class GenerationOutputs:
             tpf=f"{self.tpf:.2f}tok/step",
             ttft=f"{self.ttft:.2f}s",
             tpot=f"{self.tpot:.2f}s",
+            e2eps=f"{self.e2e_throughput:.2f}tok/s",
             ptps=f"{self.prefill_throughput:.2f}tok/s",
             dtps=f"{self.decode_throughput:.2f}tok/s",
         )
@@ -245,9 +255,11 @@ class GenerationOutputs:
         logger.info(f"Total Tokens: {sum(len(trajectory.token_ids) for trajectory in self.trajectories)} toks")
         logger.info(f"Total NFEs: {self.batch_step_count} nfes (steps)")
         logger.info(f"Total Time: {self.total_time} sec")
+        logger.info(f"E2E Time: {self.e2e_total_time} sec")
         logger.info(f"TPF: {self.tpf:.2f} tok/step")
         logger.info(f"TTFT: {self.ttft:.2f} sec")
         logger.info(f"TPOT: {self.tpot:.2f} sec")
+        logger.info(f"E2E Throughput: {self.e2e_throughput:.2f} tok/sec")
         logger.info(f"Prefill Throughput: {self.prefill_throughput:.2f} tok/sec")
         logger.info(f"Decode Throughput: {self.decode_throughput:.2f} tok/sec")
         logger.info("--------------------------------")

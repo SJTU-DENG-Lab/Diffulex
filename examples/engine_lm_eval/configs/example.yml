@@ -1,0 +1,24 @@
+endpoint:
+  engine_name: "sglang"
+  base_url: "http://127.0.0.1:29998"
+  model: "/root/data/ckpts/JetLM/SDAR-8B-Chat-b32"
+  api_key: "EMPTY"
+  tokenizer_path: "/root/data/ckpts/JetLM/SDAR-8B-Chat-b32"
+  trust_remote_code: true
+  apply_chat_template: true
+  chat_completions: false
+  timeout: 600.0
+  verify: true
+
+eval:
+  dataset_name: "gsm8k_diffulex"
+  dataset_limit: 10
+  include_path: null
+  dataset_data_files: null
+  temperature: 0.0
+  max_tokens: 1024
+  ignore_eos: false
+  add_bos_token: false
+  output_dir: "benchmark_results/oai_lm_eval"
+  use_run_subdirectory: true
+  save_results: true

@@ -45,7 +45,12 @@ def generate_report(results_file: str, output_file: Optional[str] = None) -> str
     append_line(f"  Average Tokens per Sample: {metrics.get('avg_tokens_per_sample', 0):.2f}")
     append_line(f"  Average NFE: {metrics.get('avg_nfe', 0):.2f}")
     append_line(f"  Total Time: {metrics.get('total_time', 0):.2f} seconds")
-    append_line(f"  Throughput: {metrics.get('throughput_tok_s', 0):.2f} tokens/s")
+    append_line(f"  E2E Time: {metrics.get('e2e_total_time_s', 0):.2f} seconds")
+    append_line(f"  TTFT: {metrics.get('ttft_s', 0):.2f} seconds")
+    append_line(f"  TPOT: {metrics.get('tpot_s', 0):.2f} seconds")
+    append_line(f"  E2E Th: {metrics.get('e2e_throughput_tok_s', 0):.2f} tok/s")
+    append_line(f"  Prefill Th: {metrics.get('prefill_throughput_tok_s', 0):.2f} tok/s")
+    append_line(f"  Decode Th: {metrics.get('decode_throughput_tok_s', 0):.2f} tok/s")
 
     if "accuracy" in metrics and metrics["accuracy"] is not None:
         report_lines.append(f"  Accuracy: {metrics['accuracy']:.4f}")
@@ -96,7 +101,12 @@ def compare_results(result_files: List[str], output_file: Optional[str] = None) 
             "total_tokens": metrics.get("total_tokens", 0),
             "avg_tokens_per_sample": metrics.get("avg_tokens_per_sample", 0),
             "avg_nfe": metrics.get("avg_nfe", 0),
-            "throughput_tok_s": metrics.get("throughput_tok_s", 0),
+            "e2e_total_time_s": metrics.get("e2e_total_time_s", 0),
+            "ttft_s": metrics.get("ttft_s", 0),
+            "tpot_s": metrics.get("tpot_s", 0),
+            "e2e_throughput_tok_s": metrics.get("e2e_throughput_tok_s", 0),
+            "prefill_throughput_tok_s": metrics.get("prefill_throughput_tok_s", 0),
+            "decode_throughput_tok_s": metrics.get("decode_throughput_tok_s", 0),
             "accuracy": metrics.get("accuracy", None),
             "timestamp": results.get("timestamp", "N/A"),
         }

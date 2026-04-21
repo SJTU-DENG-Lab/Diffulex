@@ -156,6 +156,12 @@ class DiffulexLM(LM):
         self.all_generation_times = []
         self.all_nfe = []
         self.all_tokens = []
+        self.last_ttft = 0.0
+        self.last_tpot = 0.0
+        self.last_e2e_total_time = 0.0
+        self.last_e2e_throughput = 0.0
+        self.last_prefill_throughput = 0.0
+        self.last_decode_throughput = 0.0
 
         engine_sources = locals().copy()
         extra_engine_kwargs = engine_sources.pop("kwargs")
@@ -302,6 +308,13 @@ class DiffulexLM(LM):
         end_time = time.time()
 
         total_time = end_time - start_time
+        if outputs:
+            self.last_e2e_total_time = float(outputs[0].get("e2e_total_time_s", 0.0) or 0.0)
+            self.last_ttft = float(outputs[0].get("ttft_s", 0.0) or 0.0)
+            self.last_tpot = float(outputs[0].get("tpot_s", 0.0) or 0.0)
+            self.last_e2e_throughput = float(outputs[0].get("e2e_throughput_tok_s", 0.0) or 0.0)
+            self.last_prefill_throughput = float(outputs[0].get("prefill_throughput_tok_s", 0.0) or 0.0)
+            self.last_decode_throughput = float(outputs[0].get("decode_throughput_tok_s", 0.0) or 0.0)
 
         # Extract results and accumulate statistics
         results = []
@@ -343,17 +356,14 @@ class DiffulexLM(LM):
 
         # Log statistics
         if self.total_samples > 0:
-            avg_tokens = self.total_generated_tokens / self.total_samples
-            avg_nfe = self.total_nfe / self.total_samples
-            avg_time = self.total_generation_time / self.total_samples
-            throughput = num_tokens / total_time if total_time > 0 else 0
-
             self.logger.info(
                 f"Generated {len(results)} samples | "
                 f"Tokens: {num_tokens} | "
                 f"NFE: {num_nfe} | "
                 f"Time: {total_time:.2f}s | "
-                f"Throughput: {throughput:.2f} tok/s"
+                f"E2E Th: {self.last_e2e_throughput:.2f} tok/s | "
+                f"Prefill Th: {self.last_prefill_throughput:.2f} tok/s | "
+                f"Decode Th: {self.last_decode_throughput:.2f} tok/s"
             )
 
         # Save statistics if save_dir is provided
@@ -371,12 +381,15 @@ class DiffulexLM(LM):
             "total_tokens": self.total_generated_tokens,
             "total_nfe": self.total_nfe,
             "total_time": self.total_generation_time,
+            "e2e_total_time_s": self.last_e2e_total_time,
+            "e2e_throughput_tok_s": self.last_e2e_throughput,
             "avg_tokens_per_sample": self.total_generated_tokens / self.total_samples if self.total_samples > 0 else 0,
             "avg_nfe_per_sample": self.total_nfe / self.total_samples if self.total_samples > 0 else 0,
             "avg_time_per_sample": self.total_generation_time / self.total_samples if self.total_samples > 0 else 0,
-            "throughput_tok_s": self.total_generated_tokens / self.total_generation_time
-            if self.total_generation_time > 0
-            else 0,
+            "ttft_s": self.last_ttft,
+            "tpot_s": self.last_tpot,
+            "prefill_throughput_tok_s": self.last_prefill_throughput,
+            "decode_throughput_tok_s": self.last_decode_throughput,
             "nfe_per_token": self.total_nfe / self.total_generated_tokens if self.total_generated_tokens > 0 else 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }

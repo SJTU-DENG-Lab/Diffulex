@@ -106,8 +106,18 @@ class BenchmarkRunner:
         end_time = time.time()
 
         # Convert GenerationOutputs to list of dicts if needed (tp_worker returns GenerationOutputs)
+        batch_metrics = {}
         if hasattr(raw_outputs, "to_benchmark_format"):
             outputs = raw_outputs.to_benchmark_format()
+            batch_metrics = {
+                "ttft_s": getattr(raw_outputs, "ttft", 0.0),
+                "tpot_s": getattr(raw_outputs, "tpot", 0.0),
+                "e2e_total_time_s": getattr(raw_outputs, "e2e_total_time", 0.0),
+                "e2e_throughput_tok_s": getattr(raw_outputs, "e2e_throughput", 0.0),
+                "prefill_throughput_tok_s": getattr(raw_outputs, "prefill_throughput", 0.0),
+                "decode_throughput_tok_s": getattr(raw_outputs, "decode_throughput", 0.0),
+                "batch_total_time_s": getattr(raw_outputs, "total_time", 0.0),
+            }
         else:
             outputs = raw_outputs
 
@@ -115,6 +125,7 @@ class BenchmarkRunner:
         total_time = end_time - start_time
         for output in outputs:
             output["generation_time"] = total_time / len(outputs) if outputs else 0
+            output.update(batch_metrics)
 
         return outputs
 
@@ -149,5 +160,10 @@ class BenchmarkRunner:
             "total_time": total_time,
             "avg_tokens_per_sample": total_tokens / len(outputs) if outputs else 0,
             "avg_nfe": avg_nfe,
-            "throughput_tok_s": total_tokens / total_time if total_time > 0 else 0,
+            "e2e_total_time_s": outputs[0].get("e2e_total_time_s", 0.0) if outputs else 0.0,
+            "ttft_s": outputs[0].get("ttft_s", 0.0) if outputs else 0.0,
+            "tpot_s": outputs[0].get("tpot_s", 0.0) if outputs else 0.0,
+            "e2e_throughput_tok_s": outputs[0].get("e2e_throughput_tok_s", 0.0) if outputs else 0.0,
+            "prefill_throughput_tok_s": outputs[0].get("prefill_throughput_tok_s", 0.0) if outputs else 0.0,
+            "decode_throughput_tok_s": outputs[0].get("decode_throughput_tok_s", 0.0) if outputs else 0.0,
         }
