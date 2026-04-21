@@ -31,7 +31,20 @@ class SamplerShiftLogits(SamplerBase):
     def _fetch_last_logits(self, logits: torch.Tensor, req: DllmReq) -> torch.Tensor:
         req_id_str = str(req.req_id)
         if req.has_to_cache_block:
-            return self._cache_last_logits(req_id_str, logits[req.to_cache_last_token_id])
+            idx = int(req.to_cache_last_token_id)
+            if 0 <= idx < logits.shape[0]:
+                return self._cache_last_logits(req_id_str, logits[idx])
+            logger.warning(
+                "Invalid to_cache_last_token_id for req %s: idx=%s, logits_len=%s; fallback to last row.",
+                req_id_str,
+                idx,
+                logits.shape[0],
+            )
+            if logits.shape[0] > 0:
+                return self._cache_last_logits(req_id_str, logits[-1])
+            raise ValueError(
+                f"Cannot fetch last logits for req {req.req_id}: empty logits tensor with invalid index {idx}"
+            )
 
         if req_id_str in self.req_last_logits_map:
             return self.req_last_logits_map[req_id_str]
@@ -113,6 +126,8 @@ class DllmSamplerShiftBase(SamplerShiftLogits):
                     if shifted_logits.shape[0] == 0:
                         continue
                     local_ids = DllmSamplerNoShiftBase._prefill_mask_token_local_ids(req, block, shifted_logits)
+                    if not local_ids:
+                        continue
                     mask_token_logits = shifted_logits[local_ids, ...]
                 else:
                     buf_offset = block.start - req.dllm_block_buffer.first_running_block.start

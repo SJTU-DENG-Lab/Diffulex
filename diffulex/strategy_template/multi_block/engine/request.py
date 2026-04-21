@@ -326,7 +326,11 @@ class MultiBlockReqTemplate(DllmReq):
     @property
     def to_cache_last_token_id(self) -> int:
         if self.is_prefilling:
-            return self.to_cache_len - 1 if self.to_cache_len > 0 else 0
+            # Prefill logits are relative to `running_sequence`, which starts at
+            # contiguous_in_cache_prefix_len under prefix-caching / resume-prefill.
+            # Convert global to-cache length to local logits row index.
+            local_to_cache_len = self.to_cache_len - int(self.contiguous_in_cache_prefix_len)
+            return local_to_cache_len - 1 if local_to_cache_len > 0 else 0
         n = len(self.dllm_block_buffer.to_cache_blocks) * self.block_size
         return n - 1 if n > 0 else 0
 
