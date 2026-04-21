@@ -14,6 +14,8 @@ from diffulex.sampler.llada2 import LLaDA2DMaxSampler, LLaDA2Sampler, LLaDA2dot1
 from diffulex.sampler.sdar import SDARSampler
 from diffulex.sampler.base import SampleOutputBase
 from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
+from diffulex.engine.dllm_block import DllmBlock
+from diffulex.config import DecodingThresholds
 
 
 class _MultiBlockRunnerTestBase(MultiBlockModelRunnerTemplate):
@@ -401,6 +403,101 @@ def test_llada2dmax_sampler_emits_edit_writes_and_token_merge_map() -> None:
     assert req_merge[4] is None
     assert req_merge[5]["topk_ids"] == [1]
     assert req_merge[6]["topk_ids"] == [2]
+
+
+def test_dllm_block_editable_start_limits_mask_ids_and_writes() -> None:
+    class _Req:
+        page_size = 4
+
+        def __init__(self) -> None:
+            self.token_ids = [101, 102, 0, 0]
+
+        def __getitem__(self, s):
+            return self.token_ids[s]
+
+    req = _Req()
+
+    block = DllmBlock(
+        block_id=0,
+        start=0,
+        end=4,
+        block_size=4,
+        mask_token_id=0,
+        thresholds=DecodingThresholds(0.1, 0.9, 0.95, 0.4),
+        editable_start=2,
+    )
+    block.post_init_dllm_block(req, None)
+
+    assert block.mask_token_relative_ids == [2, 3]
+    assert block.mask_token_global_ids == [2, 3]
+    assert block.num_mask_tokens == 2
+
+    with pytest.raises(ValueError, match="non-editable token"):
+        block.write_token(999, 1)
+
+
+def test_llada2dmax_sampler_respects_block_editable_start() -> None:
+    sampler = LLaDA2DMaxSampler(
+        SimpleNamespace(
+            sampling_mode="edit",
+            token_merge_top_k=1,
+        )
+    )
+    sampler.fetch_attn_metadata = lambda: SimpleNamespace(is_prefill=[True], cu_seqlens_q=None)
+
+    class _Block:
+        block_id = 0
+        start = 4
+        end = 8
+        block_size = 4
+        is_active = True
+        token_ids = [11, 12, 0, 0]
+        mask_token_id = 0
+        prev_block = SimpleNamespace(is_semi_complete=True)
+        thresholds = SimpleNamespace(accept_threshold=0.9, remask_threshold=0.5)
+        editable_start = 2
+
+        @property
+        def num_mask_tokens(self):
+            return 2
+
+        @property
+        def mask_token_global_ids(self):
+            return [6, 7]
+
+        @property
+        def mask_token_relative_ids(self):
+            return [2, 3]
+
+    block = _Block()
+    req = SimpleNamespace(
+        req_id=0,
+        running_sequence=[11, 12, 0, 0],
+        chunk_size=4,
+        dllm_blocks=[block],
+        contiguous_in_cache_prefix_len=4,
+        in_cache_len=4,
+    )
+
+    logits = torch.tensor(
+        [
+            [5.0, 0.0, 0.0],
+            [0.0, 5.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 0.0, 4.0],
+        ],
+        dtype=torch.float32,
+    )
+    temperatures = torch.tensor([0.0], dtype=torch.float32)
+
+    out = sampler([req], logits, temperatures)
+
+    assert out.edit_writes_map["0"]["0"] == {2: 1, 3: 2}
+    req_merge = out.token_merge_map["0"]
+    assert req_merge[4] is None
+    assert req_merge[5] is None
+    assert req_merge[6]["topk_ids"] == [1]
+    assert req_merge[7]["topk_ids"] == [2]
 
 
 def test_llada_sampler_does_not_resample_mask_token() -> None:

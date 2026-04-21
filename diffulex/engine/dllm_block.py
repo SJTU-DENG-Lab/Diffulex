@@ -32,6 +32,7 @@ class DllmBlock:
     prev_block: "DllmBlock" = None
 
     block_type: DllmBlockType = DllmBlockType.IN_CONTEXT
+    editable_start: int = 0
 
     def __repr__(self):
         prev_block_id = self.prev_block.block_id if self.prev_block is not None else None
@@ -39,6 +40,10 @@ class DllmBlock:
 
     def post_init_dllm_block(self, req: "DllmReq", dllm_block_buffer: "DllmBlockBuffer"):
         assert self.end - self.start == self.block_size
+        if not 0 <= int(self.editable_start) <= self.block_size:
+            raise ValueError(
+                f"editable_start must be in [0, {self.block_size}], got: {self.editable_start}"
+            )
 
         if req is not None:
             self.bind_req(req)
@@ -85,12 +90,26 @@ class DllmBlock:
         return self.req[self.start : self.end]
 
     @property
+    def editable_relative_ids(self) -> list[int]:
+        return list(range(int(self.editable_start), self.block_size))
+
+    @property
     def mask_token_relative_ids(self) -> list[int]:
-        return [i for i, token_id in enumerate(self.token_ids) if token_id == self.mask_token_id]
+        editable_start = int(self.editable_start)
+        return [
+            i
+            for i, token_id in enumerate(self.token_ids)
+            if i >= editable_start and token_id == self.mask_token_id
+        ]
 
     @property
     def mask_token_global_ids(self) -> list[int]:
-        return [i + self.start for i, token_id in enumerate(self.token_ids) if token_id == self.mask_token_id]
+        editable_start = int(self.editable_start)
+        return [
+            i + self.start
+            for i, token_id in enumerate(self.token_ids)
+            if i >= editable_start and token_id == self.mask_token_id
+        ]
 
     @property
     def in_buffer_block_id(self) -> int:
@@ -149,12 +168,22 @@ class DllmBlock:
         return self.block_type == DllmBlockType.LAST_IN_CONTEXT
 
     def write_token(self, token_id: int, rel_idx: int):
+        if int(rel_idx) < int(self.editable_start):
+            raise ValueError(
+                f"Cannot write non-editable token in block {self.block_id}: "
+                f"rel_idx={rel_idx}, editable_start={self.editable_start}"
+            )
         self.req.token_ids[self.start + rel_idx] = token_id
 
     def write_tokens_parallel(self, token_ids: torch.Tensor, abs_ids: torch.Tensor):
         token_ids_list = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else list(token_ids)
         abs_ids_list = abs_ids.tolist() if isinstance(abs_ids, torch.Tensor) else list(abs_ids)
         for abs_idx, token_id in zip(abs_ids_list, token_ids_list):
+            if int(abs_idx) - self.start < int(self.editable_start):
+                raise ValueError(
+                    f"Cannot write non-editable token in block {self.block_id}: "
+                    f"abs_idx={abs_idx}, editable_start={self.editable_start}"
+                )
             self.req.token_ids[int(abs_idx)] = int(token_id)
 
     def to_cache(self):

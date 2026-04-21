@@ -104,9 +104,15 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         block_logits: torch.Tensor,
         temperature: float,
     ) -> tuple[dict[int, int], dict[int, dict | None]]:
+        editable_start = int(getattr(block, "editable_start", 0) or 0)
+        if editable_start >= int(block.block_size):
+            return {}, {}
+
         mask_id = int(block.mask_token_id)
         accept_threshold = float(block.thresholds.accept_threshold)
         remask_threshold = float(block.thresholds.remask_threshold)
+        block_tokens = block_tokens[editable_start:]
+        block_logits = block_logits[editable_start:, ...]
         mask_index = block_tokens.eq(mask_id)
         x0 = self._sample_argmax(block_logits, temperature)
         probs = F.softmax(block_logits.to(torch.float32), dim=-1)
@@ -143,8 +149,8 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         for rel_idx in torch.where(transfer_index)[0].tolist():
             token = int(x0[rel_idx].item())
             if token != int(block_tokens[rel_idx].item()):
-                block_writes[int(rel_idx)] = token
-            token_merge_entries[int(rel_idx)] = self._build_token_merge_descriptor(
+                block_writes[int(editable_start + rel_idx)] = token
+            token_merge_entries[int(editable_start + rel_idx)] = self._build_token_merge_descriptor(
                 probs=probs[rel_idx],
                 token=token,
                 mask_id=mask_id,

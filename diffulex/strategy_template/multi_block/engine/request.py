@@ -56,6 +56,9 @@ class MultiBlockReqTemplate(DllmReq):
         for i in range(self.padded_prefix_len // self.block_size):
             start = i * self.block_size
             end = start + self.block_size
+            editable_start = 0
+            if self.is_padded and i == (self.padded_prefix_len // self.block_size) - 1:
+                editable_start = self.prefix_len - start
             dllm_block = DllmBlock(
                 block_id=i,
                 start=start,
@@ -65,6 +68,7 @@ class MultiBlockReqTemplate(DllmReq):
                 thresholds=self.thresholds,
                 status=None,  # let Block __post_init__ to set the status
                 prev_block=None if i == 0 else self.dllm_blocks[-1],
+                editable_start=editable_start,
             )
             dllm_block.post_init_dllm_block(self, None)
             self.dllm_blocks.append(dllm_block)
@@ -423,6 +427,7 @@ class MultiBlockReqTemplate(DllmReq):
             thresholds=self.thresholds,
             status=DllmBlockStatus.DUMMY,
             prev_block=self.dllm_blocks[-1],
+            editable_start=0,
         )
 
         dllm_block.post_init_dllm_block(self, self.dllm_block_buffer)

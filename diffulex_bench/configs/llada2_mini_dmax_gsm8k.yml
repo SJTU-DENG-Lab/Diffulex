@@ -1,7 +1,7 @@
 # LLaDA2-mini - DMax strategy on GSM8K (requires sampling_mode=edit)
 
 engine:
-  model_path: "/root/data/ckpts/Zigeng/DMax-Math-16B-convert"
+  model_path: Zigeng/DMax-Math-16B-convert
   tokenizer_path: null
   model_name: "llada2_mini"
   decoding_strategy: "dmax"
@@ -14,10 +14,10 @@ engine:
 
   tensor_parallel_size: 1
   data_parallel_size: 1
-  gpu_memory_utilization: 0.85
+  gpu_memory_utilization: 0.5
   max_model_len: 2048
   max_num_batched_tokens: 4096
-  max_num_reqs: 128
+  max_num_reqs: 1
 
   enforce_eager: false
   enable_prefix_caching: true
@@ -31,7 +31,7 @@ engine:
   decoding_thresholds:
     add_block_threshold: 0.1
     semi_complete_threshold: 0.9
-    accept_threshold: 0.95
+    accept_threshold: 0.5
     remask_threshold: 0.4
 
   block_size: 32
