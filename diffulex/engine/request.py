@@ -120,6 +120,8 @@ class DllmReq(ReqStateMixin):
         self.is_multi_block = True
         self.status_history = [self.status]
         self.completion_reason = None
+        self._resume_prefill_until = 0
+        self._terminal_context_block_id: int | None = None
 
         self.block_size = config.block_size
         self.buffer_size = config.buffer_size
@@ -341,6 +343,8 @@ class DllmReq(ReqStateMixin):
     @property
     def running_len(self) -> int:
         if self.is_prefilling:
+            if self._resume_prefill_until > 0:
+                return self._resume_prefill_until
             return (
                 (self.padded_prefix_len - self.block_size) + self.dllm_block_buffer.num_valid_blocks * self.block_size
                 if self.is_padded
@@ -419,7 +423,7 @@ class DllmReq(ReqStateMixin):
     @property
     def has_to_cache_blocks(self) -> bool:
         if self.is_prefilling:
-            return True
+            return self._prefill_visible_to_cache_last_global_id() is not None
         if self.is_decoding:
             return len(self.dllm_block_buffer.to_cache_blocks) > 0
         return False
@@ -431,14 +435,67 @@ class DllmReq(ReqStateMixin):
     @property
     def to_cache_last_token_id(self) -> int:
         if self.is_prefilling:
-            return self.to_cache_len - 1 if self.to_cache_len > 0 else 0
+            window_start = int(self.contiguous_in_cache_prefix_len)
+            last_global = self._prefill_visible_to_cache_last_global_id()
+            if last_global is None:
+                return 0
+            return int(last_global - window_start)
         n = len(self.dllm_block_buffer.to_cache_blocks) * self.block_size
         return n - 1 if n > 0 else 0
 
+    def _prefill_visible_to_cache_last_global_id(self) -> int | None:
+        if not self.is_prefilling:
+            return None
+
+        window_start = int(self.contiguous_in_cache_prefix_len)
+        window_end = int(self.running_len)
+        if window_end <= window_start:
+            return None
+
+        last_global = None
+        for block in self.dllm_blocks:
+            if block.end <= window_start:
+                continue
+            if block.start >= window_end:
+                break
+            if not block.is_to_cache:
+                continue
+            candidate = min(block.end, window_end) - 1
+            if candidate < window_start:
+                continue
+            last_global = candidate if last_global is None else max(last_global, candidate)
+        return last_global
+
     @property
     def last_block_finished(self) -> bool:
-        inspected_block = self.dllm_block_buffer.first_running_block.prev_block
-        return inspected_block is not None and inspected_block.is_complete and inspected_block.is_last_in_context
+        terminal_block = self.terminal_context_block
+        return terminal_block is not None and terminal_block.is_complete
+
+    @property
+    def terminal_context_block(self) -> DllmBlock | None:
+        block_id = getattr(self, "_terminal_context_block_id", None)
+        if block_id is None or not (0 <= int(block_id) < len(self.dllm_blocks)):
+            return None
+        return self.dllm_blocks[int(block_id)]
+
+    def set_terminal_context_block(self, block: DllmBlock | None) -> None:
+        while block is not None and block.is_dummy:
+            block = block.prev_block
+        if block is None:
+            self._terminal_context_block_id = None
+            return
+
+        terminal_block_id = int(block.block_id)
+        self._terminal_context_block_id = terminal_block_id
+
+        for dllm_block in self.dllm_blocks:
+            if dllm_block.is_dummy or dllm_block.block_id > terminal_block_id:
+                dllm_block.make_out_of_context()
+            elif dllm_block.block_id < terminal_block_id:
+                dllm_block.make_in_context()
+            else:
+                dllm_block.make_in_context()
+                dllm_block.make_last_in_context()
 
     @property
     def pure_prefill_without_mask_token(self) -> bool:
@@ -463,6 +520,16 @@ class DllmReq(ReqStateMixin):
     def preempt(self):
         self.lazy_activate()
         self.log_status()
+        if self.is_multi_block:
+            rebuild_until = 0
+            if self.is_decoding:
+                rebuild_until = int(self.running_seq_start)
+                self._resume_prefill_until = rebuild_until
+            for block in self.dllm_blocks:
+                if rebuild_until > 0 and block.end <= rebuild_until and block.is_to_cache:
+                    continue
+                if block.is_in_cache:
+                    block.status = DllmBlockStatus.TO_CACHE
         self.status = DllmReqStatus.WAITING
 
     @property
@@ -476,6 +543,9 @@ class DllmReq(ReqStateMixin):
         self.log_status()
 
         self.status = self.status_history[-1]
+        if self._resume_prefill_until > 0:
+            self.status = DllmReqStatus.PREFILLING
+            return
         if self.is_pending:
             self.status = DllmReqStatus.PREFILLING
         elif self.is_prefilling:
@@ -506,6 +576,15 @@ class DllmReq(ReqStateMixin):
     def step(self):
         self.lazy_activate()
 
+        if (
+            self.is_decoding
+            and not self.dllm_block_buffer.active_blocks
+            and not self.dllm_block_buffer.to_cache_blocks
+        ):
+            head_block = self.dllm_block_buffer.first_running_block
+            if head_block.is_in_cache and not head_block.is_last_in_context:
+                head_block.status = DllmBlockStatus.TO_CACHE
+
         for block in self.dllm_block_buffer.active_blocks:
             block.total_steps += 1
 
@@ -534,9 +613,13 @@ class DllmReq(ReqStateMixin):
         )
 
         dllm_block.post_init_dllm_block(self, self.dllm_block_buffer)
-        if (self.max_new_tokens_reached or self.max_model_len_reached) and dllm_block.prev_block.is_in_context:
-            dllm_block.make_last_in_context()
-        elif dllm_block.prev_block.is_out_of_context or dllm_block.prev_block.is_last_in_context:
+        if (
+            self.max_new_tokens_reached
+            or self.max_model_len_reached
+            or self.terminal_context_block is not None
+            or dllm_block.prev_block.is_out_of_context
+            or dllm_block.prev_block.is_last_in_context
+        ):
             dllm_block.make_out_of_context()
 
         self.dllm_blocks.append(dllm_block)
@@ -548,6 +631,13 @@ class DllmReq(ReqStateMixin):
 
         for block_id in range(self.num_prefix_blocks):
             self.dllm_blocks[block_id].in_cache()
+
+        if self._resume_prefill_until > 0:
+            for block in self.dllm_blocks:
+                if block.end > self._resume_prefill_until:
+                    break
+                if block.is_to_cache and block.is_complete:
+                    block.in_cache()
 
     def apply_cached_prefix_pages(self):
         if not self.is_multi_block:
@@ -585,8 +675,13 @@ class DllmReq(ReqStateMixin):
             elif block.is_dummy or block.is_active or block.is_in_cache:
                 block_id += 1
 
+        if self._resume_prefill_until > 0 and self.contiguous_in_cache_prefix_len >= self._resume_prefill_until:
+            self._resume_prefill_until = 0
+
+        if self.is_truncated:
+            self.set_terminal_context_block(self.dllm_block_buffer.last_valid_block)
+
         if self.eos_token_generated:
-            self.dllm_block_buffer.last_valid_block.make_last_in_context()
             self.meet_eos = True
             self.dllm_block_buffer.maybe_fix_context_management()
 
