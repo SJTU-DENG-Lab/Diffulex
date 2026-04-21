@@ -34,17 +34,6 @@ class SamplerShiftLogits(SamplerBase):
             idx = int(req.to_cache_last_token_id)
             if 0 <= idx < logits.shape[0]:
                 return self._cache_last_logits(req_id_str, logits[idx])
-            logger.warning(
-                "Invalid to_cache_last_token_id for req %s: idx=%s, logits_len=%s; fallback to last row.",
-                req_id_str,
-                idx,
-                logits.shape[0],
-            )
-            if logits.shape[0] > 0:
-                return self._cache_last_logits(req_id_str, logits[-1])
-            raise ValueError(
-                f"Cannot fetch last logits for req {req.req_id}: empty logits tensor with invalid index {idx}"
-            )
 
         if req_id_str in self.req_last_logits_map:
             return self.req_last_logits_map[req_id_str]

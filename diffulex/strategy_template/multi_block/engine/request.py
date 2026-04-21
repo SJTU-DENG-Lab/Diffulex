@@ -315,7 +315,7 @@ class MultiBlockReqTemplate(DllmReq):
     @property
     def has_to_cache_blocks(self) -> bool:
         if self.is_prefilling:
-            return True
+            return self._prefill_visible_to_cache_last_global_id() is not None
         elif self.is_decoding:
             return len(self.dllm_block_buffer.to_cache_blocks) > 0
 
@@ -326,13 +326,36 @@ class MultiBlockReqTemplate(DllmReq):
     @property
     def to_cache_last_token_id(self) -> int:
         if self.is_prefilling:
-            # Prefill logits are relative to `running_sequence`, which starts at
-            # contiguous_in_cache_prefix_len under prefix-caching / resume-prefill.
-            # Convert global to-cache length to local logits row index.
-            local_to_cache_len = self.to_cache_len - int(self.contiguous_in_cache_prefix_len)
-            return local_to_cache_len - 1 if local_to_cache_len > 0 else 0
+            window_start = int(self.contiguous_in_cache_prefix_len)
+            last_global = self._prefill_visible_to_cache_last_global_id()
+            if last_global is None:
+                return 0
+            return int(last_global - window_start)
         n = len(self.dllm_block_buffer.to_cache_blocks) * self.block_size
         return n - 1 if n > 0 else 0
+
+    def _prefill_visible_to_cache_last_global_id(self) -> int | None:
+        if not self.is_prefilling:
+            return None
+
+        window_start = int(self.contiguous_in_cache_prefix_len)
+        window_end = int(self.running_len)
+        if window_end <= window_start:
+            return None
+
+        last_global = None
+        for block in self.dllm_blocks:
+            if block.end <= window_start:
+                continue
+            if block.start >= window_end:
+                break
+            if not block.is_to_cache:
+                continue
+            candidate = min(block.end, window_end) - 1
+            if candidate < window_start:
+                continue
+            last_global = candidate if last_global is None else max(last_global, candidate)
+        return last_global
 
     @property
     def last_block_finished(self) -> bool:
