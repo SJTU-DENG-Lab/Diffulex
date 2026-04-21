@@ -34,7 +34,7 @@ eval:
   dataset_split: "test"
   dataset_limit: null
   temperature: 0.0
-  max_tokens: 256
+  max_tokens: 512
   add_bos_token: true  # Chat model: chat template format
   output_dir: "benchmark_results"
   save_results: true
