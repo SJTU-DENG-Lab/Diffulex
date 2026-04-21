@@ -1,0 +1,43 @@
+# LLaDA2-mini - Multi-BD strategy on GSM8K
+
+engine:
+  model_path: "/root/data/ckpts/Zigeng/DMax-Math-16B-convert"
+  tokenizer_path: null
+  model_name: "llada2_mini"
+  decoding_strategy: "multi_bd"
+  sampling_mode: "naive"
+  mask_token_id: 156895
+
+  use_lora: false
+  lora_path: ""
+  pre_merge_lora: false
+
+  tensor_parallel_size: 1
+  data_parallel_size: 1
+  gpu_memory_utilization: 0.85
+  max_model_len: 2048
+  max_num_batched_tokens: 4096
+  max_num_reqs: 1
+
+  enforce_eager: false
+  enable_prefix_caching: true
+  kv_cache_layout: "unified"
+  page_size: 32
+
+  decoding_thresholds:
+    add_block_threshold: 0.1
+    semi_complete_threshold: 0.9
+    accept_threshold: 0.95
+    remask_threshold: 0.4
+
+  block_size: 32
+  buffer_size: 4
+
+eval:
+  dataset_name: "gsm8k_diffulex"
+  dataset_split: "test"
+  dataset_limit: 100
+  temperature: 0.0
+  max_tokens: 256
+  output_dir: "benchmark_results/llada2_mini_multi_bd_gsm8k_tp1"
+  save_results: true
