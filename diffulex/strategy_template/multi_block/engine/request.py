@@ -29,6 +29,7 @@ class MultiBlockReqTemplate(DllmReq):
         self.status_history = [self.status]
         self.completion_reason = None
         self._resume_prefill_until = 0
+        self._terminal_context_block_id: int | None = None
 
         self.block_size = config.block_size
         self.buffer_size = config.buffer_size
@@ -359,8 +360,36 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def last_block_finished(self) -> bool:
-        inspected_block = self.dllm_block_buffer.first_running_block.prev_block
-        return inspected_block is not None and inspected_block.is_complete and inspected_block.is_last_in_context
+        terminal_block = self.terminal_context_block
+        return terminal_block is not None and terminal_block.is_complete
+
+    @property
+    def terminal_context_block(self) -> DllmBlock | None:
+        block_id = getattr(self, "_terminal_context_block_id", None)
+        if block_id is None or not (0 <= int(block_id) < len(self.dllm_blocks)):
+            return None
+        return self.dllm_blocks[int(block_id)]
+
+    def set_terminal_context_block(self, block: DllmBlock | None) -> None:
+        # The terminal context boundary is request state and must always point to a
+        # real block. Dummy blocks are only buffer-capacity placeholders.
+        while block is not None and block.is_dummy:
+            block = block.prev_block
+        if block is None:
+            self._terminal_context_block_id = None
+            return
+
+        terminal_block_id = int(block.block_id)
+        self._terminal_context_block_id = terminal_block_id
+
+        for dllm_block in self.dllm_blocks:
+            if dllm_block.is_dummy or dllm_block.block_id > terminal_block_id:
+                dllm_block.make_out_of_context()
+            elif dllm_block.block_id < terminal_block_id:
+                dllm_block.make_in_context()
+            else:
+                dllm_block.make_in_context()
+                dllm_block.make_last_in_context()
 
     @property
     def pure_prefill_without_mask_token(self) -> bool:
@@ -489,9 +518,13 @@ class MultiBlockReqTemplate(DllmReq):
         )
 
         dllm_block.post_init_dllm_block(self, self.dllm_block_buffer)
-        if (self.max_new_tokens_reached or self.max_model_len_reached) and dllm_block.prev_block.is_in_context:
-            dllm_block.make_last_in_context()
-        elif dllm_block.prev_block.is_out_of_context or dllm_block.prev_block.is_last_in_context:
+        if (
+            self.max_new_tokens_reached
+            or self.max_model_len_reached
+            or self.terminal_context_block is not None
+            or dllm_block.prev_block.is_out_of_context
+            or dllm_block.prev_block.is_last_in_context
+        ):
             dllm_block.make_out_of_context()
 
         self.dllm_blocks.append(dllm_block)
@@ -550,10 +583,11 @@ class MultiBlockReqTemplate(DllmReq):
         if self._resume_prefill_until > 0 and self.contiguous_in_cache_prefix_len >= self._resume_prefill_until:
             self._resume_prefill_until = 0
 
+        if self.eos_token_generated or self.max_new_tokens_reached or self.max_model_len_reached:
+            self.set_terminal_context_block(self.dllm_block_buffer.last_valid_block)
+
         if self.eos_token_generated:
-            self.dllm_block_buffer.last_valid_block.make_last_in_context()
             self.meet_eos = True
-            self.dllm_block_buffer.maybe_fix_context_management()
 
         if (
             self.eos_token_generated

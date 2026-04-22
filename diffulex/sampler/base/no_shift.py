@@ -15,21 +15,6 @@ class SamplerNoShiftLogits(SamplerBase):
 class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
     output_cls = SampleOutputBase
 
-    def _maybe_log_prefill_alignment(
-        self,
-        req: DllmReq,
-        req_logits: torch.Tensor,
-        block_summaries: list[dict],
-    ) -> None:
-        logged = getattr(self, "_debug_prefill_alignment_logged", None)
-        if logged is None:
-            logged = set()
-            self._debug_prefill_alignment_logged = logged
-        req_id = int(getattr(req, "req_id", -1))
-        if req_id in logged:
-            return
-        logged.add(req_id)
-
     @staticmethod
     def _split_logits_per_req(attn_metadata, reqs: list[DllmReq], logits: torch.Tensor) -> tuple[torch.Tensor, ...]:
         cu = attn_metadata.cu_seqlens_q
@@ -86,7 +71,6 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
             mask_token_rel_ids_sub_map = {}
             confidence_sub_map = {}
             initial_confidence_sub_map = {}
-            prefill_block_summaries: list[dict] = []
 
             for block_id, block in enumerate(req.dllm_blocks):
                 if not block.is_active or (block.num_mask_tokens == 0):
@@ -105,18 +89,6 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
                     local_ids = self._prefill_mask_token_local_ids(req, block, req_logits)
                     if not local_ids:
                         continue
-                    prefill_block_summaries.append(
-                        {
-                            "block_id": int(block_id),
-                            "start": int(getattr(block, "start", -1)),
-                            "end": int(getattr(block, "end", -1)),
-                            "num_mask_tokens": int(getattr(block, "num_mask_tokens", 0)),
-                            "mask_token_global_ids_head": [int(x) for x in block.mask_token_global_ids[:8]],
-                            "local_ids_head": [int(x) for x in local_ids[:8]],
-                            "local_ids_min": int(min(local_ids)) if local_ids else None,
-                            "local_ids_max": int(max(local_ids)) if local_ids else None,
-                        }
-                    )
                     mask_token_logits = req_logits[local_ids, ...]
                 else:
                     buf_offset = block.start - req.dllm_block_buffer.first_running_block.start
@@ -145,8 +117,6 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
                 initial_confidence_sub_map[block_id_str] = initial_confidence.to(device="cpu").tolist()
 
             req_id_str = str(req.req_id)
-            if attn_metadata.is_prefill[idx]:
-                self._maybe_log_prefill_alignment(req, req_logits, prefill_block_summaries[:4])
             true_local_ids_map[req_id_str] = true_local_ids_sub_map
             accepted_ids_map[req_id_str] = accepted_ids_sub_map
             sampled_tokens_map[req_id_str] = sampled_tokens_sub_map

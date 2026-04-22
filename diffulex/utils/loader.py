@@ -41,6 +41,8 @@ def enable_lora_for_model(
     lora_alpha = lora_config.get("lora_alpha", 32.0)
     lora_dropout = lora_config.get("lora_dropout", 0.0)
     target_modules = lora_config.get("target_modules", [])
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
 
     rev_mapping = {}
     if packed_modules_mapping:
