@@ -23,6 +23,7 @@ class ServerArgs:
     model_name: str = "dream"
     decoding_strategy: str = "d2f"
     sampling_mode: str = "naive"
+    mask_token_id: int | None = None
     tensor_parallel_size: int = 1
     data_parallel_size: int = 1
     master_addr: str = "localhost"
@@ -53,7 +54,7 @@ class ServerArgs:
     pre_merge_lora: bool = False
 
     def engine_kwargs(self) -> dict:
-        return {
+        kwargs = {
             "model_name": self.model_name,
             "decoding_strategy": self.decoding_strategy,
             "sampling_mode": self.sampling_mode,
@@ -88,6 +89,9 @@ class ServerArgs:
             "lora_path": self.lora_path,
             "pre_merge_lora": self.pre_merge_lora,
         }
+        if self.mask_token_id is not None:
+            kwargs["mask_token_id"] = self.mask_token_id
+        return kwargs
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -102,6 +106,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-name", default="dream")
     parser.add_argument("--decoding-strategy", default="d2f")
     parser.add_argument("--sampling-mode", default="naive", choices=["naive", "edit"])
+    parser.add_argument("--mask-token-id", type=int, default=None)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--data-parallel-size", type=int, default=1)
     parser.add_argument("--master-addr", default="localhost")
@@ -145,6 +150,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         model_name=ns.model_name,
         decoding_strategy=ns.decoding_strategy,
         sampling_mode=ns.sampling_mode,
+        mask_token_id=ns.mask_token_id,
         tensor_parallel_size=ns.tensor_parallel_size,
         data_parallel_size=ns.data_parallel_size,
         master_addr=ns.master_addr,

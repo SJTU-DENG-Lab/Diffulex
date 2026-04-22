@@ -17,7 +17,7 @@ DEFAULT_MAX_NFE = 512
 DEFAULT_TEMPERATURE = 0.0
 MASK_TOKEN_TEXT = "<|MASK|>"
 DEFAULT_MASK_SYMBOL = "▒"
-DISPLAY_STOP_TOKENS = ("<|im_end|>",)
+DISPLAY_STOP_TOKENS = ("<|im_end|>", "<|eot_id|>")
 
 
 @dataclass
