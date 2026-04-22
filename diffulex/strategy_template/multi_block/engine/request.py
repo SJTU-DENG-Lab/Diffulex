@@ -583,7 +583,7 @@ class MultiBlockReqTemplate(DllmReq):
         if self._resume_prefill_until > 0 and self.contiguous_in_cache_prefix_len >= self._resume_prefill_until:
             self._resume_prefill_until = 0
 
-        if self.eos_token_generated or self.max_new_tokens_reached or self.max_model_len_reached:
+        if self.is_truncated:
             self.set_terminal_context_block(self.dllm_block_buffer.last_valid_block)
 
         if self.eos_token_generated:

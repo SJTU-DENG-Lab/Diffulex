@@ -71,6 +71,11 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             )
         self.ps = []
         self.events = []
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+        config.tokenizer_vocab_size = len(self.tokenizer)
+        config.eos = self.tokenizer.eos_token_id
+        maybe_override_mask_token_id(config, self.tokenizer)
+
         ctx = mp.get_context("spawn")
         for i in range(1, self.model_parallel_world_size):
             event = ctx.Event()
@@ -78,10 +83,6 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
-        config.tokenizer_vocab_size = len(self.tokenizer)
-        config.eos = self.tokenizer.eos_token_id
-        maybe_override_mask_token_id(config, self.tokenizer)
 
         self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
         self.scheduler: SchedulerBase | DataParallelScheduler = AutoScheduler.from_config(config)
