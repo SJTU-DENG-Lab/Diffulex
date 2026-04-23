@@ -16,9 +16,9 @@ engine:
   tensor_parallel_size: 1
   data_parallel_size: 1
   gpu_memory_utilization: 0.6
-  max_model_len: 2048
-  max_num_batched_tokens: 4096
-  max_num_reqs: 128
+  max_model_len: 1024
+  max_num_batched_tokens: 1024
+  max_num_reqs: 24
 
   enforce_eager: false
   kv_cache_layout: "unified"
@@ -35,7 +35,7 @@ eval:
   dataset_split: "test"
   dataset_limit: null
   temperature: 0.0
-  max_tokens: 256
+  max_tokens: 512
   add_bos_token: true  # Instruct model: chat template format
   output_dir: "benchmark_results"
   save_results: true

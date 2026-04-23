@@ -37,15 +37,9 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
             return local_ids
 
         if min(local_ids) < 0 or max(local_ids) >= req_logits.shape[0]:
-            raise IndexError(
-                "Prefill mask-token logits index out of bounds: "
-                f"req_id={getattr(req, 'req_id', '?')}, "
-                f"block_id={getattr(block, 'block_id', '?')}, "
-                f"in_cache_len={prefix_offset}, "
-                f"global_ids={block.mask_token_global_ids}, "
-                f"local_ids={local_ids}, "
-                f"req_logits_len={req_logits.shape[0]}"
-            )
+            # Mixed prefill batches can yield partial q_len for a req in one step.
+            # Skip this block this step and retry when its logits slice is present.
+            return []
         return local_ids
 
     def forward(
@@ -86,11 +80,15 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
                     continue
 
                 if attn_metadata.is_prefill[idx]:
+                    if getattr(req, "_resume_prefill_until", 0) > 0 and getattr(block, "start", 0) >= req.running_len:
+                        continue
                     # Prefix-cache prefill can produce q_len=0 for some requests in mixed batches.
                     # In that case there are no logits to sample for this req in this step.
                     if req_logits.shape[0] == 0:
                         continue
                     local_ids = self._prefill_mask_token_local_ids(req, block, req_logits)
+                    if not local_ids:
+                        continue
                     mask_token_logits = req_logits[local_ids, ...]
                 else:
                     buf_offset = block.start - req.dllm_block_buffer.first_running_block.start

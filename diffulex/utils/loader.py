@@ -23,19 +23,40 @@ def load_lora_config(lora_path: str) -> dict:
     return {}
 
 
-def enable_lora_for_model(model: nn.Module, lora_config: dict):
-    """Enable LoRA for existing linear layers in the model."""
+def enable_lora_for_model(
+    model: nn.Module,
+    lora_config: dict,
+    packed_modules_mapping: dict | None = None,
+):
+    """Enable LoRA for existing linear layers in the model.
+
+    `target_modules` from PEFT adapter_config refers to the *checkpoint* leaf
+    names (e.g. `attn_out`). When the local model class re-names a layer (e.g.
+    LLaDA's `attn_out` is implemented as `self_attn.o_proj`), the mapping is
+    declared in `packed_modules_mapping` as `{ckpt_leaf: (local_dotted_name, _)}`.
+    We must consult that mapping here, otherwise renamed targets silently miss
+    `__init_lora__` and the loaded LoRA tensors get dropped at apply time.
+    """
     r = lora_config.get("r", 16)
     lora_alpha = lora_config.get("lora_alpha", 32.0)
     lora_dropout = lora_config.get("lora_dropout", 0.0)
     target_modules = lora_config.get("target_modules", [])
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+
+    rev_mapping = {}
+    if packed_modules_mapping:
+        for ckpt_leaf, (local_dotted, _) in packed_modules_mapping.items():
+            local_leaf = local_dotted.split(".")[-1]
+            rev_mapping[local_leaf] = ckpt_leaf
 
     for name, module in model.named_modules():
         if hasattr(module, "__init_lora__"):
             should_apply = True
             if target_modules:
                 leaf = name.split(".")[-1] if name else name
-                should_apply = any(target == leaf for target in target_modules)
+                effective = rev_mapping.get(leaf, leaf)
+                should_apply = any(target == effective for target in target_modules)
             if should_apply:
                 module.__init_lora__(r, lora_alpha, lora_dropout)
     return model
@@ -177,13 +198,14 @@ def load_model(model: nn.Module, config: Config):
     # Enable LoRA for linear layers if LoRA is enabled
     if config.use_lora and config.lora_path:
         lora_config = load_lora_config(config.lora_path)
+        packed_modules_mapping_for_lora = getattr(model, "packed_modules_mapping", None)
         if lora_config:
             logger.info(f"LoRA Config Loaded: {lora_config}")
-            model = enable_lora_for_model(model, lora_config)
+            model = enable_lora_for_model(model, lora_config, packed_modules_mapping_for_lora)
         else:
             logger.info("No adapter_config.json found, using default LoRA parameters")
             default_config = {"r": 16, "lora_alpha": 32.0, "lora_dropout": 0.0}
-            model = enable_lora_for_model(model, default_config)
+            model = enable_lora_for_model(model, default_config, packed_modules_mapping_for_lora)
 
     # Load base model weights
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})

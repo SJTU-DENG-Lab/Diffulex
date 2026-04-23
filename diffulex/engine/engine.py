@@ -21,6 +21,39 @@ from diffulex.utils.output import GenerationOutputs
 logger = get_logger(__name__)
 
 
+def maybe_override_mask_token_id(config: Config, tokenizer) -> None:
+    """Resolve mask token id from model artifacts when config still uses a placeholder default.
+
+    Some tokenizers, including LLaDA, do not expose ``tokenizer.mask_token_id`` even though the
+    model config carries the correct ``mask_token_id``. In those cases, server startup would fall
+    back to the global default and corrupt the denoising buffer initialization.
+    """
+
+    tokenizer_mask_token_id = getattr(tokenizer, "mask_token_id", None)
+    if tokenizer_mask_token_id is not None and config.mask_token_id != tokenizer_mask_token_id:
+        logger.warning(
+            "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
+            config.mask_token_id,
+            tokenizer_mask_token_id,
+        )
+        config.mask_token_id = int(tokenizer_mask_token_id)
+        return
+
+    hf_mask_token_id = getattr(getattr(config, "hf_config", None), "mask_token_id", None)
+    default_mask_token_id = Config.mask_token_id
+    if (
+        hf_mask_token_id is not None
+        and config.mask_token_id == default_mask_token_id
+        and int(hf_mask_token_id) != default_mask_token_id
+    ):
+        logger.warning(
+            "Overriding default mask_token_id from %s to hf_config mask_token_id %s.",
+            config.mask_token_id,
+            hf_mask_token_id,
+        )
+        config.mask_token_id = int(hf_mask_token_id)
+
+
 class DiffulexEngine(DiffulexAsyncEngineMixin):
     def __init__(self, model, **kwargs):
         config_fields = {field.name for field in fields(Config)}
@@ -38,6 +71,11 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             )
         self.ps = []
         self.events = []
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+        config.tokenizer_vocab_size = len(self.tokenizer)
+        config.eos = self.tokenizer.eos_token_id
+        maybe_override_mask_token_id(config, self.tokenizer)
+
         ctx = mp.get_context("spawn")
         for i in range(1, self.model_parallel_world_size):
             event = ctx.Event()
@@ -45,17 +83,6 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
-        config.tokenizer_vocab_size = len(self.tokenizer)
-        config.eos = self.tokenizer.eos_token_id
-
-        if getattr(self.tokenizer, "mask_token_id", None) is not None and config.mask_token_id != self.tokenizer.mask_token_id:
-            logger.warning(
-                "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
-                config.mask_token_id,
-                self.tokenizer.mask_token_id,
-            )
-            config.mask_token_id = self.tokenizer.mask_token_id
 
         self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
         self.scheduler: SchedulerBase | DataParallelScheduler = AutoScheduler.from_config(config)
