@@ -1,0 +1,28 @@
+tag:
+  - math_word_problems
+task: math500_diffulex_dmax_chat
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files: diffulex_bench/data/MATH500.json
+test_split: train
+output_type: generate_until
+doc_to_text: !function llada2_utils.doc_to_text_math_dmax_chat
+doc_to_target: "{{ground_truth_answer}}"
+process_results: !function llada2_utils.process_results_math_dmax_chat
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "<|role_end|>"
+    - "</s>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 2048
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 1.0
+  description: "MATH500 with DMax chat-template parity and llada2-specific evaluation."
