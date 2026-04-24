@@ -42,6 +42,10 @@ def __getattr__(name: str):
         from diffulex_kernel.python.fused_moe_triton import fused_moe
         return fused_moe
 
+    if name == "vllm_fused_moe":
+        from diffulex_kernel.python.vllm_fuse_moe import fused_moe
+        return fused_moe
+
     if name == "fused_expert_packed":
         from diffulex_kernel.python.fused_moe_triton import fused_expert_packed
         return fused_expert_packed
@@ -50,7 +54,7 @@ def __getattr__(name: str):
         from diffulex_kernel.python.fused_topk_triton import fused_topk
         return fused_topk
 
-    if name == "fused_group_limited_topk":
+    if name in ("fused_group_limited_topk", "fused_grouped_topk"):
         from diffulex_kernel.python.fused_topk_triton import fused_group_limited_topk
         return fused_group_limited_topk
 
@@ -64,7 +68,9 @@ __all__ = [
     "store_kv_cache_distinct_layout",
     "load_kv_cache",
     "fused_moe",
+    "vllm_fused_moe",
     "fused_expert_packed",
     "fused_topk",
     "fused_group_limited_topk",
+    "fused_grouped_topk",
 ]

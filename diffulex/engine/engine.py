@@ -1,4 +1,7 @@
 import atexit
+import os
+import signal
+import time
 
 import torch.multiprocessing as mp
 
@@ -21,6 +24,26 @@ from diffulex.utils.output import GenerationOutputs
 logger = get_logger(__name__)
 
 
+def _set_parent_death_signal(sig: int = signal.SIGTERM) -> None:
+    if os.name != "posix":
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        pr_set_pdeathsig = 1
+        libc.prctl(pr_set_pdeathsig, sig)
+    except Exception:
+        logger.debug("Failed to set parent-death signal for worker process.", exc_info=True)
+
+
+def _run_model_runner_worker(config: Config, rank: int, event) -> None:
+    _set_parent_death_signal()
+    if os.getppid() == 1:
+        raise SystemExit("Diffulex worker parent exited before worker initialization.")
+    AutoModelRunner.from_config(config, rank, event)
+
+
 class DiffulexEngine(DiffulexAsyncEngineMixin):
     def __init__(self, model, **kwargs):
         config_fields = {field.name for field in fields(Config)}
@@ -41,26 +64,87 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         ctx = mp.get_context("spawn")
         for i in range(1, self.model_parallel_world_size):
             event = ctx.Event()
-            process = ctx.Process(target=AutoModelRunner.from_config, args=(config, i, event))
+            process = ctx.Process(target=_run_model_runner_worker, args=(config, i, event))
             process.start()
             self.ps.append(process)
             self.events.append(event)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
-        config.tokenizer_vocab_size = len(self.tokenizer)
-        config.eos = self.tokenizer.eos_token_id
-
-        if getattr(self.tokenizer, "mask_token_id", None) is not None and config.mask_token_id != self.tokenizer.mask_token_id:
-            logger.warning(
-                "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
-                config.mask_token_id,
-                self.tokenizer.mask_token_id,
-            )
-            config.mask_token_id = self.tokenizer.mask_token_id
-
-        self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
-        self.scheduler: SchedulerBase | DataParallelScheduler = AutoScheduler.from_config(config)
         self._exited = False
         atexit.register(self.exit)
+        self._install_signal_handlers()
+
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+            config.tokenizer_vocab_size = len(self.tokenizer)
+            config.eos = self.tokenizer.eos_token_id
+
+            if (
+                getattr(self.tokenizer, "mask_token_id", None) is not None
+                and config.mask_token_id != self.tokenizer.mask_token_id
+            ):
+                logger.warning(
+                    "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
+                    config.mask_token_id,
+                    self.tokenizer.mask_token_id,
+                )
+                config.mask_token_id = self.tokenizer.mask_token_id
+
+            self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
+            self.scheduler: SchedulerBase | DataParallelScheduler = AutoScheduler.from_config(config)
+        except BaseException:
+            self.exit()
+            raise
+
+    def _install_signal_handlers(self) -> None:
+        if getattr(self, "_signal_handlers_installed", False):
+            return
+        self._signal_handlers_installed = True
+        self._previous_signal_handlers = {}
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                previous = signal.getsignal(sig)
+                self._previous_signal_handlers[sig] = previous
+
+                def handler(signum, frame, *, _previous=previous):
+                    self.exit()
+                    if callable(_previous):
+                        _previous(signum, frame)
+                    else:
+                        raise SystemExit(128 + signum)
+
+                signal.signal(sig, handler)
+            except Exception:
+                logger.debug("Failed to install signal handler for %s.", sig, exc_info=True)
+
+    @staticmethod
+    def _join_or_stop_process(process, *, timeout: float = 5.0) -> None:
+        try:
+            process.join(timeout=timeout)
+        except Exception:
+            logger.debug("Failed to join worker process %s.", getattr(process, "pid", None), exc_info=True)
+        if not process.is_alive():
+            return
+
+        logger.warning("Terminating stale worker process pid=%s.", process.pid)
+        try:
+            process.terminate()
+        except Exception:
+            logger.debug("Failed to terminate worker process %s.", process.pid, exc_info=True)
+        try:
+            process.join(timeout=timeout)
+        except Exception:
+            logger.debug("Failed to join terminated worker process %s.", process.pid, exc_info=True)
+        if not process.is_alive():
+            return
+
+        logger.warning("Killing stale worker process pid=%s.", process.pid)
+        try:
+            process.kill()
+        except Exception:
+            logger.debug("Failed to kill worker process %s.", process.pid, exc_info=True)
+        try:
+            process.join(timeout=timeout)
+        except Exception:
+            logger.debug("Failed to join killed worker process %s.", process.pid, exc_info=True)
 
     def exit(self):
         if getattr(self, "_exited", False):
@@ -76,10 +160,8 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             except Exception:
                 pass
         for p in getattr(self, "ps", []):
-            try:
-                p.join()
-            except Exception:
-                pass
+            self._join_or_stop_process(p)
+        time.sleep(0)
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):

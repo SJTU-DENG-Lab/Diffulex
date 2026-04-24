@@ -111,17 +111,41 @@ class ModelRunnerBase(
         self.start_worker_loop()
 
     def exit(self):
-        if self.world_size > 1:
-            self.shm.close()
-            dist.barrier()
-            if self.rank == 0:
-                self.shm.unlink()
+        if not getattr(self, "_runner_exited", False):
+            self._runner_exited = True
+        else:
+            return
 
         if not self.enforce_eager:
-            del self.graphs, self.graph_pool
+            for name in ("graphs", "graph_vars", "prefill_graphs", "graph_pool", "graph_capture_stream"):
+                if hasattr(self, name):
+                    try:
+                        delattr(self, name)
+                    except Exception:
+                        logger.debug("Failed to delete CUDA graph attribute %s.", name, exc_info=True)
 
-        torch.cuda.synchronize()
-        dist.destroy_process_group()
+        if hasattr(self, "shm"):
+            try:
+                self.shm.close()
+            except Exception:
+                logger.debug("Failed to close shared memory on rank %s.", self.rank, exc_info=True)
+            if self.rank == 0:
+                try:
+                    self.shm.unlink()
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    logger.debug("Failed to unlink shared memory on rank 0.", exc_info=True)
+
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            logger.debug("CUDA synchronize failed during runner exit on rank %s.", self.rank, exc_info=True)
+        try:
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group()
+        except Exception:
+            logger.debug("Failed to destroy process group on rank %s.", self.rank, exc_info=True)
         reset_parallel_state()
 
     def start_worker_loop(self):
@@ -145,11 +169,18 @@ class ModelRunnerBase(
                 self.loop()
 
     def loop(self):
-        while True:
-            method_name, args = self.read_shm()
-            self.call(method_name, *args)
-            if method_name == "exit":
-                break
+        try:
+            while True:
+                method_name, args = self.read_shm()
+                self.call(method_name, *args)
+                if method_name == "exit":
+                    break
+        except KeyboardInterrupt:
+            self.exit()
+            raise
+        except BaseException:
+            self.exit()
+            raise
 
     def read_shm(self):
         assert self.world_size > 1 and self.rank

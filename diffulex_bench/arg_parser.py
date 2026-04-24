@@ -15,10 +15,15 @@ MODEL_NAME_CHOICES = [
     "llada2_moe",
     "llada2_mini",
     "llada2dot1_mini",
+    "llada2_mini_dmax",
 ]
 
 DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
 TOKEN_MERGE_MODE_CHOICES = ["dmax_topk", "iter_smooth_topk"]
+ATTN_IMPL_CHOICES = ["triton", "naive"]
+MOE_GEMM_IMPL_CHOICES = ["triton", "vllm", "naive"]
+MOE_DISPATCHER_BACKEND_CHOICES = ["standard", "naive", "deepep"]
+DEEP_EP_MODE_CHOICES = ["normal", "low_latency", "auto"]
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
@@ -331,6 +336,40 @@ Examples:
         default=None,
         help="Interpolation weight for token merge",
     )
+    parser.add_argument(
+        "--attn-impl",
+        type=str,
+        default=None,
+        choices=ATTN_IMPL_CHOICES,
+        help="Attention implementation",
+    )
+    parser.add_argument(
+        "--moe-dispatcher-backend",
+        type=str,
+        default=None,
+        choices=MOE_DISPATCHER_BACKEND_CHOICES,
+        help="MoE token dispatcher backend",
+    )
+    parser.add_argument(
+        "--moe-gemm-impl",
+        type=str,
+        default=None,
+        choices=MOE_GEMM_IMPL_CHOICES,
+        help="MoE GEMM implementation",
+    )
+    parser.add_argument(
+        "--deepep-mode",
+        type=str,
+        default=None,
+        choices=DEEP_EP_MODE_CHOICES,
+        help="DeepEP dispatcher mode",
+    )
+    parser.add_argument(
+        "--deepep-num-max-dispatch-tokens-per-rank",
+        type=int,
+        default=None,
+        help="DeepEP max dispatch tokens per rank",
+    )
 
     # D2F-specific arguments
     parser.add_argument(
@@ -369,6 +408,48 @@ Examples:
         type=int,
         default=None,
         help="Number of active diffusion blocks in buffer",
+    )
+    parser.add_argument(
+        "--enable-prefill-cudagraph",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable lazy CUDA graph capture for block-aligned prefill buckets",
+    )
+    parser.add_argument(
+        "--prefill-cudagraph-max-len",
+        type=int,
+        default=None,
+        help="Maximum prefill bucket length to capture; 0 uses max_model_len",
+    )
+    parser.add_argument(
+        "--enable-torch-compile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable torch.compile where supported by the engine",
+    )
+    parser.add_argument(
+        "--enable-cudagraph-torch-compile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Experimental: allow torch.compile inside decode CUDA graph capture",
+    )
+    parser.add_argument(
+        "--torch-compile-mode",
+        type=str,
+        default=None,
+        help="torch.compile mode",
+    )
+    parser.add_argument(
+        "--auto-max-nfe-warmup-steps",
+        type=int,
+        default=None,
+        help="Warmup steps before deriving max_nfe from per-request average TPF when max_nfe is unset",
+    )
+    parser.add_argument(
+        "--auto-max-nfe-tpf-floor",
+        type=float,
+        default=None,
+        help="Minimum TPF used when deriving max_nfe from max_tokens",
     )
     parser.add_argument(
         "--multi-block-prefix-full",

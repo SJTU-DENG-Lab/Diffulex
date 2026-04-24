@@ -1,7 +1,4 @@
-import os
-import importlib.util
 from abc import ABC
-from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -19,44 +16,29 @@ from diffulex_kernel import fused_moe
 from diffulex.layer.activation import SiluAndMul
 from diffulex.layer.linear import ColumnParallelLinear, RowParallelLinear
 
-_EXTERNAL_DMAX_FUSED_MOE = None
-_EXTERNAL_DMAX_FUSED_MOE_LOAD_ERR: Exception | None = None
+_VLLM_FUSED_MOE = None
+_VLLM_FUSED_MOE_LOAD_ERR: Exception | None = None
 
 
-def _load_external_dmax_fused_moe():
-    """Load DMax/dInfer's fused_moe implementation on demand.
+def _load_vllm_fused_moe():
+    """Load the vendored vLLM fused_moe implementation on demand.
 
-    This is a pure A/B backend for numeric diagnosis. If the external module
-    is unavailable, return None and let caller fallback.
+    The vendored module imports vLLM, so keep this lazy to avoid making vLLM a
+    hard dependency unless the vLLM MoE backend is explicitly selected.
     """
-    global _EXTERNAL_DMAX_FUSED_MOE, _EXTERNAL_DMAX_FUSED_MOE_LOAD_ERR
-    if _EXTERNAL_DMAX_FUSED_MOE is not None:
-        return _EXTERNAL_DMAX_FUSED_MOE
-    if _EXTERNAL_DMAX_FUSED_MOE_LOAD_ERR is not None:
-        return None
-
-    fuse_path = os.environ.get(
-        "DIFFULEX_DMAX_FUSED_MOE_PATH",
-        "/home/jyj/workspace/denglab-diffulex/DMax/dInfer/tools/fuse_moe.py",
-    )
-    path = Path(fuse_path)
-    if not path.exists():
-        _EXTERNAL_DMAX_FUSED_MOE_LOAD_ERR = FileNotFoundError(f"Missing external fused_moe file: {path}")
+    global _VLLM_FUSED_MOE, _VLLM_FUSED_MOE_LOAD_ERR
+    if _VLLM_FUSED_MOE is not None:
+        return _VLLM_FUSED_MOE
+    if _VLLM_FUSED_MOE_LOAD_ERR is not None:
         return None
 
     try:
-        spec = importlib.util.spec_from_file_location("diffulex_external_dmax_fuse_moe", str(path))
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Unable to load module spec from {path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)  # type: ignore[call-arg]
-        fn = getattr(module, "fused_moe", None)
-        if fn is None:
-            raise AttributeError(f"`fused_moe` not found in {path}")
-        _EXTERNAL_DMAX_FUSED_MOE = fn
-        return _EXTERNAL_DMAX_FUSED_MOE
+        from diffulex_kernel.python.vllm_fuse_moe import fused_moe as vllm_fused_moe
+
+        _VLLM_FUSED_MOE = vllm_fused_moe
+        return _VLLM_FUSED_MOE
     except Exception as exc:
-        _EXTERNAL_DMAX_FUSED_MOE_LOAD_ERR = exc
+        _VLLM_FUSED_MOE_LOAD_ERR = exc
         return None
 
 
@@ -68,7 +50,6 @@ class SharedExpertMLP(nn.Module):
         self.gate_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
         self.up_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
         self.down_proj = RowParallelLinear(intermediate_size, hidden_size, bias=False)
-        self.down_proj.tp_all_reduce_kind = "shared_expert_down_proj"
         self.act_fn = SiluAndMul()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -87,6 +68,7 @@ class FusedMoE(nn.Module, ABC):
         *,
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
+        moe_gemm_impl: str = "triton",
         num_shared_experts: int = 0,
         shared_expert_intermediate_size: int | None = None,
     ) -> None:
@@ -101,6 +83,7 @@ class FusedMoE(nn.Module, ABC):
         self.top_k = top_k
         self.hidden_act = hidden_act
         self.norm_topk_prob = norm_topk_prob
+        self.moe_gemm_impl = str(moe_gemm_impl)
         self.num_shared_experts = num_shared_experts
 
         self.router = build_topk_router(
@@ -129,6 +112,7 @@ class FusedMoE(nn.Module, ABC):
             top_k=get_num_experts_per_tok(config),
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
+            moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
             num_shared_experts=int(getattr(config, "num_shared_experts", 0) or 0),
         )
     
@@ -140,16 +124,6 @@ class FusedMoE(nn.Module, ABC):
         if self.shared_experts is None:
             return routed_states
         shared_states = self.shared_experts(hidden_states)
-        try:
-            from diffulex.model.llada2 import _llada2_debug_enabled, _llada2_debug_store_nested
-        except Exception:
-            _llada2_debug_enabled = None
-            _llada2_debug_store_nested = None
-        if _llada2_debug_enabled is not None and _llada2_debug_enabled():
-            layer_idx = getattr(self, "_llada2_layer_idx", None)
-            if layer_idx is not None:
-                _llada2_debug_store_nested("moe", f"layer_{layer_idx}_routed_output", routed_states)
-                _llada2_debug_store_nested("moe", f"layer_{layer_idx}_shared_output", shared_states)
         return routed_states + shared_states
 
     @staticmethod
@@ -205,6 +179,7 @@ class FusedMoE(nn.Module, ABC):
         except TypeError:
             return self._phase_from_prefill_flags(int(status_table) == 0)
 
+    @torch.compiler.disable
     def expert_gemm(
         self,
         impl: str,
@@ -216,16 +191,6 @@ class FusedMoE(nn.Module, ABC):
         local_expert_start: int = 0,
         hidden_act: str = "silu"
     ) -> torch.Tensor:
-        try:
-            from diffulex.model.llada2 import _llada2_debug_enabled, _llada2_debug_store_nested
-        except Exception:
-            _llada2_debug_enabled = None
-            _llada2_debug_store_nested = None
-        moe_impl_override = os.getenv("DIFFULEX_MOE_GEMM_IMPL", "").strip().lower()
-        if moe_impl_override:
-            impl = moe_impl_override
-        if os.getenv("DIFFULEX_REFERENCE_MOE_GEMM", "0") == "1":
-            impl = "naive"
         if impl == "triton":
             out = fused_moe(
                 hidden_states=hidden_states,
@@ -236,14 +201,10 @@ class FusedMoE(nn.Module, ABC):
                 local_expert_start=local_expert_start,
                 hidden_act=hidden_act,
             )
-            if _llada2_debug_enabled is not None and _llada2_debug_enabled():
-                layer_idx = getattr(self, "_llada2_layer_idx", None)
-                if layer_idx is not None:
-                    _llada2_debug_store_nested("moe", f"layer_{layer_idx}_expert_gemm_output", out.clone())
             return out
-        if impl == "dmax_vllm":
-            ext_fused_moe = _load_external_dmax_fused_moe()
-            if ext_fused_moe is None:
+        if impl == "vllm":
+            vllm_fused_moe = _load_vllm_fused_moe()
+            if vllm_fused_moe is None:
                 # Soft fallback to current kernel so diagnostics can continue.
                 out = fused_moe(
                     hidden_states=hidden_states,
@@ -260,7 +221,7 @@ class FusedMoE(nn.Module, ABC):
                 valid = (local_topk_ids >= 0) & (local_topk_ids < w13.shape[0])
                 safe_topk_ids = torch.where(valid, local_topk_ids, torch.zeros_like(local_topk_ids))
                 safe_topk_weights = torch.where(valid, topk_weights, torch.zeros_like(topk_weights))
-                out = ext_fused_moe(
+                out = vllm_fused_moe(
                     hidden_states=hidden_states,
                     w1=w13,
                     w2=w2,
@@ -268,10 +229,6 @@ class FusedMoE(nn.Module, ABC):
                     topk_ids=safe_topk_ids,
                     inplace=False,
                 )
-            if _llada2_debug_enabled is not None and _llada2_debug_enabled():
-                layer_idx = getattr(self, "_llada2_layer_idx", None)
-                if layer_idx is not None:
-                    _llada2_debug_store_nested("moe", f"layer_{layer_idx}_expert_gemm_output", out.clone())
             return out
         if impl == "naive":
             num_tokens, hidden_size = hidden_states.shape
@@ -307,14 +264,6 @@ class FusedMoE(nn.Module, ABC):
                 
                 final_hidden_states[token_idx] = token_out.to(hidden_states.dtype)
 
-            if _llada2_debug_enabled is not None and _llada2_debug_enabled():
-                layer_idx = getattr(self, "_llada2_layer_idx", None)
-                if layer_idx is not None:
-                    _llada2_debug_store_nested(
-                        "moe",
-                        f"layer_{layer_idx}_expert_gemm_output",
-                        final_hidden_states.clone(),
-                    )
             return final_hidden_states
         raise ValueError(f"Unknown MoE expert_gemm impl: {impl}")
 

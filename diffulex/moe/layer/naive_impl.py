@@ -22,6 +22,7 @@ class NaiveFusedMoE(FusedMoE):
         *,
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
+        moe_gemm_impl: str = "triton",
         num_shared_experts: int = 0,
         shared_expert_intermediate_size: int | None = None,
     ) -> None:
@@ -32,6 +33,7 @@ class NaiveFusedMoE(FusedMoE):
             top_k,
             hidden_act=hidden_act,
             norm_topk_prob=norm_topk_prob,
+            moe_gemm_impl=moe_gemm_impl,
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=shared_expert_intermediate_size,
         )
@@ -53,7 +55,7 @@ class NaiveFusedMoE(FusedMoE):
         topk_weights = topk_output.weights
         topk_ids = topk_output.ids
         final_hidden_states = self.expert_gemm(
-            impl="triton",
+            impl=self.moe_gemm_impl,
             hidden_states=flat_hidden_states,
             w13=self.w13,
             w2=self.w2,

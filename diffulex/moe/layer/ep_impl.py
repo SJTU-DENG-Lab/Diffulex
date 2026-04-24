@@ -32,6 +32,7 @@ class EPFusedMoE(FusedMoE):
         *,
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
+        moe_gemm_impl: str = "triton",
         dispatcher_backend: str = "naive",
         deepep_mode: str = "auto",
         deepep_num_max_dispatch_tokens_per_rank: int = 256,
@@ -45,6 +46,7 @@ class EPFusedMoE(FusedMoE):
             top_k,
             hidden_act=hidden_act,
             norm_topk_prob=norm_topk_prob,
+            moe_gemm_impl=moe_gemm_impl,
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=shared_expert_intermediate_size,
         )
@@ -105,6 +107,7 @@ class EPFusedMoE(FusedMoE):
             top_k=get_num_experts_per_tok(config),
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
+            moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
             dispatcher_backend=getattr(config, "moe_dispatcher_backend", "naive"),
             deepep_mode=getattr(config, "deepep_mode", "auto"),
             deepep_num_max_dispatch_tokens_per_rank=getattr(
@@ -200,7 +203,7 @@ class EPFusedMoE(FusedMoE):
             dtype=weight_dtype,
         )
         recv_slot_outputs = self.expert_gemm(
-            impl="triton",
+            impl=self.moe_gemm_impl,
             hidden_states=recv_hidden_states,
             w13=self.w13,
             w2=self.w2,

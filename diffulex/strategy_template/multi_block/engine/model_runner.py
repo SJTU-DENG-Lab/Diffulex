@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import gc
+from contextlib import contextmanager, nullcontext
+
 import torch
+import torch.distributed as dist
 
 from tqdm import tqdm
 
@@ -17,7 +21,23 @@ from diffulex.logger import get_logger
 logger = get_logger(__name__)
 
 
+@contextmanager
+def _freeze_gc_for_cudagraph():
+    was_enabled = gc.isenabled()
+    if was_enabled:
+        gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
 class MultiBlockModelRunnerTemplate(ModelRunnerBase):
+    @staticmethod
+    def _round_up_to_multiple(value: int, multiple: int) -> int:
+        return ((value + multiple - 1) // multiple) * multiple
+
     def _prefill_warmup(self):
         logger.info("Warming up prefill...")
 
@@ -43,6 +63,94 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             req.postprocess()
 
         torch.cuda.empty_cache()
+
+    def _torch_compile_enabled_for_capture(self) -> bool:
+        # dInfer only compiles selected decode graph shapes after model-side
+        # capture/compile boundaries are prepared. Keep this disabled here until
+        # those boundaries are fully ported; eager CUDA graph capture is stable
+        # and is also what dInfer uses for prefill.
+        return bool(
+            getattr(self.config, "enable_torch_compile", True)
+            and getattr(self.config, "enable_cudagraph_torch_compile", False)
+        )
+
+    @contextmanager
+    def _patch_model_forward_for_cuda_graph_capture(self, num_tokens: int):
+        if not self._torch_compile_enabled_for_capture():
+            yield False
+            return
+
+        original_forward = self.model.forward
+        mode = str(getattr(self.config, "torch_compile_mode", "reduce-overhead") or "reduce-overhead")
+        try:
+            self.model.forward = torch.compile(
+                torch.no_grad()(original_forward),
+                mode=mode,
+                fullgraph=False,
+                dynamic=False,
+            )
+            yield True
+        finally:
+            self.model.forward = original_forward
+
+    def _get_graph_capture_stream(self) -> torch.cuda.Stream:
+        stream = getattr(self, "graph_capture_stream", None)
+        if stream is None:
+            stream = torch.cuda.Stream()
+            self.graph_capture_stream = stream
+        return stream
+
+    def _get_graph_pool(self):
+        pool = getattr(self, "graph_pool", None)
+        if pool is None:
+            pool = torch.cuda.graph_pool_handle()
+            self.graph_pool = pool
+        return pool
+
+    def _graph_capture_barrier(self) -> None:
+        if self.world_size <= 1:
+            return
+        try:
+            if dist.is_available() and dist.is_initialized():
+                dist.barrier()
+        except Exception:
+            logger.debug("Distributed barrier failed before CUDA graph capture on rank %s.", self.rank, exc_info=True)
+            raise
+
+    def _capture_model_forward_graph(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        outputs: torch.Tensor,
+        num_tokens: int,
+        *,
+        allow_compile: bool = False,
+    ) -> torch.cuda.CUDAGraph:
+        def run_once() -> None:
+            outputs[:num_tokens] = self.model(input_ids[:num_tokens], positions[:num_tokens])
+
+        stream = self._get_graph_capture_stream()
+        pool = self._get_graph_pool()
+        graph = torch.cuda.CUDAGraph()
+        compile_capture = allow_compile and self._torch_compile_enabled_for_capture()
+
+        patch_context = (
+            self._patch_model_forward_for_cuda_graph_capture(num_tokens) if compile_capture else nullcontext(False)
+        )
+        with _freeze_gc_for_cudagraph(), patch_context:
+            for _ in range(2):
+                torch.cuda.synchronize()
+                self._graph_capture_barrier()
+                with torch.cuda.stream(stream):
+                    run_once()
+                stream.synchronize()
+
+            torch.cuda.synchronize()
+            self._graph_capture_barrier()
+            with torch.cuda.graph(graph, pool=pool, stream=stream):
+                run_once()
+            stream.synchronize()
+        return graph
 
     @staticmethod
     def _graph_seq_batch_sizes(max_num_seqs: int) -> list[int]:
@@ -146,6 +254,239 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             prefix_len=0,
             padded_prefix_len=0,
         )
+
+    def _prefill_graph_max_len(self) -> int:
+        configured = int(getattr(self.config, "prefill_cudagraph_max_len", 0) or 0)
+        max_len = configured if configured > 0 else int(self.config.max_model_len)
+        return min(
+            self._round_up_to_multiple(max_len, self.block_size),
+            self._round_up_to_multiple(int(self.config.max_num_batched_tokens), self.block_size),
+        )
+
+    def _prefill_graph_bucket_len(self, num_tokens: int) -> int:
+        return self._round_up_to_multiple(int(num_tokens), self.block_size)
+
+    def _prefill_graph_req_capacity(self) -> int:
+        # One extra row is reserved for a padding-only phantom request when a
+        # runtime prefill length is smaller than the captured bucket.
+        return int(self.config.max_num_reqs) + 1
+
+    @staticmethod
+    def _cuda_graph_device() -> torch.device:
+        return torch.device(f"cuda:{torch.cuda.current_device()}")
+
+    def _can_use_prefill_graph(self, attn_metadata: AttnMetaDataBase, num_tokens: int) -> bool:
+        if self.enforce_eager or not bool(getattr(self.config, "enable_prefill_cudagraph", True)):
+            return False
+        if num_tokens <= 0 or attn_metadata.status_table is None:
+            return False
+        if not bool((attn_metadata.status_table == 0).all().item()):
+            return False
+        bucket_len = self._prefill_graph_bucket_len(num_tokens)
+        if bucket_len > self._prefill_graph_max_len():
+            return False
+        if bucket_len > int(self.config.max_num_batched_tokens):
+            return False
+        needs_padding_row = bucket_len > num_tokens
+        required_rows = int(attn_metadata.status_table.numel()) + (1 if needs_padding_row else 0)
+        return required_rows <= self._prefill_graph_req_capacity()
+
+    def _init_prefill_graph_extra_metadata(
+        self,
+        attn_metadata: AttnMetaDataBase,
+        graph_vars: dict[str, torch.Tensor],
+        bucket_len: int,
+    ) -> None:
+        return None
+
+    def _prefill_graph_extra_vars(self, bucket_len: int, device: torch.device) -> dict[str, torch.Tensor]:
+        return {}
+
+    def _bind_prefill_graph_extra_metadata(
+        self,
+        attn_metadata: AttnMetaDataBase,
+        graph_vars: dict[str, torch.Tensor],
+        bucket_len: int,
+        runtime_num_tokens: int,
+        source_attn_metadata: AttnMetaDataBase | None = None,
+    ) -> None:
+        return None
+
+    def _set_replay_prefill_graph_metadata(
+        self,
+        graph_vars: dict[str, torch.Tensor],
+        bucket_len: int,
+        graph_num_reqs: int,
+    ) -> AttnMetaDataBase:
+        self.set_attn_metadata(
+            is_prefill=[True] * graph_num_reqs,
+            slot_mapping=graph_vars["slot_mapping"],
+            context_lens=graph_vars["context_lens"][:graph_num_reqs],
+            cu_seqlens_q=graph_vars["cu_seqlens_q"][: graph_num_reqs + 1],
+            cu_seqlens_k=graph_vars["cu_seqlens_k"][: graph_num_reqs + 1],
+            max_seqlen_q=bucket_len,
+            max_seqlen_k=bucket_len,
+            page_size=self.config.kv_cache_page_size,
+            page_tables=graph_vars["page_tables"][:graph_num_reqs],
+            block_size=self.block_size,
+            kv_cache_layout=self.config.kv_cache_layout,
+        )
+        attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
+        attn_metadata.init_multi_block(
+            valid_slices=graph_vars["valid_slices"][:graph_num_reqs],
+            buffer_size=self.config.buffer_size,
+            is_prefix_full=self.is_prefix_full,
+            status_table=graph_vars["status_table"][:graph_num_reqs],
+            prefix_lens=graph_vars["prefix_lens"][:graph_num_reqs],
+            padded_prefix_lens=graph_vars["padded_prefix_lens"][:graph_num_reqs],
+        )
+        return attn_metadata
+
+    @torch.inference_mode()
+    def _capture_prefill_cudagraph(self, bucket_len: int):
+        if not hasattr(self, "prefill_graphs"):
+            self.prefill_graphs = {}
+        if bucket_len in self.prefill_graphs:
+            return self.prefill_graphs[bucket_len]
+
+        config = self.config
+        hf_config = config.hf_config
+        req_capacity = self._prefill_graph_req_capacity()
+        max_num_pages = (max(config.max_model_len, bucket_len) + self.page_size - 1) // self.page_size
+        device = self._cuda_graph_device()
+
+        input_ids = torch.zeros(bucket_len, dtype=torch.int64, device=device)
+        positions = torch.zeros(bucket_len, dtype=torch.int64, device=device)
+        slot_mapping = torch.full((bucket_len,), -1, dtype=torch.int32, device=device)
+        context_lens = torch.zeros(req_capacity, dtype=torch.int32, device=device)
+        page_tables = torch.full((req_capacity, max_num_pages), -1, dtype=torch.int32, device=device)
+        valid_slices = torch.zeros(req_capacity, dtype=torch.int32, device=device)
+        status_table = torch.zeros(req_capacity, dtype=torch.int32, device=device)
+        prefix_lens = torch.zeros(req_capacity, dtype=torch.int32, device=device)
+        padded_prefix_lens = torch.zeros(req_capacity, dtype=torch.int32, device=device)
+        outputs = torch.zeros(bucket_len, hf_config.hidden_size, device=device)
+
+        cu_seqlens = torch.full((req_capacity + 1,), bucket_len, dtype=torch.int32, device=device)
+        cu_seqlens[0] = 0
+        valid_slices[0] = bucket_len
+
+        self.set_attn_metadata(
+            is_prefill=[True] * req_capacity,
+            slot_mapping=slot_mapping,
+            context_lens=context_lens,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=bucket_len,
+            max_seqlen_k=bucket_len,
+            page_size=config.kv_cache_page_size,
+            page_tables=page_tables,
+            block_size=self.block_size,
+            kv_cache_layout=config.kv_cache_layout,
+        )
+        attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
+        attn_metadata.init_multi_block(
+            valid_slices=valid_slices,
+            buffer_size=config.buffer_size,
+            is_prefix_full=self.is_prefix_full,
+            status_table=status_table,
+            prefix_lens=prefix_lens,
+            padded_prefix_lens=padded_prefix_lens,
+        )
+        graph_vars = dict(
+            input_ids=input_ids,
+            positions=positions,
+            slot_mapping=slot_mapping,
+            context_lens=context_lens,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            page_tables=page_tables,
+            valid_slices=valid_slices,
+            status_table=status_table,
+            prefix_lens=prefix_lens,
+            padded_prefix_lens=padded_prefix_lens,
+            outputs=outputs,
+        )
+        graph_vars.update(self._prefill_graph_extra_vars(bucket_len, device))
+        self._init_prefill_graph_extra_metadata(attn_metadata, graph_vars, bucket_len)
+
+        graph = self._capture_model_forward_graph(input_ids, positions, outputs, bucket_len)
+        if self.graph_pool is None:
+            self.graph_pool = graph.pool()
+        torch.cuda.synchronize()
+        self.reset_attn_metadata()
+
+        self.prefill_graphs[bucket_len] = (graph, graph_vars, req_capacity)
+        return self.prefill_graphs[bucket_len]
+
+    def _copy_common_graph_inputs(
+        self,
+        graph_vars: dict[str, torch.Tensor],
+        attn_metadata: AttnMetaDataBase,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        num_tokens: int,
+        num_reqs: int,
+    ) -> None:
+        for key, value in graph_vars.items():
+            if key == "outputs":
+                continue
+            if key in ("slot_mapping", "page_tables"):
+                value.fill_(-1)
+            else:
+                value.zero_()
+
+        graph_vars["input_ids"][:num_tokens] = input_ids
+        graph_vars["positions"][:num_tokens] = positions
+        graph_vars["slot_mapping"][:num_tokens] = attn_metadata.slot_mapping
+        graph_vars["context_lens"][:num_reqs] = attn_metadata.context_lens
+        graph_vars["cu_seqlens_q"][: num_reqs + 1] = attn_metadata.cu_seqlens_q
+        graph_vars["cu_seqlens_k"][: num_reqs + 1] = attn_metadata.cu_seqlens_k
+        graph_vars["valid_slices"][:num_reqs] = attn_metadata.valid_slices
+        graph_vars["status_table"][:num_reqs] = attn_metadata.status_table
+        graph_vars["prefix_lens"][:num_reqs] = attn_metadata.prefix_lens
+        graph_vars["padded_prefix_lens"][:num_reqs] = attn_metadata.padded_prefix_lens
+        pt_w = attn_metadata.page_tables.size(1)
+        graph_vars["page_tables"][:num_reqs, :pt_w] = attn_metadata.page_tables
+        if pt_w < graph_vars["page_tables"].size(1):
+            graph_vars["page_tables"][:, pt_w:].fill_(-1)
+
+    @torch.inference_mode()
+    def _run_prefill_cudagraph(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        attn_metadata: AttnMetaDataBase,
+    ):
+        num_tokens = int(input_ids.size(0))
+        bucket_len = self._prefill_graph_bucket_len(num_tokens)
+        graph, graph_vars, req_capacity = self._capture_prefill_cudagraph(bucket_len)
+        num_reqs = int(attn_metadata.status_table.numel())
+        has_padding = bucket_len > num_tokens
+        graph_num_reqs = num_reqs + (1 if has_padding else 0)
+        if graph_num_reqs > req_capacity:
+            return self.model.compute_logits(self.model(input_ids, positions))
+
+        self._copy_common_graph_inputs(graph_vars, attn_metadata, input_ids, positions, num_tokens, num_reqs)
+        if has_padding:
+            graph_vars["cu_seqlens_q"][num_reqs + 1] = bucket_len
+            graph_vars["cu_seqlens_k"][num_reqs + 1] = bucket_len
+            graph_vars["valid_slices"][num_reqs] = bucket_len
+        for i in range(graph_num_reqs, req_capacity):
+            graph_vars["cu_seqlens_q"][i + 1] = graph_vars["cu_seqlens_q"][i]
+            graph_vars["cu_seqlens_k"][i + 1] = graph_vars["cu_seqlens_k"][i]
+
+        source_attn_metadata = attn_metadata
+        attn_metadata = self._set_replay_prefill_graph_metadata(graph_vars, bucket_len, graph_num_reqs)
+        self._bind_prefill_graph_extra_metadata(
+            attn_metadata,
+            graph_vars,
+            bucket_len,
+            num_tokens,
+            source_attn_metadata=source_attn_metadata,
+        )
+
+        graph.replay()
+        return self.model.compute_logits(graph_vars["outputs"][:num_tokens])
 
     def prepare_chunked_prefill_multi_block(self: ModelRunnerBase, reqs: list[DllmReq]):
         input_ids: list[int] = []
@@ -271,9 +612,13 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
     ):
         attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
 
+        if (attn_metadata.status_table == 0).any():
+            if self._can_use_prefill_graph(attn_metadata, int(input_ids.size(0))):
+                return self._run_prefill_cudagraph(input_ids, positions, attn_metadata)
+            return self.model.compute_logits(self.model(input_ids, positions))
+
         if (
-            (attn_metadata.status_table == 0).any()
-            or self.enforce_eager
+            self.enforce_eager
             or input_ids.size(0) > 512 * (self.config.buffer_size * self.config.block_size)
         ):
             return self.model.compute_logits(self.model(input_ids, positions))
@@ -296,33 +641,8 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
                 f"buffer_size={self.config.buffer_size}"
             )
             
-        # CUDA graph capture uses `slot_mapping=-1` / `page_tables=-1` for padding.
-        # `zero_()` would turn them into 0: store kernel treats 0 as a valid slot (corrupts
-        # KV at slot 0); attention Stage-1 treats page id 0 as a valid physical page.
-        for key, value in graph_vars.items():
-            if key == "outputs":
-                continue
-            if key in ("slot_mapping", "page_tables"):
-                value.fill_(-1)
-            else:
-                value.zero_()
-
         num_reqs = attn_metadata.num_reqs
-        graph_vars["input_ids"][:num_tokens] = input_ids
-        graph_vars["positions"][:num_tokens] = positions
-        graph_vars["slot_mapping"][:num_tokens] = attn_metadata.slot_mapping
-        graph_vars["context_lens"][:num_reqs] = attn_metadata.context_lens
-        graph_vars["cu_seqlens_q"][: num_reqs + 1] = attn_metadata.cu_seqlens_q
-        graph_vars["cu_seqlens_k"][: num_reqs + 1] = attn_metadata.cu_seqlens_k
-        graph_vars["valid_slices"][:num_reqs] = attn_metadata.valid_slices
-        graph_vars["status_table"][:num_reqs] = attn_metadata.status_table
-        graph_vars["prefix_lens"][:num_reqs] = attn_metadata.prefix_lens
-        graph_vars["padded_prefix_lens"][:num_reqs] = attn_metadata.padded_prefix_lens
-        pt_w = attn_metadata.page_tables.size(1)
-        graph_vars["page_tables"][:num_reqs, :pt_w] = attn_metadata.page_tables
-        # Trailing columns must stay -1 (not 0): kernel loads page id 0 as a real block.
-        if pt_w < graph_vars["page_tables"].size(1):
-            graph_vars["page_tables"][:, pt_w:].fill_(-1)
+        self._copy_common_graph_inputs(graph_vars, attn_metadata, input_ids, positions, num_tokens, num_reqs)
 
         # Graph was captured for `captured_num_seqs` requests; tail cu_seqlens must be
         # padded so phantom rows have q_len/k_len == 0 (otherwise cu[i+1]==0 gives negative len).
@@ -375,23 +695,24 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
         chunk_size = block_size * buffer_size
 
         max_num_tokens = max_num_seqs * chunk_size
+        device = self._cuda_graph_device()
 
-        input_ids = torch.zeros(max_num_tokens, dtype=torch.int64)
-        positions = torch.zeros(max_num_tokens, dtype=torch.int64)
-        slot_mapping = torch.full((max_num_tokens,), -1, dtype=torch.int32)
-        context_lens = torch.zeros(max_num_seqs, dtype=torch.int32)
-        page_tables = torch.zeros(max_num_seqs, max_num_pages, dtype=torch.int32)
-        valid_slices = torch.zeros(max_num_seqs, dtype=torch.int32)
-        status_table = torch.zeros(max_num_seqs, dtype=torch.int32)
-        prefix_lens = torch.zeros(max_num_seqs, dtype=torch.int32)
-        padded_prefix_lens = torch.zeros(max_num_seqs, dtype=torch.int32)
-        outputs = torch.zeros(max_num_tokens, hf_config.hidden_size)
+        input_ids = torch.zeros(max_num_tokens, dtype=torch.int64, device=device)
+        positions = torch.zeros(max_num_tokens, dtype=torch.int64, device=device)
+        slot_mapping = torch.full((max_num_tokens,), -1, dtype=torch.int32, device=device)
+        context_lens = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
+        page_tables = torch.zeros(max_num_seqs, max_num_pages, dtype=torch.int32, device=device)
+        valid_slices = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
+        status_table = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
+        prefix_lens = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
+        padded_prefix_lens = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
+        outputs = torch.zeros(max_num_tokens, hf_config.hidden_size, device=device)
 
-        cu_seqlens_q = torch.zeros(max_num_seqs + 1, dtype=torch.int32)
+        cu_seqlens_q = torch.zeros(max_num_seqs + 1, dtype=torch.int32, device=device)
         for i in range(max_num_seqs + 1):
             cu_seqlens_q[i] = i * chunk_size
 
-        cu_seqlens_k = torch.zeros(max_num_seqs + 1, dtype=torch.int32)
+        cu_seqlens_k = torch.zeros(max_num_seqs + 1, dtype=torch.int32, device=device)
         for i in range(max_num_seqs + 1):
             cu_seqlens_k[i] = i * config.max_model_len
 
@@ -400,11 +721,11 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
         for num_seqs in seq_bs_list:
             self.graph_bs.append(num_seqs * chunk_size)
         self.graphs = {}
+        self.prefill_graphs = {}
         self.graph_pool = None
 
         for num_tokens in tqdm(reversed(self.graph_bs), desc="Capturing CUDA graphs"):
             num_seqs = num_tokens // chunk_size
-            graph = torch.cuda.CUDAGraph()
 
             self.set_attn_metadata(
                 False,
@@ -429,9 +750,7 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
                 padded_prefix_lens=padded_prefix_lens[:num_seqs],
             )
 
-            outputs[:num_tokens] = self.model(input_ids[:num_tokens], positions[:num_tokens])  # warmup
-            with torch.cuda.graph(graph, self.graph_pool):
-                outputs[:num_tokens] = self.model(input_ids[:num_tokens], positions[:num_tokens])  # capture
+            graph = self._capture_model_forward_graph(input_ids, positions, outputs, num_tokens, allow_compile=True)
             if self.graph_pool is None:
                 self.graph_pool = graph.pool()
             self.graphs[num_tokens] = graph

@@ -19,9 +19,21 @@ engine:
   max_num_batched_tokens: 4096
   max_num_reqs: 128
 
-  enforce_eager: true
+  enforce_eager: false
+  attn_impl: "triton"
+  enable_prefill_cudagraph: true
+  prefill_cudagraph_max_len: 0
+  enable_torch_compile: true
+  enable_cudagraph_torch_compile: false
+  torch_compile_mode: "reduce-overhead"
+  auto_max_nfe_warmup_steps: 8
+  auto_max_nfe_tpf_floor: 1.0
   enable_prefix_caching: true
   kv_cache_layout: "unified"
+  moe_dispatcher_backend: "standard"
+  moe_gemm_impl: "triton"
+  deepep_mode: "auto"
+  deepep_num_max_dispatch_tokens_per_rank: 256
   page_size: 32
   token_merge_mode: "dmax_topk"
   token_merge_top_k: 1

@@ -64,13 +64,8 @@ def _run_case(
     block_size: int,
     page_size: int,
     master_port: int,
-    disable_autotune: bool,
 ) -> dict:
     child_env = os.environ.copy()
-    if disable_autotune:
-        child_env["DIFFULEX_DISABLE_CHUNKED_PREFILL_AUTOTUNE"] = "1"
-    else:
-        child_env.pop("DIFFULEX_DISABLE_CHUNKED_PREFILL_AUTOTUNE", None)
 
     max_tokens = int(os.environ.get("DIFFULEX_MATRIX_MAX_TOKENS", "32"))
     gpu_mem = float(os.environ.get("DIFFULEX_MATRIX_GPU_UTIL", "0.5"))
@@ -126,17 +121,15 @@ finally:
     if proc.returncode != 0:
         raise AssertionError(
             "Pow4 matrix subprocess failed for "
-            f"block_size={block_size}, page_size={page_size}, autotune={'off' if disable_autotune else 'on'}.\n"
+            f"block_size={block_size}, page_size={page_size}.\n"
             f"STDOUT:\n{proc.stdout[-4000:]}\nSTDERR:\n{proc.stderr[-4000:]}"
         )
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def _run_matrix(*, disable_autotune: bool, tmp_path: Path, label: str) -> None:
+def _run_matrix(*, tmp_path: Path, label: str) -> None:
     summary: dict[str, dict] = {}
     base_port = int(os.environ.get("DIFFULEX_MATRIX_BASE_PORT", "2800"))
-    if not disable_autotune:
-        base_port += 200
 
     port_offset = 0
     for block_size, page_sizes in _matrix_cases():
@@ -146,7 +139,6 @@ def _run_matrix(*, disable_autotune: bool, tmp_path: Path, label: str) -> None:
                 block_size=block_size,
                 page_size=page_size,
                 master_port=base_port + port_offset,
-                disable_autotune=disable_autotune,
             )
             port_offset += 1
             group[page_size] = payload
@@ -178,19 +170,13 @@ def _run_matrix(*, disable_autotune: bool, tmp_path: Path, label: str) -> None:
             )
         ]
         assert not mismatches, (
-            f"Pow4 matrix mismatch for block_size={block_size}, "
-            f"autotune={'off' if disable_autotune else 'on'}: {mismatches}"
+            f"Pow4 matrix mismatch for block_size={block_size}: {mismatches}"
         )
 
     out_path = _matrix_outdir(tmp_path, label)
     out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
-def test_page_block_pow4_matrix_autotune_off(tmp_path: Path) -> None:
-    _require_matrix_env("DIFFULEX_RUN_PAGE_BLOCK_POW4_MATRIX")
-    _run_matrix(disable_autotune=True, tmp_path=tmp_path, label="autotune_off")
-
-
 def test_page_block_pow4_matrix_autotune_on(tmp_path: Path) -> None:
     _require_matrix_env("DIFFULEX_RUN_PAGE_BLOCK_POW4_MATRIX_AUTOTUNE")
-    _run_matrix(disable_autotune=False, tmp_path=tmp_path, label="autotune_on")
+    _run_matrix(tmp_path=tmp_path, label="autotune_on")

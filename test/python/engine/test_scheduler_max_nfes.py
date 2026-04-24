@@ -1,5 +1,4 @@
 from collections import deque
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -47,6 +46,12 @@ class _Req:
         self.truncated_response = []
         self.completion_reason = None
         self.token_ids = []
+        self.auto_max_nfe_enabled = max_nfe is None
+        self.auto_max_nfe_warmup_steps = 2
+        self.auto_max_nfe_tpf_floor = 1.0
+        self.auto_max_nfe_token_count = 0
+        self.auto_max_nfe_value = None
+        self.max_new_tokens = 8
 
     @property
     def max_nfe_reached(self) -> bool:
@@ -69,6 +74,19 @@ class _Req:
     def force_deactivate(self, reason=None):
         self.completion_reason = reason
         self.status = DllmReqStatus.COMPLETED
+
+    def update_auto_max_nfe(self):
+        if not self.auto_max_nfe_enabled or self.max_nfe is not None:
+            return
+        self.auto_max_nfe_token_count += max(0, int(self.new_tokens))
+        if self.nfe < self.auto_max_nfe_warmup_steps:
+            return
+        import math
+
+        avg_tpf = self.auto_max_nfe_token_count / max(1, self.nfe)
+        effective_tpf = max(avg_tpf, self.auto_max_nfe_tpf_floor)
+        self.auto_max_nfe_value = max(1, int(math.ceil(self.max_new_tokens / effective_tpf)))
+        self.max_nfe = max(self.nfe, self.auto_max_nfe_value)
 
 
 def test_scheduler_postprocess_kills_req_when_max_nfe_is_reached() -> None:
@@ -94,6 +112,49 @@ def test_scheduler_postprocess_kills_req_when_max_nfe_is_reached() -> None:
     assert req not in scheduler.running_reqs
 
 
+def test_scheduler_derives_max_nfe_from_request_average_tpf_when_unset() -> None:
+    scheduler = _Scheduler()
+    req = _Req(req_id=8, max_nfe=None)
+    req.dllm_blocks = [SimpleNamespace(write_token=lambda token, rel_idx: None)]
+    scheduler.running_reqs.append(req)
+    sample_output = SimpleNamespace(
+        true_local_ids_map={"8": {"0": [0, 1, 2, 3]}},
+        accepted_ids_map={"8": {"0": [0, 1, 2, 3]}},
+        sampled_tokens_map={"8": {"0": [10, 11, 12, 13]}},
+        edit_writes_map={"8": {}},
+    )
+
+    scheduler.postprocess_multi_block([req], sample_output)
+    assert req.max_nfe is None
+    assert req.status == DllmReqStatus.DECODING
+
+    scheduler.postprocess_multi_block([req], sample_output)
+
+    assert req.auto_max_nfe_value == 2
+    assert req.max_nfe == 2
+    assert req.status == DllmReqStatus.FINISHED
+    assert req.completion_reason == "max_nfe_reached"
+
+
+def test_scheduler_does_not_override_explicit_max_nfe() -> None:
+    scheduler = _Scheduler()
+    req = _Req(req_id=18, max_nfe=10)
+    req.new_tokens = 4
+    scheduler.running_reqs.append(req)
+    sample_output = SimpleNamespace(
+        true_local_ids_map={"18": {}},
+        accepted_ids_map={"18": {}},
+        sampled_tokens_map={"18": {}},
+        edit_writes_map={"18": {}},
+    )
+
+    scheduler.postprocess_multi_block([req], sample_output)
+
+    assert req.max_nfe == 10
+    assert req.auto_max_nfe_value is None
+    assert req.status == DllmReqStatus.DECODING
+
+
 def test_scheduler_postprocess_kills_req_when_repetition_run_is_too_long() -> None:
     scheduler = _Scheduler()
     req = _Req(req_id=9, max_repetition_run=3)
@@ -111,6 +172,48 @@ def test_scheduler_postprocess_kills_req_when_repetition_run_is_too_long() -> No
     assert req.nfe == 1
     assert req.status == DllmReqStatus.FINISHED
     assert scheduler.freed_req_ids == [9]
+    assert req not in scheduler.running_reqs
+
+
+def test_scheduler_postprocess_kills_req_when_max_new_tokens_is_reached() -> None:
+    scheduler = _Scheduler()
+    req = _Req(req_id=10)
+    req.max_new_tokens_reached = True
+    scheduler.running_reqs.append(req)
+    sample_output = SimpleNamespace(
+        true_local_ids_map={"10": {}},
+        accepted_ids_map={"10": {}},
+        sampled_tokens_map={"10": {}},
+        edit_writes_map={"10": {}},
+    )
+
+    scheduler.postprocess_multi_block([req], sample_output)
+
+    assert req.nfe == 1
+    assert req.status == DllmReqStatus.FINISHED
+    assert req.completion_reason == "max_new_tokens_reached"
+    assert scheduler.freed_req_ids == [10]
+    assert req not in scheduler.running_reqs
+
+
+def test_scheduler_postprocess_kills_req_when_max_model_len_is_reached() -> None:
+    scheduler = _Scheduler()
+    req = _Req(req_id=12)
+    req.max_model_len_reached = True
+    scheduler.running_reqs.append(req)
+    sample_output = SimpleNamespace(
+        true_local_ids_map={"12": {}},
+        accepted_ids_map={"12": {}},
+        sampled_tokens_map={"12": {}},
+        edit_writes_map={"12": {}},
+    )
+
+    scheduler.postprocess_multi_block([req], sample_output)
+
+    assert req.nfe == 1
+    assert req.status == DllmReqStatus.FINISHED
+    assert req.completion_reason == "max_model_len_reached"
+    assert scheduler.freed_req_ids == [12]
     assert req not in scheduler.running_reqs
 
 
@@ -167,61 +270,6 @@ def test_scheduler_postprocess_raises_when_req_id_map_is_missing() -> None:
 
     with pytest.raises(KeyError, match="13"):
         scheduler.postprocess_multi_block([req], sample_output)
-
-
-def test_scheduler_postprocess_writes_block_trace_jsonl(tmp_path, monkeypatch) -> None:
-    scheduler = _Scheduler()
-    req = _Req(req_id=17)
-    req.token_ids = [9, 0, 0, 8]
-
-    class _Block:
-        def __init__(self, req, block_id, start, end, editable_start=0, status="ACTIVE"):
-            self.req = req
-            self.block_id = block_id
-            self.start = start
-            self.end = end
-            self.editable_start = editable_start
-            self.status = SimpleNamespace(name=status)
-            self.mask_token_id = 0
-
-        @property
-        def token_ids(self):
-            return self.req.token_ids[self.start : self.end]
-
-        @property
-        def num_mask_tokens(self):
-            return sum(token_id == self.mask_token_id for token_id in self.token_ids)
-
-        def write_token(self, token_id, rel_idx):
-            self.req.token_ids[self.start + rel_idx] = token_id
-
-    req.dllm_blocks = [_Block(req, 0, 0, 2), _Block(req, 1, 2, 4, editable_start=1)]
-
-    trace_path = tmp_path / "trace.jsonl"
-    monkeypatch.setenv("DIFFULEX_BLOCK_TRACE_PATH", str(trace_path))
-    monkeypatch.setenv("DIFFULEX_BLOCK_TRACE_MAX_NFE", "4")
-    monkeypatch.setenv("DIFFULEX_BLOCK_TRACE_MAX_BLOCKS", "2")
-
-    sample_output = SimpleNamespace(
-        true_local_ids_map={"17": {}},
-        accepted_ids_map={"17": {}},
-        sampled_tokens_map={"17": {}},
-        edit_writes_map={"17": {"0": {1: 5}}},
-    )
-
-    scheduler.postprocess_multi_block([req], sample_output)
-
-    lines = trace_path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    record = json.loads(lines[0])
-    assert record["req_id"] == 17
-    assert record["step_nfe"] == 1
-    assert record["new_tokens"] == 1
-    assert record["trace_start_block_id"] == 1
-    assert record["blocks"][0]["block_id"] == 1
-    assert record["blocks"][0]["writes"] == {}
-    assert record["blocks"][0]["token_ids"] == [0, 8]
-    assert record["blocks"][0]["accepted_ids"] == []
 
 
 def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -> None:

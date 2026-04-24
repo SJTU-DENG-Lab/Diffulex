@@ -65,6 +65,7 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
                 "page_size": 64,
                 "device_ids": [0, 1],
                 "expert_parallel_size": 2,
+                "attn_impl": "naive",
                 "enable_prefix_caching": False,
                 "token_merge_mode": "iter_smooth_topk",
                 "token_merge_top_k": 3,
@@ -97,6 +98,7 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
     assert forwarded["page_size"] == 64
     assert forwarded["device_ids"] == [0, 1]
     assert forwarded["expert_parallel_size"] == 2
+    assert forwarded["attn_impl"] == "naive"
     assert forwarded["enable_prefix_caching"] is False
     assert forwarded["token_merge_mode"] == "iter_smooth_topk"
     assert forwarded["token_merge_top_k"] == 3

@@ -33,6 +33,12 @@ The only way to get started is to install from source:
 uv pip install -e .
 ```
 
+Install vLLM manually:
+
+```bash
+uv pip install vllm==0.19.1
+```
+
 ## Quick Start
 
 For model-specific startup instructions and runnable configurations, see the [Cookbook](docs/cookbook.md).

@@ -24,40 +24,6 @@ from diffulex.distributed.parallel_state import fetch_parallel_state
 from diffulex.utils.checkpoint import LoadContext, ResolvedWeight
 
 
-_LLADA2_DEBUG_STATE: dict[str, object] = {
-    "enabled": False,
-    "include_qkv": False,
-    "capture": None,
-}
-
-
-def _llada2_debug_enabled() -> bool:
-    return bool(_LLADA2_DEBUG_STATE["enabled"])
-
-
-def _llada2_debug_include_qkv() -> bool:
-    return bool(_LLADA2_DEBUG_STATE["include_qkv"])
-
-
-def _llada2_debug_store(name: str, value: torch.Tensor) -> None:
-    if not _llada2_debug_enabled():
-        return
-    capture = _LLADA2_DEBUG_STATE.get("capture")
-    if capture is None:
-        return
-    capture[name] = value.detach()
-
-
-def _llada2_debug_store_nested(group: str, name: str, value: torch.Tensor) -> None:
-    if not _llada2_debug_enabled():
-        return
-    capture = _LLADA2_DEBUG_STATE.get("capture")
-    if capture is None:
-        return
-    nested = capture.setdefault(group, {})
-    nested[name] = value.detach()
-
-
 def _llada2_use_reference_view_path() -> bool:
     return os.getenv("DIFFULEX_LLADA2_REFERENCE_VIEW_PATH", "0") == "1"
 
@@ -146,7 +112,6 @@ class LLaDA2Attention(nn.Module):
             config.hidden_size,
             bias=bool(getattr(config, "use_bias", False)),
         )
-        self.dense.tp_all_reduce_kind = "attn_dense"
         partial_rotary_factor = float(getattr(config, "partial_rotary_factor", 1.0))
         rotary_dim = int(self.head_dim * partial_rotary_factor)
         rotary_dim = int(getattr(config, "rotary_dim", rotary_dim) or rotary_dim)
@@ -156,7 +121,13 @@ class LLaDA2Attention(nn.Module):
             max_position=config.max_position_embeddings,
             base=getattr(config, "rope_theta", 10000),
         )
-        self.attn = Attention(self.num_heads, self.head_dim, self.scaling, self.num_kv_heads)
+        self.attn = Attention(
+            self.num_heads,
+            self.head_dim,
+            self.scaling,
+            self.num_kv_heads,
+            attn_impl=getattr(config, "attn_impl", "triton"),
+        )
 
     def _split_qkv_reference(
         self,
@@ -179,10 +150,6 @@ class LLaDA2Attention(nn.Module):
         v = rearrange(v, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
         return q, k, v
 
-    @staticmethod
-    def _flatten_heads(x: torch.Tensor) -> torch.Tensor:
-        return x.reshape(x.shape[0], -1)
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -190,8 +157,6 @@ class LLaDA2Attention(nn.Module):
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         qkv = self.query_key_value(hidden_states)
-        if _llada2_debug_include_qkv():
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_qkv_linear", qkv)
         if _llada2_use_legacy_qkv_path():
             q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
             q = rearrange(
@@ -212,44 +177,11 @@ class LLaDA2Attention(nn.Module):
             q, k, v = self._split_qkv_reference(qkv)
         else:
             q, k, v = self._split_qkv_default(qkv)
-        if _llada2_debug_include_qkv():
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_q_pre_norm", q)
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_k_pre_norm", k)
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_v_heads", v)
         q = self.query_layernorm(q)
         k = self.key_layernorm(k)
-        if _llada2_debug_include_qkv():
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_q_post_norm", q)
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_k_post_norm", k)
-            cos_sin = self.rotary_emb.cos_sin_cache[positions]
-            cos, sin = cos_sin.chunk(2, dim=-1)
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_rope_cos", cos)
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_rope_sin", sin)
         q, k = self.rotary_emb(positions, q, k)
-        if _llada2_debug_include_qkv():
-            _llada2_debug_store_nested(
-                "qkv",
-                f"layer_{self.layer_idx}_q",
-                self._flatten_heads(q),
-            )
-            _llada2_debug_store_nested(
-                "qkv",
-                f"layer_{self.layer_idx}_k",
-                self._flatten_heads(k),
-            )
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_q_rotary", q)
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_k_rotary", k)
-            _llada2_debug_store_nested(
-                "qkv",
-                f"layer_{self.layer_idx}_v",
-                self._flatten_heads(v),
-            )
         attn_out = self.attn(q, k, v, mask)
-        if _llada2_debug_include_qkv():
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_attn_out", attn_out)
         attn_out = self.dense(attn_out)
-        if _llada2_debug_include_qkv():
-            _llada2_debug_store_nested("qkv", f"layer_{self.layer_idx}_attn_output_post_dense", attn_out)
         return attn_out
 
 
@@ -260,7 +192,6 @@ class LLaDA2DenseMLP(nn.Module):
         self.gate_proj = ColumnParallelLinear(config.hidden_size, intermediate_size, bias=False)
         self.up_proj = ColumnParallelLinear(config.hidden_size, intermediate_size, bias=False)
         self.down_proj = RowParallelLinear(intermediate_size, config.hidden_size, bias=False)
-        self.down_proj.tp_all_reduce_kind = "mlp_down_proj"
         if getattr(config, "hidden_act", "silu") != "silu":
             raise NotImplementedError("LLaDA2 dense MLP currently supports only silu.")
         self.act_fn = SiluAndMul()
@@ -311,6 +242,7 @@ class LLaDA2NaiveMoE(LLaDA2MoEMixin, NaiveFusedMoE):
             top_k=int(config.num_experts_per_tok),
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
+            moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=int(config.moe_intermediate_size) * num_shared_experts,
         )
@@ -329,6 +261,7 @@ class LLaDA2TPMoE(LLaDA2MoEMixin, TPFusedMoE):
             top_k=int(config.num_experts_per_tok),
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
+            moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=int(config.moe_intermediate_size) * num_shared_experts,
         )
@@ -347,6 +280,7 @@ class LLaDA2EPMoE(LLaDA2MoEMixin, EPFusedMoE):
             top_k=int(config.num_experts_per_tok),
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
+            moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
             dispatcher_backend=getattr(config, "moe_dispatcher_backend", "naive"),
             deepep_mode=getattr(config, "deepep_mode", "auto"),
             deepep_num_max_dispatch_tokens_per_rank=getattr(
@@ -391,57 +325,16 @@ class LLaDA2DecoderLayer(nn.Module):
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
-        if _llada2_debug_enabled():
-            _llada2_debug_store_nested(
-                "decoder",
-                f"layer_{self.layer_idx}_residual_in",
-                residual,
-            )
         hidden_states = self.input_layernorm(hidden_states)
-        if _llada2_debug_enabled():
-            _llada2_debug_store_nested(
-                "decoder",
-                f"layer_{self.layer_idx}_post_input_layernorm",
-                hidden_states,
-            )
         hidden_states = residual + self.attention(positions, hidden_states, mask)
-        if _llada2_debug_enabled():
-            _llada2_debug_store_nested(
-                "decoder",
-                f"layer_{self.layer_idx}_post_attention_residual",
-                hidden_states,
-            )
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        if _llada2_debug_enabled():
-            _llada2_debug_store_nested(
-                "decoder",
-                f"layer_{self.layer_idx}_post_attention_layernorm",
-                hidden_states,
-            )
         mlp_output = self.mlp(hidden_states)
         if isinstance(mlp_output, tuple):
-            hidden_states, router_logits = mlp_output
-            if _llada2_debug_enabled():
-                _llada2_debug_store_nested(
-                    "moe",
-                    f"layer_{self.layer_idx}_router_logits",
-                    router_logits,
-                )
-                _llada2_debug_store_nested(
-                    "moe",
-                    f"layer_{self.layer_idx}_moe_output",
-                    hidden_states,
-                )
+            hidden_states, _router_logits = mlp_output
         else:
             hidden_states = mlp_output
         hidden_states = residual + hidden_states
-        if _llada2_debug_enabled():
-            _llada2_debug_store_nested(
-                "decoder",
-                f"layer_{self.layer_idx}_layer_out",
-                hidden_states,
-            )
         return hidden_states
 
 
@@ -462,21 +355,6 @@ class LLaDA2Model(nn.Module):
             [LLaDA2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self._last_debug_dump: dict[str, object] | None = None
-
-    def enable_debug_dump(self, *, include_qkv: bool = False) -> None:
-        _LLADA2_DEBUG_STATE["enabled"] = True
-        _LLADA2_DEBUG_STATE["include_qkv"] = bool(include_qkv)
-
-    def disable_debug_dump(self) -> None:
-        _LLADA2_DEBUG_STATE["enabled"] = False
-        _LLADA2_DEBUG_STATE["include_qkv"] = False
-        _LLADA2_DEBUG_STATE["capture"] = None
-
-    def pop_last_debug_dump(self) -> dict[str, object] | None:
-        dump = self._last_debug_dump
-        self._last_debug_dump = None
-        return dump
 
     def forward(
         self,
@@ -484,24 +362,11 @@ class LLaDA2Model(nn.Module):
         positions: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        debug_enabled = _llada2_debug_enabled()
-        if debug_enabled:
-            _LLADA2_DEBUG_STATE["capture"] = {}
         hidden_states = self.word_embeddings(input_ids)
-        if debug_enabled:
-            _llada2_debug_store("embed_in", hidden_states)
         hidden_states = self._maybe_apply_token_merging(hidden_states)
-        if debug_enabled:
-            _llada2_debug_store("post_token_merge", hidden_states)
         for layer in self.layers:
             hidden_states = layer(positions, hidden_states, mask)
-            if debug_enabled:
-                _llada2_debug_store(f"layer_{layer.layer_idx}_out", hidden_states)
         hidden_states = self.norm(hidden_states)
-        if debug_enabled:
-            _llada2_debug_store("final_norm", hidden_states)
-            self._last_debug_dump = _LLADA2_DEBUG_STATE["capture"]
-            _LLADA2_DEBUG_STATE["capture"] = None
         return hidden_states
 
     def _maybe_apply_token_merging(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -529,7 +394,8 @@ class LLaDA2Model(nn.Module):
         device = hidden_states.device
         dtype = hidden_states.dtype
         merge_mask = merge_mask.to(device=device, dtype=torch.bool)
-        if not torch.cuda.is_current_stream_capturing() and not bool(merge_mask.any().item()):
+        is_compiling = bool(getattr(torch.compiler, "is_compiling", lambda: False)())
+        if not is_compiling and not torch.cuda.is_current_stream_capturing() and not bool(merge_mask.any().item()):
             return hidden_states
 
         topk_ids = topk_ids.to(device=device, dtype=torch.int64)
@@ -592,17 +458,20 @@ class LLaDA2Model(nn.Module):
 
 
 def build_llada2_runtime_config(config):
-    runtime_config = copy.copy(config.hf_config)
+    runtime_config = copy.copy(getattr(config, "hf_config", config))
     for name in (
         "moe_dispatcher_backend",
+        "moe_gemm_impl",
         "deepep_mode",
         "deepep_num_max_dispatch_tokens_per_rank",
         "expert_parallel_size",
         "tensor_parallel_size",
         "data_parallel_size",
         "mask_token_id",
+        "attn_impl",
     ):
-        setattr(runtime_config, name, getattr(config, name))
+        if hasattr(config, name):
+            setattr(runtime_config, name, getattr(config, name))
     return runtime_config
 
 

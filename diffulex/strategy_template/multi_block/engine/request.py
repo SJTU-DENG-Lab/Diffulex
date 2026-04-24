@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from diffulex.config import Config
 from diffulex.engine.dllm_block import DllmBlock, DllmBlockBuffer
 from diffulex.engine.request import DllmReq
@@ -36,6 +38,11 @@ class MultiBlockReqTemplate(DllmReq):
         self.eos_token_id = config.eos
         self.max_model_len = config.max_model_len
         self.max_new_tokens = self.max_tokens  # from sampling_params in __init__
+        self.auto_max_nfe_enabled = self.max_nfe is None
+        self.auto_max_nfe_warmup_steps = int(getattr(config, "auto_max_nfe_warmup_steps", 8))
+        self.auto_max_nfe_tpf_floor = float(getattr(config, "auto_max_nfe_tpf_floor", 1.0))
+        self.auto_max_nfe_token_count = 0
+        self.auto_max_nfe_value: int | None = None
 
         self.dllm_blocks: list[DllmBlock] = []
         self.dllm_block_buffer: DllmBlockBuffer = None
@@ -131,6 +138,18 @@ class MultiBlockReqTemplate(DllmReq):
     @property
     def max_nfe_reached(self) -> bool:
         return self.max_nfe is not None and self.nfe >= self.max_nfe
+
+    def update_auto_max_nfe(self) -> None:
+        if not self.auto_max_nfe_enabled or self.max_nfe is not None:
+            return
+        self.auto_max_nfe_token_count += max(0, int(self.new_tokens))
+        if self.nfe < max(1, self.auto_max_nfe_warmup_steps):
+            return
+
+        avg_tpf = self.auto_max_nfe_token_count / max(1, self.nfe)
+        effective_tpf = max(avg_tpf, self.auto_max_nfe_tpf_floor)
+        self.auto_max_nfe_value = max(1, int(math.ceil(self.max_new_tokens / effective_tpf)))
+        self.max_nfe = max(self.nfe, self.auto_max_nfe_value)
 
     @property
     def repetition_run_length(self) -> int:

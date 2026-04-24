@@ -437,7 +437,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
         # Engine overrides (make bench configs reusable for eager vs CUDA Graph comparisons)
         if getattr(args, "enforce_eager", None) is not None:
             config.engine.enforce_eager = bool(args.enforce_eager)
-        if getattr(args, "kv_cache_layout", None) is not None:
+        if was_provided("kv_cache_layout") and getattr(args, "kv_cache_layout", None) is not None:
             config.engine.kv_cache_layout = args.kv_cache_layout
         if getattr(args, "enable_prefix_caching", None) is not None:
             config.engine.enable_prefix_caching = bool(args.enable_prefix_caching)
@@ -445,12 +445,32 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.sampling_mode = args.sampling_mode
         if getattr(args, "expert_parallel_size", None) is not None:
             config.engine.expert_parallel_size = args.expert_parallel_size
-        if getattr(args, "max_model_len", None) is not None:
+        if was_provided("max_model_len") and getattr(args, "max_model_len", None) is not None:
             config.engine.max_model_len = args.max_model_len
         if max_num_reqs is not None:
             config.engine.max_num_reqs = max_num_reqs
-        if getattr(args, "max_num_batched_tokens", None) is not None:
+        if (
+            was_provided("max_num_batched_tokens")
+            and getattr(args, "max_num_batched_tokens", None) is not None
+        ):
             config.engine.max_num_batched_tokens = args.max_num_batched_tokens
+        if getattr(args, "enable_prefill_cudagraph", None) is not None:
+            config.engine.enable_prefill_cudagraph = bool(args.enable_prefill_cudagraph)
+        if (
+            was_provided("prefill_cudagraph_max_len")
+            and getattr(args, "prefill_cudagraph_max_len", None) is not None
+        ):
+            config.engine.prefill_cudagraph_max_len = args.prefill_cudagraph_max_len
+        if getattr(args, "enable_torch_compile", None) is not None:
+            config.engine.enable_torch_compile = bool(args.enable_torch_compile)
+        if getattr(args, "enable_cudagraph_torch_compile", None) is not None:
+            config.engine.enable_cudagraph_torch_compile = bool(args.enable_cudagraph_torch_compile)
+        if getattr(args, "torch_compile_mode", None) is not None:
+            config.engine.torch_compile_mode = args.torch_compile_mode
+        if getattr(args, "auto_max_nfe_warmup_steps", None) is not None:
+            config.engine.auto_max_nfe_warmup_steps = args.auto_max_nfe_warmup_steps
+        if getattr(args, "auto_max_nfe_tpf_floor", None) is not None:
+            config.engine.auto_max_nfe_tpf_floor = args.auto_max_nfe_tpf_floor
         if getattr(args, "page_size", None) is not None:
             config.engine.page_size = args.page_size
         if getattr(args, "buffer_size", None) is not None:
@@ -465,6 +485,16 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.token_merge_renormalize = bool(args.token_merge_renormalize)
         if getattr(args, "token_merge_weight", None) is not None:
             config.engine.token_merge_weight = args.token_merge_weight
+        if getattr(args, "attn_impl", None) is not None:
+            config.engine.attn_impl = args.attn_impl
+        if getattr(args, "moe_dispatcher_backend", None) is not None:
+            config.engine.moe_dispatcher_backend = args.moe_dispatcher_backend
+        if getattr(args, "moe_gemm_impl", None) is not None:
+            config.engine.moe_gemm_impl = args.moe_gemm_impl
+        if getattr(args, "deepep_mode", None) is not None:
+            config.engine.deepep_mode = args.deepep_mode
+        if getattr(args, "deepep_num_max_dispatch_tokens_per_rank", None) is not None:
+            config.engine.deepep_num_max_dispatch_tokens_per_rank = args.deepep_num_max_dispatch_tokens_per_rank
         if getattr(args, "multi_block_prefix_full", None) is not None:
             config.engine.multi_block_prefix_full = bool(args.multi_block_prefix_full)
         apply_engine_arg_overrides(config.engine)
@@ -492,6 +522,21 @@ def load_config_from_args(args) -> BenchmarkConfig:
             max_model_len=args.max_model_len,
             max_num_batched_tokens=getattr(args, "max_num_batched_tokens", 4096),
             max_num_reqs=max_num_reqs if max_num_reqs is not None else 128,
+            enable_prefill_cudagraph=(
+                bool(getattr(args, "enable_prefill_cudagraph", True))
+                if getattr(args, "enable_prefill_cudagraph", None) is not None
+                else True
+            ),
+            prefill_cudagraph_max_len=(getattr(args, "prefill_cudagraph_max_len", None) or 0),
+            enable_torch_compile=(
+                bool(getattr(args, "enable_torch_compile", True))
+                if getattr(args, "enable_torch_compile", None) is not None
+                else True
+            ),
+            enable_cudagraph_torch_compile=bool(getattr(args, "enable_cudagraph_torch_compile", False)),
+            torch_compile_mode=(getattr(args, "torch_compile_mode", None) or "reduce-overhead"),
+            auto_max_nfe_warmup_steps=(getattr(args, "auto_max_nfe_warmup_steps", None) or 8),
+            auto_max_nfe_tpf_floor=(getattr(args, "auto_max_nfe_tpf_floor", None) or 1.0),
             use_lora=args.use_lora,
             lora_path=args.lora_path,
             pre_merge_lora=getattr(args, "pre_merge_lora", True),
@@ -519,6 +564,15 @@ def load_config_from_args(args) -> BenchmarkConfig:
                 getattr(args, "token_merge_weight", None)
                 if getattr(args, "token_merge_weight", None) is not None
                 else 1.0
+            ),
+            attn_impl=(getattr(args, "attn_impl", None) or "triton"),
+            moe_dispatcher_backend=(getattr(args, "moe_dispatcher_backend", None) or "standard"),
+            moe_gemm_impl=(getattr(args, "moe_gemm_impl", None) or "triton"),
+            deepep_mode=(getattr(args, "deepep_mode", None) or "auto"),
+            deepep_num_max_dispatch_tokens_per_rank=(
+                getattr(args, "deepep_num_max_dispatch_tokens_per_rank", None)
+                if getattr(args, "deepep_num_max_dispatch_tokens_per_rank", None) is not None
+                else 256
             ),
             decoding_thresholds={
                 "add_block_threshold": getattr(args, "add_block_threshold", 0.1),

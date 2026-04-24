@@ -1,25 +1,9 @@
-import os
 import torch
 import triton
 import triton.language as tl
 
 from diffulex.attention.metadata import AttnMetaDataBase
 from diffulex_kernel.python.auto_tuner import build_chunked_prefill_configs
-
-
-def _env_int(name: str) -> int | None:
-    value = os.environ.get(name)
-    if value is None or value == "":
-        return None
-    return int(value)
-
-
-DISABLE_CHUNKED_PREFILL_AUTOTUNE = os.environ.get("DIFFULEX_DISABLE_CHUNKED_PREFILL_AUTOTUNE", "0") == "1"
-PINNED_BLOCK_M = _env_int("DIFFULEX_CHUNKED_PREFILL_BLOCK_M")
-PINNED_BLOCK_N = _env_int("DIFFULEX_CHUNKED_PREFILL_BLOCK_N")
-PINNED_NUM_WARPS = _env_int("DIFFULEX_CHUNKED_PREFILL_NUM_WARPS")
-PINNED_NUM_STAGES = _env_int("DIFFULEX_CHUNKED_PREFILL_NUM_STAGES")
-USE_PINNED_CHUNKED_PREFILL_CONFIG = PINNED_BLOCK_M is not None and PINNED_BLOCK_N is not None
 
 
 def _prune_chunked_prefill_configs(configs, _nargs, **kwargs):
@@ -32,7 +16,7 @@ def _prune_chunked_prefill_configs(configs, _nargs, **kwargs):
     """
     dllm_block_size = kwargs.get("DLLM_BLOCK_SIZE")
     is_block_causal = bool(kwargs.get("IS_BLOCK_CAUSAL", False))
-    if dllm_block_size is None or dllm_block_size > 16 or not is_block_causal:
+    if dllm_block_size is None or dllm_block_size > 32 or not is_block_causal:
         return configs
 
     stable_configs = [
@@ -46,12 +30,7 @@ def _prune_chunked_prefill_configs(configs, _nargs, **kwargs):
     return stable_configs or configs
 
 
-def maybe_autotune(fn):
-    fn = triton.jit(fn)
-    # NOTE: Tests pass explicit BLOCK_M / BLOCK_N meta-parameters, which conflicts with
-    # Triton autotune. Disable autotune under test/debug via env instead of editing code.
-    if DISABLE_CHUNKED_PREFILL_AUTOTUNE or USE_PINNED_CHUNKED_PREFILL_CONFIG:
-        return fn
+def _autotune_chunked_prefill_kernel(fn):
     return triton.autotune(
         configs=[
             triton.Config(c, num_warps=c.pop("num_warps"), num_stages=c.pop("num_stages"))
@@ -68,7 +47,8 @@ def maybe_autotune(fn):
         prune_configs_by={"early_config_prune": _prune_chunked_prefill_configs},
     )(fn)
 
-@maybe_autotune
+
+@triton.jit
 def _chunked_prefill_attn_unified_kernel(
     q_ptr,
     k_ptr,
@@ -296,6 +276,11 @@ def _chunked_prefill_attn_unified_kernel(
     )
 
 
+_chunked_prefill_attn_unified_kernel_autotuned = _autotune_chunked_prefill_kernel(
+    _chunked_prefill_attn_unified_kernel
+)
+
+
 def _run_chunked_prefill_attn_unified_kernel(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -315,29 +300,9 @@ def _run_chunked_prefill_attn_unified_kernel(
     page_size = k_cache.shape[1]
     num_reqs = attn_metadata.cu_seqlens_q.shape[0] - 1
 
-    if USE_PINNED_CHUNKED_PREFILL_CONFIG:
-        block_m = PINNED_BLOCK_M
-        block_n = PINNED_BLOCK_N
-        grid = (num_reqs, num_heads, triton.cdiv(int(attn_metadata.max_seqlen_q), block_m))
-    elif DISABLE_CHUNKED_PREFILL_AUTOTUNE:
-        block_m = 64
-        block_n = 64
-        grid = (num_reqs, num_heads, triton.cdiv(int(attn_metadata.max_seqlen_q), block_m))
-    else:
-        block_m = None
-        block_n = None
-        grid = lambda meta: (num_reqs, num_heads, triton.cdiv(int(attn_metadata.max_seqlen_q), meta["BLOCK_M"]))
+    grid = lambda meta: (num_reqs, num_heads, triton.cdiv(int(attn_metadata.max_seqlen_q), meta["BLOCK_M"]))
 
-    launch_kwargs = {}
-    if USE_PINNED_CHUNKED_PREFILL_CONFIG or DISABLE_CHUNKED_PREFILL_AUTOTUNE:
-        launch_kwargs["BLOCK_M"] = block_m
-        launch_kwargs["BLOCK_N"] = block_n
-    if PINNED_NUM_WARPS is not None:
-        launch_kwargs["num_warps"] = PINNED_NUM_WARPS
-    if PINNED_NUM_STAGES is not None:
-        launch_kwargs["num_stages"] = PINNED_NUM_STAGES
-
-    _chunked_prefill_attn_unified_kernel[grid](
+    _chunked_prefill_attn_unified_kernel_autotuned[grid](
         q,
         k,
         v,
@@ -365,7 +330,6 @@ def _run_chunked_prefill_attn_unified_kernel(
         DLLM_BLOCK_SIZE=attn_metadata.block_size,
         IS_BLOCK_CAUSAL=attn_metadata.is_block_causal,
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
-        **launch_kwargs,
     )
     return o
 

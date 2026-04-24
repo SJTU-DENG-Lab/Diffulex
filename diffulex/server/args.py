@@ -36,11 +36,20 @@ class ServerArgs:
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
     max_model_len: int = 2048
+    enable_prefill_cudagraph: bool = True
+    prefill_cudagraph_max_len: int = 0
+    enable_torch_compile: bool = True
+    enable_cudagraph_torch_compile: bool = False
+    torch_compile_mode: str = "reduce-overhead"
+    auto_max_nfe_warmup_steps: int = 8
+    auto_max_nfe_tpf_floor: float = 1.0
     gpu_memory_utilization: float = 0.9
     enforce_eager: bool = False
+    attn_impl: str = "triton"
     enable_prefix_caching: bool = True
     kv_cache_layout: str = "unified"
     moe_dispatcher_backend: str = "standard"
+    moe_gemm_impl: str = "triton"
     deepep_mode: str = "auto"
     deepep_num_max_dispatch_tokens_per_rank: int = 256
     add_block_threshold: float | None = None
@@ -69,11 +78,20 @@ class ServerArgs:
             "max_num_batched_tokens": self.max_num_batched_tokens,
             "max_num_reqs": self.max_num_reqs,
             "max_model_len": self.max_model_len,
+            "enable_prefill_cudagraph": self.enable_prefill_cudagraph,
+            "prefill_cudagraph_max_len": self.prefill_cudagraph_max_len,
+            "enable_torch_compile": self.enable_torch_compile,
+            "enable_cudagraph_torch_compile": self.enable_cudagraph_torch_compile,
+            "torch_compile_mode": self.torch_compile_mode,
+            "auto_max_nfe_warmup_steps": self.auto_max_nfe_warmup_steps,
+            "auto_max_nfe_tpf_floor": self.auto_max_nfe_tpf_floor,
             "gpu_memory_utilization": self.gpu_memory_utilization,
             "enforce_eager": self.enforce_eager,
+            "attn_impl": self.attn_impl,
             "enable_prefix_caching": self.enable_prefix_caching,
             "kv_cache_layout": self.kv_cache_layout,
             "moe_dispatcher_backend": self.moe_dispatcher_backend,
+            "moe_gemm_impl": self.moe_gemm_impl,
             "deepep_mode": self.deepep_mode,
             "deepep_num_max_dispatch_tokens_per_rank": self.deepep_num_max_dispatch_tokens_per_rank,
             "decoding_thresholds": {
@@ -115,11 +133,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
     parser.add_argument("--max-num-reqs", type=int, default=128)
     parser.add_argument("--max-model-len", type=int, default=2048)
+    parser.add_argument("--disable-prefill-cudagraph", action="store_true")
+    parser.add_argument("--prefill-cudagraph-max-len", type=int, default=0)
+    parser.add_argument("--disable-torch-compile", action="store_true")
+    parser.add_argument("--enable-cudagraph-torch-compile", action="store_true")
+    parser.add_argument("--torch-compile-mode", default="reduce-overhead")
+    parser.add_argument("--auto-max-nfe-warmup-steps", type=int, default=8)
+    parser.add_argument("--auto-max-nfe-tpf-floor", type=float, default=1.0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--enforce-eager", action="store_true")
+    parser.add_argument("--attn-impl", default="triton", choices=["triton", "naive"])
     parser.add_argument("--disable-prefix-caching", action="store_true")
     parser.add_argument("--kv-cache-layout", default="unified", choices=["unified", "distinct"])
     parser.add_argument("--moe-dispatcher-backend", default="standard", choices=["standard", "naive", "deepep"])
+    parser.add_argument("--moe-gemm-impl", default="triton", choices=["triton", "vllm", "naive"])
     parser.add_argument("--deepep-mode", default="auto", choices=["normal", "low_latency", "auto"])
     parser.add_argument("--deepep-num-max-dispatch-tokens-per-rank", type=int, default=256)
     parser.add_argument("--add-block-threshold", type=float, default=None)
@@ -157,11 +184,20 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         max_num_batched_tokens=ns.max_num_batched_tokens,
         max_num_reqs=ns.max_num_reqs,
         max_model_len=ns.max_model_len,
+        enable_prefill_cudagraph=not ns.disable_prefill_cudagraph,
+        prefill_cudagraph_max_len=ns.prefill_cudagraph_max_len,
+        enable_torch_compile=not ns.disable_torch_compile,
+        enable_cudagraph_torch_compile=ns.enable_cudagraph_torch_compile,
+        torch_compile_mode=ns.torch_compile_mode,
+        auto_max_nfe_warmup_steps=ns.auto_max_nfe_warmup_steps,
+        auto_max_nfe_tpf_floor=ns.auto_max_nfe_tpf_floor,
         gpu_memory_utilization=ns.gpu_memory_utilization,
         enforce_eager=ns.enforce_eager,
+        attn_impl=ns.attn_impl,
         enable_prefix_caching=not ns.disable_prefix_caching,
         kv_cache_layout=ns.kv_cache_layout,
         moe_dispatcher_backend=ns.moe_dispatcher_backend,
+        moe_gemm_impl=ns.moe_gemm_impl,
         deepep_mode=ns.deepep_mode,
         deepep_num_max_dispatch_tokens_per_rank=ns.deepep_num_max_dispatch_tokens_per_rank,
         add_block_threshold=ns.add_block_threshold,

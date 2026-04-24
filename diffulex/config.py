@@ -32,6 +32,10 @@ class Config:
     model_name: str = "dream"
     decoding_strategy: str = "d2f"  # "d2f", "multi_bd"
 
+    # Sampling Harness
+    hf_config: AutoConfig | None = None
+    tokenizer_vocab_size: int | None = None
+    eos: int = -1
     mask_token_id: int = 151666
     block_size: int = 32
     buffer_size: int = 4
@@ -41,20 +45,23 @@ class Config:
     token_merge_renormalize: bool = True
     token_merge_weight: float = 1.0
     sampling_mode: str = "naive"  # "naive" or "edit"
-    decoding_thresholds: DecodingThresholds | dict | None = None
-    # TODO: Should be deprecated in the future
-    add_block_threshold: float | None = None
-    semi_complete_threshold: float | None = None
-    accept_threshold: float | None = None
-    remask_threshold: float | None = None
-
     use_lora: bool = False
     pre_merge_lora: bool = False
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
     max_model_len: int = 2048
     gpu_memory_utilization: float = 0.9
+    decoding_thresholds: DecodingThresholds | dict | None = None
+    # TODO: Should be deprecated in the future
+    add_block_threshold: float | None = None
+    semi_complete_threshold: float | None = None
+    accept_threshold: float | None = None
+    remask_threshold: float | None = None
+    # Truncation
+    auto_max_nfe_warmup_steps: int = 8
+    auto_max_nfe_tpf_floor: float = 1.0
 
+    # Parallelism
     data_parallel_size: int = 1
     tensor_parallel_size: int = 2
     expert_parallel_size: int = 1
@@ -65,18 +72,27 @@ class Config:
     device_start: int = 0
     device_ids: list[int] = field(default_factory=lambda: [])
 
+    # CUDA Graph
     enforce_eager: bool = False
-    hf_config: AutoConfig | None = None
-    tokenizer_vocab_size: int | None = None
-    eos: int = -1
+    attn_impl: str = "triton"  # "triton" or "naive"
+    enable_prefill_cudagraph: bool = True
+    prefill_cudagraph_max_len: int = 0
+    enable_torch_compile: bool = True
+    enable_cudagraph_torch_compile: bool = False
+    torch_compile_mode: str = "reduce-overhead"
+
+    # MoE
+    moe_dispatcher_backend: str = "standard"  # "standard", "naive", or "deepep"
+    moe_gemm_impl: str = "triton"  # "triton", "vllm", or "naive"
+    deepep_mode: str = "auto"  # "normal", "low_latency", or "auto"
+    deepep_num_max_dispatch_tokens_per_rank: int = 256
+
+    # KV Cache Page Table
     page_size: int = 32
     enable_prefix_caching: bool = True
     num_pages: int = -1
     k_cache_hdim_split_factor_x: int = 8
     kv_cache_layout: str = "unified"  # "unified" or "distinct"
-    moe_dispatcher_backend: str = "standard"  # "standard", "naive", or "deepep"
-    deepep_mode: str = "auto"  # "normal", "low_latency", or "auto"
-    deepep_num_max_dispatch_tokens_per_rank: int = 256
 
     def _validate_sampling_mode(self) -> None:
         if self.sampling_mode == "edit" and self.model_name not in EDIT_SAMPLING_MODEL_NAMES:
@@ -175,10 +191,20 @@ class Config:
                 "kv_cache_layout must be one of {'unified', 'distinct'}, "
                 f"got: {self.kv_cache_layout}"
             )
+        if self.attn_impl not in {"triton", "naive"}:
+            raise ValueError(
+                "attn_impl must be one of {'triton', 'naive'}, "
+                f"got: {self.attn_impl}"
+            )
         if self.moe_dispatcher_backend not in {"standard", "naive", "deepep"}:
             raise ValueError(
                 "moe_dispatcher_backend must be one of {'standard', 'naive', 'deepep'}, "
                 f"got: {self.moe_dispatcher_backend}"
+            )
+        if self.moe_gemm_impl not in {"triton", "vllm", "naive"}:
+            raise ValueError(
+                "moe_gemm_impl must be one of {'triton', 'vllm', 'naive'}, "
+                f"got: {self.moe_gemm_impl}"
             )
         if self.deepep_mode not in {"normal", "low_latency", "auto"}:
             raise ValueError(
@@ -229,6 +255,18 @@ class Config:
                 logger.warning(f"LoRA path {self.lora_path} does not exist")
 
         self.hf_config = AutoConfig.from_pretrained(self.model, trust_remote_code=True)
+        for name in (
+            "attn_impl",
+            "moe_dispatcher_backend",
+            "moe_gemm_impl",
+            "deepep_mode",
+            "deepep_num_max_dispatch_tokens_per_rank",
+            "expert_parallel_size",
+            "tensor_parallel_size",
+            "data_parallel_size",
+            "mask_token_id",
+        ):
+            setattr(self.hf_config, name, getattr(self, name))
         cfg_max_model_len = (
             self.hf_config.max_position_embeddings
             if hasattr(self.hf_config, "max_position_embeddings")
@@ -241,6 +279,21 @@ class Config:
                 "max_num_batched_tokens must be >= max_model_len after HF config clamp, "
                 f"got max_num_batched_tokens={self.max_num_batched_tokens}, "
                 f"max_model_len={self.max_model_len}"
+            )
+        if self.prefill_cudagraph_max_len < 0:
+            raise ValueError(
+                "prefill_cudagraph_max_len must be non-negative, "
+                f"got: {self.prefill_cudagraph_max_len}"
+            )
+        if self.auto_max_nfe_warmup_steps <= 0:
+            raise ValueError(
+                "auto_max_nfe_warmup_steps must be positive, "
+                f"got: {self.auto_max_nfe_warmup_steps}"
+            )
+        if self.auto_max_nfe_tpf_floor <= 0:
+            raise ValueError(
+                "auto_max_nfe_tpf_floor must be positive, "
+                f"got: {self.auto_max_nfe_tpf_floor}"
             )
 
         if not self.device_ids:

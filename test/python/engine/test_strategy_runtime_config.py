@@ -144,7 +144,21 @@ def test_bench_cli_forwards_explicit_engine_fields():
             "--no-token-merge-renormalize",
             "--token-merge-weight",
             "0.75",
+            "--attn-impl",
+            "naive",
             "--no-enable-prefix-caching",
+            "--moe-gemm-impl",
+            "vllm",
+            "--moe-dispatcher-backend",
+            "standard",
+            "--deepep-mode",
+            "auto",
+            "--deepep-num-max-dispatch-tokens-per-rank",
+            "512",
+            "--auto-max-nfe-warmup-steps",
+            "4",
+            "--auto-max-nfe-tpf-floor",
+            "2.5",
         ]
     )
 
@@ -156,7 +170,86 @@ def test_bench_cli_forwards_explicit_engine_fields():
     assert config.engine.token_merge_top_k == 3
     assert config.engine.token_merge_renormalize is False
     assert config.engine.token_merge_weight == 0.75
+    assert config.engine.attn_impl == "naive"
     assert config.engine.enable_prefix_caching is False
+    assert config.engine.moe_gemm_impl == "vllm"
+    assert config.engine.moe_dispatcher_backend == "standard"
+    assert config.engine.deepep_mode == "auto"
+    assert config.engine.deepep_num_max_dispatch_tokens_per_rank == 512
+    assert config.engine.auto_max_nfe_warmup_steps == 4
+    assert config.engine.auto_max_nfe_tpf_floor == 2.5
+
+
+def test_config_file_engine_values_not_overridden_by_cli_defaults(tmp_path):
+    config_path = Path(tmp_path) / "bench.yml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model_path": MODEL_PATH,
+                    "model_name": "llada2_mini",
+                    "decoding_strategy": "dmax",
+                    "sampling_mode": "edit",
+                    "tensor_parallel_size": 1,
+                    "data_parallel_size": 1,
+                    "max_model_len": 3072,
+                    "max_num_batched_tokens": 6144,
+                    "kv_cache_layout": "distinct",
+                    "attn_impl": "naive",
+                    "moe_gemm_impl": "vllm",
+                    "enable_prefill_cudagraph": False,
+                    "prefill_cudagraph_max_len": 2048,
+                    "enable_cudagraph_torch_compile": False,
+                    "auto_max_nfe_warmup_steps": 5,
+                    "auto_max_nfe_tpf_floor": 3.0,
+                },
+                "eval": {"dataset_name": "gsm8k_diffulex_dmax_chat"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parser = create_argument_parser()
+    args = parser.parse_args(["--config", str(config_path)])
+    config = load_config_from_args(args)
+
+    assert config.engine.moe_gemm_impl == "vllm"
+    assert config.engine.max_model_len == 3072
+    assert config.engine.max_num_batched_tokens == 6144
+    assert config.engine.kv_cache_layout == "distinct"
+    assert config.engine.attn_impl == "naive"
+    assert config.engine.enable_prefill_cudagraph is False
+    assert config.engine.prefill_cudagraph_max_len == 2048
+    assert config.engine.enable_cudagraph_torch_compile is False
+    assert config.engine.auto_max_nfe_warmup_steps == 5
+    assert config.engine.auto_max_nfe_tpf_floor == 3.0
+
+
+def test_config_file_prefill_cudagraph_max_len_can_be_overridden_to_zero(tmp_path):
+    config_path = Path(tmp_path) / "bench.yml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model_path": MODEL_PATH,
+                    "model_name": "llada2_mini",
+                    "decoding_strategy": "dmax",
+                    "sampling_mode": "edit",
+                    "tensor_parallel_size": 1,
+                    "data_parallel_size": 1,
+                    "prefill_cudagraph_max_len": 2048,
+                },
+                "eval": {"dataset_name": "gsm8k_diffulex_dmax_chat"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parser = create_argument_parser()
+    args = parser.parse_args(["--config", str(config_path), "--prefill-cudagraph-max-len", "0"])
+    config = load_config_from_args(args)
+
+    assert config.engine.prefill_cudagraph_max_len == 0
 
 
 def test_config_rejects_edit_sampling_for_non_llada2_model(config_no_model_load):
@@ -236,6 +329,32 @@ def test_config_accepts_distinct_kv_cache_layout_independently(config_no_model_l
 
     assert cfg.model_name == "sdar"
     assert cfg.kv_cache_layout == "distinct"
+
+
+def test_config_forwards_attn_impl_to_hf_config(config_no_model_load):
+    cfg = Config(
+        str(config_no_model_load),
+        model_name="sdar",
+        attn_impl="naive",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.attn_impl == "naive"
+    assert cfg.hf_config.attn_impl == "naive"
+
+
+def test_config_rejects_unknown_attn_impl(config_no_model_load):
+    with pytest.raises(ValueError, match="attn_impl must be one of"):
+        Config(
+            str(config_no_model_load),
+            model_name="sdar",
+            attn_impl="flash",
+            tensor_parallel_size=1,
+            data_parallel_size=1,
+            device_ids=[0],
+        )
 
 
 @pytest.fixture

@@ -116,6 +116,20 @@ def test_llada2_tp_moe_shards_experts_not_intermediate(monkeypatch):
     assert tuple(moe.w2.shape) == (2, 8, 6)
 
 
+def test_llada2_moe_gemm_impl_is_configurable(monkeypatch):
+    _mock_tp_rank(monkeypatch, tp_size=2, global_rank=0)
+    moe = LLaDA2TPMoE.from_config(_make_config(moe_gemm_impl="vllm"))
+
+    assert moe.moe_gemm_impl == "vllm"
+
+
+def test_llada2_attention_impl_is_configurable(monkeypatch):
+    _mock_single_rank(monkeypatch)
+    layer = LLaDA2DecoderLayer(_make_config(attn_impl="naive"), layer_idx=0)
+
+    assert layer.attention.attn.attn_impl == "naive"
+
+
 def test_llada2_parameter_names_match_dmax_layout(monkeypatch):
     _mock_single_rank(monkeypatch)
     model = LLaDA2ForDiffusionLM(_make_config())

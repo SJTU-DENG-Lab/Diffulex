@@ -52,8 +52,7 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
             and float(getattr(config, "token_merge_weight", 1.0)) > 0.0
         )
         self._last_block_state_map: dict[str, dict[str, dict]] = {}
-        self._last_dmax_trace_map: dict[str, dict[str, dict]] = {}
-        self._fast_prob_path = os.getenv("DIFFULEX_DMAX_SAMPLER_FAST", "0") == "1"
+        self._fast_prob_path = os.getenv("DIFFULEX_DMAX_SAMPLER_FAST", "1") != "0"
         del config
 
     def _compute_accepted_ids(
@@ -98,30 +97,13 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         block_tokens: torch.Tensor,
         block_logits: torch.Tensor,
         temperature: float,
-    ) -> tuple[dict[int, int], dict[int, dict | None], dict, dict]:
+    ) -> tuple[dict[int, int], dict[int, dict | None], dict]:
         editable_start = int(getattr(block, "editable_start", 0) or 0)
         if editable_start >= int(block.block_size):
-            empty_trace = {
-                "editable_start": int(editable_start),
-                "block_before": [],
-                "block_after": [],
-                "editable_tokens_before": [],
-                "editable_tokens_after": [],
-                "mask_positions": [],
-                "decode_positions": [],
-                "below_threshold_positions": [],
-                "token_index": [],
-                "top1_tokens": [],
-                "top1_confidence": [],
-                "topk_ids": [],
-                "topk_probs": [],
-                "writes": {},
-            }
-            return {}, {}, {"committable": True, "same_as_previous": True, "all_confident": True}, empty_trace
+            return {}, {}, {"committable": True, "same_as_previous": True, "all_confident": True}
 
         mask_id = int(block.mask_token_id)
         accept_threshold = float(block.thresholds.accept_threshold)
-        trace_topk = max(1, int(self.token_merge_top_k))
         full_block_before = block_tokens.clone()
         top1_tokens = self._sample_argmax(block_logits, temperature)
         mask_index = full_block_before.eq(mask_id)
@@ -135,16 +117,11 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
                 mask_top1_logits = mask_logits_fp32.gather(dim=-1, index=mask_top1).squeeze(-1)
                 mask_lse = torch.logsumexp(mask_logits_fp32, dim=-1)
                 top1_confidence[mask_positions] = torch.exp(mask_top1_logits - mask_lse)
-            topk_ids = top1_tokens.unsqueeze(-1)
-            topk_probs = top1_confidence.unsqueeze(-1)
         else:
             logits_fp32 = block_logits.to(torch.float32)
             top1_logits = logits_fp32.gather(dim=-1, index=top1_tokens.unsqueeze(-1)).squeeze(-1)
             logsumexp = torch.logsumexp(logits_fp32, dim=-1)
             top1_confidence = torch.exp(top1_logits - logsumexp)
-            k = min(trace_topk, int(logits_fp32.shape[-1]))
-            topk_logits, topk_ids = torch.topk(logits_fp32, k=k, dim=-1)
-            topk_probs = torch.exp(topk_logits - logsumexp.unsqueeze(-1))
 
         target_tokens = full_block_before.clone()
         token_index = full_block_before.ne(mask_id)
@@ -201,47 +178,14 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
                     )
                 token_merge_entries[int(rel_idx)] = descriptor
 
-        full_block_after = target_tokens
-        editable_tokens = full_block_before[editable_start:]
-        editable_tokens_after = full_block_after[editable_start:]
-        mask_positions_editable = mask_positions[mask_positions >= editable_start] - editable_start
-        decode_positions_editable = decode_positions[decode_positions >= editable_start] - editable_start
-        below_threshold_positions_editable = (
-            below_threshold_positions[below_threshold_positions >= editable_start] - editable_start
-        )
-        dmax_trace = {
-            "editable_start": int(editable_start),
-            "block_before": full_block_before.tolist(),
-            "block_after": full_block_after.tolist(),
-            "editable_tokens_before": editable_tokens.tolist(),
-            "editable_tokens_after": editable_tokens_after.tolist(),
-            # Keep legacy fields in editable-relative coordinates for compatibility.
-            "mask_positions": [int(x) for x in mask_positions_editable.tolist()],
-            "decode_positions": [int(x) for x in decode_positions_editable.tolist()],
-            "below_threshold_positions": [int(x) for x in below_threshold_positions_editable.tolist()],
-            # Add block-relative coordinates to align with reference generate_spd traces.
-            "mask_positions_block": [int(x) for x in mask_positions.tolist()],
-            "decode_positions_block": [int(x) for x in decode_positions.tolist()],
-            "below_threshold_positions_block": [int(x) for x in below_threshold_positions.tolist()],
-            "token_index": token_index.to(torch.int).tolist(),
-            "top1_tokens": top1_tokens.tolist(),
-            "top1_confidence": top1_confidence.tolist(),
-            "topk_ids": topk_ids.tolist(),
-            "topk_probs": topk_probs.tolist(),
-            "writes": {int(rel_idx): int(token) for rel_idx, token in block_writes.items()},
-        }
-
         return block_writes, token_merge_entries, {
             "committable": bool(same_as_previous or all_confident),
             "same_as_previous": bool(same_as_previous),
             "all_confident": bool(all_confident),
-        }, dmax_trace
+        }
 
     def _reset_block_state_map(self) -> None:
         self._last_block_state_map = {}
-
-    def _reset_dmax_trace_map(self) -> None:
-        self._last_dmax_trace_map = {}
 
     def _build_edit_writes_map(
         self,
@@ -256,13 +200,11 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         edit_writes_map: dict[str, dict[str, dict[int, int]]] = {}
         self._reset_token_merge_map()
         self._reset_block_state_map()
-        self._reset_dmax_trace_map()
         for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
             req_id_str = str(req.req_id)
             req_edit_writes: dict[str, dict[int, int]] = {}
             req_token_merge: dict[int, dict | None] = {}
             req_block_states: dict[str, dict] = {}
-            req_dmax_trace: dict[str, dict] = {}
             for block_id, block in enumerate(req.dllm_blocks):
                 if not block.is_active:
                     continue
@@ -277,14 +219,13 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
                 for rel_idx in range(int(block.block_size)):
                     req_token_merge.setdefault(int(block.start + rel_idx), None)
                 block_tokens = torch.tensor(block.token_ids, dtype=torch.long, device=block_logits.device)
-                block_writes, token_merge_entries, block_state, dmax_trace = self._build_dmax_block_outputs(
+                block_writes, token_merge_entries, block_state = self._build_dmax_block_outputs(
                     block=block,
                     block_tokens=block_tokens,
                     block_logits=block_logits,
                     temperature=float(temperatures[req_idx].item()),
                 )
                 req_block_states[str(block_id)] = block_state
-                req_dmax_trace[str(block_id)] = dmax_trace
                 if block_writes:
                     req_edit_writes[str(block_id)] = block_writes
                 for rel_idx, descriptor in token_merge_entries.items():
@@ -292,7 +233,6 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
             edit_writes_map[req_id_str] = req_edit_writes
             self._set_token_merge_entries(req_id_str, req_token_merge)
             self._last_block_state_map[req_id_str] = req_block_states
-            self._last_dmax_trace_map[req_id_str] = req_dmax_trace
         return edit_writes_map
 
     def _postprocess_sample_output(
@@ -313,7 +253,6 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
             **kwargs,
         )
         sample_output.block_state_map = self._last_block_state_map
-        sample_output.dmax_trace_map = self._last_dmax_trace_map
         return sample_output
 
 

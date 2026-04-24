@@ -1,4 +1,3 @@
-import os
 import pytest
 import torch
 import torch.nn.functional as F
@@ -112,11 +111,6 @@ def call_chunked_prefill_kernel(
 
     grid = (num_seqs, num_heads, triton.cdiv(max_seqlen_q, BLOCK_M))
 
-    launch_kwargs = {}
-    if os.environ.get("DIFFULEX_DISABLE_CHUNKED_PREFILL_AUTOTUNE", "0") == "1":
-        launch_kwargs["BLOCK_M"] = BLOCK_M
-        launch_kwargs["BLOCK_N"] = BLOCK_N
-
     _chunked_prefill_attn_unified_kernel[grid](
         q,
         k,
@@ -158,7 +152,8 @@ def call_chunked_prefill_kernel(
         DLLM_BLOCK_SIZE=dllm_block_size,
         IS_BLOCK_CAUSAL=is_block_causal,
         IS_PREFIX_FULL=is_prefix_full,
-        **launch_kwargs,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
     )
     return o
 

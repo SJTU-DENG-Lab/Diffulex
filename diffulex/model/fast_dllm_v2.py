@@ -40,6 +40,7 @@ class FastdLLMV2Attention(nn.Module):
         qkv_bias: bool = True,
         rope_theta: float = 10000,
         rope_scaling: tuple | None = None,
+        attn_impl: str = "triton",
     ) -> None:
         super().__init__()
         parallel_state = fetch_parallel_state()
@@ -87,6 +88,7 @@ class FastdLLMV2Attention(nn.Module):
             self.head_dim,
             self.scaling,
             self.num_kv_heads,
+            attn_impl=attn_impl,
         )
 
     def forward(
@@ -159,6 +161,7 @@ class FastdLLMV2DecoderLayer(nn.Module):
             head_dim=getattr(config, "head_dim", None),
             rope_theta=getattr(config, "rope_theta", 10000),
             rope_scaling=getattr(config, "rope_scaling", None),
+            attn_impl=getattr(config, "attn_impl", "triton"),
         )
         self.mlp = FastdLLMV2MLP(
             hidden_size=config.hidden_size,

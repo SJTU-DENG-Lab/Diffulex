@@ -126,9 +126,19 @@ class EngineConfig:
     max_model_len: int = 2048
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
+    enable_prefill_cudagraph: bool = True
+    prefill_cudagraph_max_len: int = 0
+    enable_torch_compile: bool = True
+    enable_cudagraph_torch_compile: bool = False
+    torch_compile_mode: str = "reduce-overhead"
+
+    # Scheduler / truncation configuration
+    auto_max_nfe_warmup_steps: int = 8
+    auto_max_nfe_tpf_floor: float = 1.0
 
     # Engine behavior configuration
     enforce_eager: bool = False
+    attn_impl: str = "triton"
     enable_prefix_caching: bool = True
     kv_cache_layout: str = "unified"  # Options: unified, distinct
     page_size: int = 32
@@ -136,6 +146,12 @@ class EngineConfig:
     token_merge_top_k: int = 1
     token_merge_renormalize: bool = True
     token_merge_weight: float = 1.0
+
+    # MoE configuration
+    moe_dispatcher_backend: str = "standard"
+    moe_gemm_impl: str = "triton"
+    deepep_mode: str = "auto"
+    deepep_num_max_dispatch_tokens_per_rank: int = 256
 
     # D2F/MultiBD-specific configuration
     decoding_thresholds: Optional[Dict[str, float]] = (
