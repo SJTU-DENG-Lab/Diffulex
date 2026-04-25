@@ -128,10 +128,13 @@ class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
             for block in req.dllm_blocks:
                 if not getattr(block, "is_active", False):
                     continue
-                state = block_state_map.get(str(block.block_id), {})
-                block.commit_ready = bool(state.get("committable", False))
-                block.same_as_previous = bool(state.get("same_as_previous", False))
-                block.all_confident = bool(state.get("all_confident", False))
+                state = block_state_map.get(str(block.block_id))
+                if state is not None:
+                    block.commit_ready = bool(state.get("committable", False))
+                    block.same_as_previous = bool(state.get("same_as_previous", False))
+                    block.all_confident = bool(state.get("all_confident", False))
+                elif block.is_complete:
+                    block.commit_ready = True
 
             req.postprocess()
             req.nfe += 1

@@ -347,6 +347,10 @@ def load_config_from_args(args) -> BenchmarkConfig:
     def was_provided(name: str) -> bool:
         return getattr(args, name) != getattr(default_args, name)
 
+    def option_was_provided(*flags: str) -> bool:
+        argv = sys.argv[1:]
+        return any(arg == flag or arg.startswith(f"{flag}=") for flag in flags for arg in argv)
+
     if getattr(args, "max_num_reqs", None) is None and getattr(args, "max_num_seqs", None) is not None:
         logger.warning(
             "--max-num-seqs is deprecated and will be removed in a future release; please use --max-num-reqs instead."
@@ -450,7 +454,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
         if max_num_reqs is not None:
             config.engine.max_num_reqs = max_num_reqs
         if (
-            was_provided("max_num_batched_tokens")
+            option_was_provided("--max-num-batched-tokens")
             and getattr(args, "max_num_batched_tokens", None) is not None
         ):
             config.engine.max_num_batched_tokens = args.max_num_batched_tokens

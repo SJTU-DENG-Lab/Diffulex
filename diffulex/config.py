@@ -318,6 +318,14 @@ class Config:
         # Build decoding_thresholds: dict or flat keys -> DecodingThresholds
         d = self.__dict__
         if isinstance(self.decoding_thresholds, dict):
+            for key in (
+                "add_block_threshold",
+                "semi_complete_threshold",
+                "accept_threshold",
+                "remask_threshold",
+            ):
+                if d.get(key) is not None:
+                    self.decoding_thresholds[key] = d[key]
             if "remask_threshold" not in self.decoding_thresholds:
                 self.decoding_thresholds["remask_threshold"] = 0.4
             self.decoding_thresholds = DecodingThresholds(**self.decoding_thresholds)

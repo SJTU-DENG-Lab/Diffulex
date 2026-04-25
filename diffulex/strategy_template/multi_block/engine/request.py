@@ -116,8 +116,7 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def num_prefix_blocks(self) -> int:
-        # return self.prefix_len // self.block_size
-        return self.num_blocks_with_seq_len(self.prefix_len)
+        return self.prefix_len // self.block_size
 
     @property
     def num_prefix_pages(self: DllmReq) -> int:
@@ -198,6 +197,8 @@ class MultiBlockReqTemplate(DllmReq):
             return self.token_ids[self.prefix_len : self.prefix_len + self.max_new_tokens]
         else:
             dummy_len = self.chunk_size - len(self.dllm_block_buffer.valid_blocks) * self.block_size
+            if dummy_len <= 0:
+                return self.token_ids[self.prefix_len :]
             return self.token_ids[self.prefix_len : -dummy_len]
 
     @property
