@@ -5,6 +5,7 @@ from contextlib import contextmanager, nullcontext
 
 import torch
 import torch.distributed as dist
+import torch._inductor.config as inductor_config
 
 from tqdm import tqdm
 
@@ -91,14 +92,22 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
 
         original_forward = self.model.forward
         mode = str(getattr(self.config, "torch_compile_mode", "reduce-overhead") or "reduce-overhead")
+        compile_config_patch = {
+            # We already wrap the compiled forward in our own CUDA graph.
+            # Inductor's internal cudagraph trees try to replay during outer
+            # capture and fail with "Cannot prepare for replay during capturing".
+            "triton.cudagraphs": False,
+            "triton.cudagraph_trees": False,
+        }
         try:
-            self.model.forward = torch.compile(
-                torch.no_grad()(original_forward),
-                mode=mode,
-                fullgraph=False,
-                dynamic=False,
-            )
-            yield True
+            with inductor_config.patch(compile_config_patch):
+                self.model.forward = torch.compile(
+                    torch.no_grad()(original_forward),
+                    mode=mode,
+                    fullgraph=False,
+                    dynamic=False,
+                )
+                yield True
         finally:
             self.model.forward = original_forward
 
@@ -134,9 +143,14 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
         num_tokens: int,
         *,
         allow_compile: bool = False,
+        capture_logits: bool = False,
     ) -> torch.cuda.CUDAGraph:
         def run_once() -> None:
-            outputs[:num_tokens] = self.model(input_ids[:num_tokens], positions[:num_tokens])
+            hidden_states = self.model(input_ids[:num_tokens], positions[:num_tokens])
+            if capture_logits:
+                outputs[:num_tokens] = self.model.compute_logits(hidden_states)
+            else:
+                outputs[:num_tokens] = hidden_states
 
         stream = self._get_graph_capture_stream()
         pool = self._get_graph_pool()
@@ -290,6 +304,25 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             return next(self.model.parameters()).dtype
         except StopIteration:
             return torch.get_default_dtype()
+
+    def _model_logits_dtype(self) -> torch.dtype:
+        return self._model_hidden_dtype()
+
+    def _model_logits_size(self) -> int:
+        lm_head = getattr(self.model, "lm_head", None)
+        partition_size = getattr(lm_head, "num_embeddings_per_partition", None)
+        if partition_size is not None:
+            return int(partition_size)
+        vocab_size = getattr(self.config, "tokenizer_vocab_size", None) or getattr(self.config.hf_config, "vocab_size")
+        if self.world_size <= 1:
+            return int(vocab_size)
+        return int(vocab_size) // int(self.world_size)
+
+    def _can_capture_logits_in_graph(self) -> bool:
+        # TP lm_head captures all-gather/NCCL and rank-local None outputs.
+        # Logits buffers are vocab-sized, so keep the first version to the
+        # single-request SDAR eval path before enabling broader serving shapes.
+        return self.world_size == 1 and int(self.config.max_num_reqs) == 1
 
     def _ensure_runtime_static_buffers(
         self,
@@ -765,6 +798,9 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
 
         max_num_tokens = max_num_seqs * chunk_size
         device = self._cuda_graph_device()
+        capture_logits = self._can_capture_logits_in_graph()
+        self.graph_outputs_are_logits = capture_logits
+        output_size = self._model_logits_size() if capture_logits else hf_config.hidden_size
 
         input_ids = torch.zeros(max_num_tokens, dtype=torch.int64, device=device)
         positions = torch.zeros(max_num_tokens, dtype=torch.int64, device=device)
@@ -775,7 +811,7 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
         status_table = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
         prefix_lens = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
         padded_prefix_lens = torch.zeros(max_num_seqs, dtype=torch.int32, device=device)
-        outputs = torch.zeros(max_num_tokens, hf_config.hidden_size, dtype=self._model_hidden_dtype(), device=device)
+        outputs = torch.zeros(max_num_tokens, output_size, dtype=self._model_logits_dtype(), device=device)
 
         cu_seqlens_q = torch.zeros(max_num_seqs + 1, dtype=torch.int32, device=device)
         for i in range(max_num_seqs + 1):
@@ -819,7 +855,14 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
                 padded_prefix_lens=padded_prefix_lens[:num_seqs],
             )
 
-            graph = self._capture_model_forward_graph(input_ids, positions, outputs, num_tokens, allow_compile=True)
+            graph = self._capture_model_forward_graph(
+                input_ids,
+                positions,
+                outputs,
+                num_tokens,
+                allow_compile=True,
+                capture_logits=capture_logits,
+            )
             if self.graph_pool is None:
                 self.graph_pool = graph.pool()
             self.graphs[num_tokens] = graph

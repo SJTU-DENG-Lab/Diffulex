@@ -51,11 +51,13 @@ def triton_attention(
     v: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
-    attn_metadata: AttnMetaDataBase,
-    is_unified_layout: bool,
 ) -> torch.Tensor:
     # Keep Triton JIT/autotune state out of torch.compile; CUDA graph capture
     # still records the launched kernels.
+    from diffulex.attention import fetch_attn_metadata
+
+    attn_metadata: AttnMetaDataBase = fetch_attn_metadata()
+    is_unified_layout = attn_metadata.kv_cache_layout == "unified"
     if k_cache.numel() and v_cache.numel():
         if attn_metadata.need_kv_cache_store:
             store_kv_cache = store_kv_cache_unified_layout if is_unified_layout else store_kv_cache_distinct_layout
@@ -143,11 +145,9 @@ class Attention(nn.Module):
         if self.attn_impl != "triton":
             raise ValueError(f"Unsupported attn_impl: {self.attn_impl}")
 
-        attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
         k_cache, v_cache = self.k_cache, self.v_cache
-        is_unified_layout = attn_metadata.kv_cache_layout == "unified"
 
-        o = triton_attention(q, k, v, k_cache, v_cache, attn_metadata, is_unified_layout)
+        o = triton_attention(q, k, v, k_cache, v_cache)
 
         # Final reshape
         return rearrange(o, "s nh hd -> s (nh hd)").contiguous()

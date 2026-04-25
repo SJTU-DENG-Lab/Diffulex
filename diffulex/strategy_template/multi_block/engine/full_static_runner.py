@@ -88,4 +88,6 @@ class FullStaticRunner:
         self.owner._bind_decode_graph_extra_metadata(attn_metadata, graph_vars, num_tokens)
 
         graph.replay()
+        if bool(getattr(self.owner, "graph_outputs_are_logits", False)):
+            return graph_vars["outputs"][:num_tokens]
         return self.owner.model.compute_logits(graph_vars["outputs"][:num_tokens])
