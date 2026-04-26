@@ -88,13 +88,18 @@ def extract_code(text: str) -> str:
     return text.strip()
 
 
+def _code_text_for_prediction(doc: dict, prediction: str) -> str:
+    if "```" in prediction:
+        return prediction
+    return doc.get("prefix", "") + prediction
+
+
 def process_results_code_dmax_chat(doc: dict, results: list[str]) -> dict[str, Any]:
     prediction = results[0] if results else ""
     test_method = doc.get("test_method", "function")
 
     if test_method == "function":
-        prefix = doc.get("prefix", "")
-        code = extract_code(prefix + prediction)
+        code = extract_code(_code_text_for_prediction(doc, prediction))
         tests = doc.get("test_list", [])
         timeout = doc.get("test_time_limit", 1)
         correctness = evaluate_code_function(code, tests, timeout)

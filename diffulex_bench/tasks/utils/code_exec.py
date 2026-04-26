@@ -33,7 +33,8 @@ def _run_many_pipe(snippet: str, tests: list[str], conn):
 
 
 def _check_snippet_many(snippet: str, tests: list[str], t_limit: int, spawn_slack: float = 2.0) -> list[bool]:
-    ctx = mp.get_context("spawn")
+    start_method = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
+    ctx = mp.get_context(start_method)
     parent_conn, child_conn = ctx.Pipe(duplex=False)
     p = ctx.Process(target=_run_many_pipe, args=(snippet, tests, child_conn), daemon=True)
     p.start()
