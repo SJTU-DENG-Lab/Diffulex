@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class SamplingParams:
     temperature: float = 1.0
     max_tokens: int = 512
-    max_nfe: int | None = 512
+    max_nfe: int | None = None
     max_repetition_run: int | None = None
     ignore_eos: bool = False
 

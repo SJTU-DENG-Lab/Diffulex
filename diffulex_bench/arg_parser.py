@@ -188,7 +188,7 @@ Examples:
         "--max-nfe",
         type=int,
         default=None,
-        help="Maximum number of forward evaluations (NFE) allowed per request",
+        help="Maximum number of forward evaluations (NFE) allowed per request; omit to auto-derive from per-request avg TPF and max_tokens",
     )
     parser.add_argument(
         "--max-repetition-run",
@@ -455,13 +455,13 @@ Examples:
         "--auto-max-nfe-warmup-steps",
         type=int,
         default=None,
-        help="Warmup steps before deriving max_nfe from per-request average TPF when max_nfe is unset",
+        help="Warmup steps before deriving max_nfe from the request's average TPF when max_nfe is unset",
     )
     parser.add_argument(
         "--auto-max-nfe-tpf-floor",
         type=float,
         default=None,
-        help="Minimum TPF used when deriving max_nfe from max_tokens",
+        help="Minimum per-request average TPF used when deriving max_nfe from max_tokens",
     )
     parser.add_argument(
         "--multi-block-prefix-full",

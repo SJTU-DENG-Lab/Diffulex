@@ -27,7 +27,7 @@ class GenerateRequest(BaseModel):
     prompt: str | list[int]
     max_tokens: int = 512
     temperature: float = 1.0
-    max_nfe: int | None = 512
+    max_nfe: int | None = None
     max_repetition_run: int | None = None
     ignore_eos: bool = False
     stream: bool = False
@@ -45,7 +45,7 @@ class ChatCompletionRequest(BaseModel):
     model: str | None = None
     max_tokens: int = 512
     temperature: float = 1.0
-    max_nfe: int | None = 512
+    max_nfe: int | None = None
     max_repetition_run: int | None = None
     ignore_eos: bool = False
     stream: bool = False

@@ -43,6 +43,7 @@ class MultiBlockReqTemplate(DllmReq):
         self.auto_max_nfe_tpf_floor = float(getattr(config, "auto_max_nfe_tpf_floor", 1.0))
         self.auto_max_nfe_token_count = 0
         self.auto_max_nfe_value: int | None = None
+        self.auto_max_nfe_avg_tpf: float | None = None
 
         self.dllm_blocks: list[DllmBlock] = []
         self.dllm_block_buffer: DllmBlockBuffer = None
@@ -146,6 +147,7 @@ class MultiBlockReqTemplate(DllmReq):
             return
 
         avg_tpf = self.auto_max_nfe_token_count / max(1, self.nfe)
+        self.auto_max_nfe_avg_tpf = avg_tpf
         effective_tpf = max(avg_tpf, self.auto_max_nfe_tpf_floor)
         self.auto_max_nfe_value = max(1, int(math.ceil(self.max_new_tokens / effective_tpf)))
         self.max_nfe = max(self.nfe, self.auto_max_nfe_value)

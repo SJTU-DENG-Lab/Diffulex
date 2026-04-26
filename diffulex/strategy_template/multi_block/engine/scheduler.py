@@ -160,7 +160,7 @@ class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
                 if req.completion_reason is None:
                     req.completion_reason = "completed_without_reason"
                 self._logger.info(
-                    "Req %s marked FINISHED (reason=%s, eos=%s, max_new=%s, max_model_len=%s, max_nfe=%s, max_repeat=%s, nfe=%s, gen_tokens=%s)",
+                    "Req %s marked FINISHED (reason=%s, eos=%s, max_new=%s, max_model_len=%s, max_nfe=%s, max_repeat=%s, nfe=%s, gen_tokens=%s, auto_max_nfe=%s, avg_tpf=%s)",
                     req.req_id,
                     req.completion_reason,
                     req.eos_token_generated,
@@ -170,6 +170,12 @@ class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
                     req.max_repetition_run_reached,
                     req.nfe,
                     len(req.truncated_response) if req.truncated_response is not None else -1,
+                    getattr(req, "auto_max_nfe_value", None),
+                    (
+                        f"{getattr(req, 'auto_max_nfe_avg_tpf', 0.0):.2f}"
+                        if getattr(req, "auto_max_nfe_avg_tpf", None) is not None
+                        else "n/a"
+                    ),
                 )
                 req.status = DllmReqStatus.FINISHED
                 self.kv_cache_manager.free(req)
