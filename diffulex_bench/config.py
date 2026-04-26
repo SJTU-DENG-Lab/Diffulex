@@ -243,6 +243,8 @@ class EvalConfig:
     use_run_subdirectory: bool = True
     save_results: bool = True
     use_tqdm: bool = True
+    # lm-eval requires explicit confirmation for code tasks that execute generated code.
+    confirm_run_unsafe_code: bool = True
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "EvalConfig":

@@ -302,6 +302,9 @@ def run_benchmark(config: BenchmarkConfig) -> None:
     if config.eval.save_results:
         sys.argv.extend(["--log_samples"])
 
+    if config.eval.confirm_run_unsafe_code:
+        sys.argv.extend(["--confirm_run_unsafe_code"])
+
     # Add any additional lm_eval arguments from config if needed
     # For now, we use default batch_size=1
 
@@ -437,6 +440,8 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.eval.dataset_data_files = args.dataset_data_files
         if getattr(args, "use_run_subdirectory", None) is not None:
             config.eval.use_run_subdirectory = bool(args.use_run_subdirectory)
+        if getattr(args, "confirm_run_unsafe_code", None) is not None:
+            config.eval.confirm_run_unsafe_code = bool(args.confirm_run_unsafe_code)
 
         # Engine overrides (make bench configs reusable for eager vs CUDA Graph comparisons)
         if getattr(args, "enforce_eager", None) is not None:
@@ -618,6 +623,11 @@ def load_config_from_args(args) -> BenchmarkConfig:
                 else True
             ),
             save_results=args.save_results,
+            confirm_run_unsafe_code=(
+                bool(args.confirm_run_unsafe_code)
+                if getattr(args, "confirm_run_unsafe_code", None) is not None
+                else True
+            ),
             include_path=getattr(args, "include_path", None),
         )
 

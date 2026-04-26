@@ -259,6 +259,12 @@ Examples:
         action="store_false",
         help="Do not save results to file",
     )
+    parser.add_argument(
+        "--confirm-run-unsafe-code",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow lm-eval code tasks marked unsafe_code=true to run generated code (default: true).",
+    )
 
     # LoRA arguments
     parser.add_argument(

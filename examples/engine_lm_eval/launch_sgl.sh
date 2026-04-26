@@ -1,6 +1,6 @@
 #!/bin/bash
-# MODEL=/root/data/ckpts/inclusionAI/LLaDA2.0-mini
-MODEL=/root/data/ckpts/JetLM/SDAR-8B-Chat-b32
+MODEL=/root/data/ckpts/inclusionAI/LLaDA2.0-mini
+# MODEL=/root/data/ckpts/JetLM/SDAR-8B-Chat-b32
 
 python -m sglang.launch_server \
   --model-path $MODEL \
