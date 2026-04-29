@@ -21,16 +21,23 @@ from diffulex.utils.output import GenerationOutputs
 logger = get_logger(__name__)
 
 
-def maybe_override_mask_token_id(config: Config, tokenizer) -> None:
+def maybe_override_mask_token_id(
+    config: Config,
+    tokenizer,
+    *,
+    mask_token_id_explicit: bool = False,
+) -> None:
     """Resolve mask token id from model artifacts when config still uses a placeholder default.
 
     Some tokenizers, including LLaDA, do not expose ``tokenizer.mask_token_id`` even though the
     model config carries the correct ``mask_token_id``. In those cases, server startup would fall
     back to the global default and corrupt the denoising buffer initialization.
 
-    When callers provide a non-default ``mask_token_id``, keep that value and skip tokenizer /
-    HF overrides.
+    When callers provide ``mask_token_id``, keep that value and skip tokenizer / HF overrides.
     """
+
+    if mask_token_id_explicit:
+        return
 
     default_mask_token_id = Config.mask_token_id
 
@@ -82,7 +89,11 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
         config.tokenizer_vocab_size = len(self.tokenizer)
         config.eos = self.tokenizer.eos_token_id
-        maybe_override_mask_token_id(config, self.tokenizer)
+        maybe_override_mask_token_id(
+            config,
+            self.tokenizer,
+            mask_token_id_explicit="mask_token_id" in config_kwargs,
+        )
 
         ctx = mp.get_context("spawn")
         for i in range(1, self.model_parallel_world_size):
