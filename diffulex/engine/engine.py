@@ -27,12 +27,21 @@ def maybe_override_mask_token_id(config: Config, tokenizer) -> None:
     Some tokenizers, including LLaDA, do not expose ``tokenizer.mask_token_id`` even though the
     model config carries the correct ``mask_token_id``. In those cases, server startup would fall
     back to the global default and corrupt the denoising buffer initialization.
+
+    When callers provide a non-default ``mask_token_id``, keep that value and skip tokenizer /
+    HF overrides.
     """
 
+    default_mask_token_id = Config.mask_token_id
+
     tokenizer_mask_token_id = getattr(tokenizer, "mask_token_id", None)
-    if tokenizer_mask_token_id is not None and config.mask_token_id != tokenizer_mask_token_id:
+    if (
+        tokenizer_mask_token_id is not None
+        and config.mask_token_id == default_mask_token_id
+        and int(tokenizer_mask_token_id) != default_mask_token_id
+    ):
         logger.warning(
-            "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
+            "Overriding default mask_token_id from %s to tokenizer mask_token_id %s.",
             config.mask_token_id,
             tokenizer_mask_token_id,
         )
@@ -40,7 +49,6 @@ def maybe_override_mask_token_id(config: Config, tokenizer) -> None:
         return
 
     hf_mask_token_id = getattr(getattr(config, "hf_config", None), "mask_token_id", None)
-    default_mask_token_id = Config.mask_token_id
     if (
         hf_mask_token_id is not None
         and config.mask_token_id == default_mask_token_id
