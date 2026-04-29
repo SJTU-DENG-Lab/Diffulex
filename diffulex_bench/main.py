@@ -595,6 +595,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
                 "semi_complete_threshold": getattr(args, "semi_complete_threshold", 0.9),
                 "accept_threshold": getattr(args, "accept_threshold", 0.9),
                 "remask_threshold": getattr(args, "remask_threshold", 0.4),
+                "token_stability_threshold": getattr(args, "token_stability_threshold", 0.0),
             },
             block_size=(args.block_size if getattr(args, "block_size", None) is not None else 32),
             buffer_size=getattr(args, "buffer_size", 4),

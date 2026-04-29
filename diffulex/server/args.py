@@ -57,6 +57,7 @@ class ServerArgs:
     semi_complete_threshold: float | None = None
     accept_threshold: float | None = None
     remask_threshold: float | None = None
+    token_stability_threshold: float | None = None
 
     use_lora: bool = False
     lora_path: str = ""
@@ -103,6 +104,9 @@ class ServerArgs:
                 else self.semi_complete_threshold,
                 "accept_threshold": 0.9 if self.accept_threshold is None else self.accept_threshold,
                 "remask_threshold": 0.4 if self.remask_threshold is None else self.remask_threshold,
+                "token_stability_threshold": 0.0
+                if self.token_stability_threshold is None
+                else self.token_stability_threshold,
             },
             "use_lora": self.use_lora,
             "lora_path": self.lora_path,
@@ -149,13 +153,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-prefix-caching", action="store_true")
     parser.add_argument("--kv-cache-layout", default="unified", choices=["unified", "distinct"])
     parser.add_argument("--moe-dispatcher-backend", default="standard", choices=["standard", "naive", "deepep"])
-    parser.add_argument("--moe-gemm-impl", default="triton", choices=["triton", "vllm", "naive"])
+    parser.add_argument("--moe-gemm-impl", default="triton", choices=["triton", "vllm", "vllm_modular", "naive"])
     parser.add_argument("--deepep-mode", default="auto", choices=["normal", "low_latency", "auto"])
     parser.add_argument("--deepep-num-max-dispatch-tokens-per-rank", type=int, default=256)
     parser.add_argument("--add-block-threshold", type=float, default=None)
     parser.add_argument("--semi-complete-threshold", type=float, default=None)
     parser.add_argument("--accept-threshold", type=float, default=None)
     parser.add_argument("--remask-threshold", type=float, default=None)
+    parser.add_argument("--token-stability-threshold", type=float, default=None)
 
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--lora-path", default="")
@@ -208,6 +213,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         semi_complete_threshold=ns.semi_complete_threshold,
         accept_threshold=ns.accept_threshold,
         remask_threshold=ns.remask_threshold,
+        token_stability_threshold=ns.token_stability_threshold,
         use_lora=ns.use_lora,
         lora_path=ns.lora_path,
         pre_merge_lora=ns.pre_merge_lora,

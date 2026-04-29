@@ -18,6 +18,7 @@ from diffulex.attention.metadata import set_warming_up, reset_warming_up
 from diffulex.model import AutoModelForDiffusionLM
 from diffulex.engine.strategy_registry import DiffulexStrategyRegistry
 from diffulex.logger import get_logger
+from diffulex.profiling import TorchProfileSession, record_function
 from diffulex.vllm_compat import reset_vllm_compat_state, vllm_current_config
 
 
@@ -84,6 +85,7 @@ class ModelRunnerBase(
             config.enforce_eager = True
         self.world_size = parallel_state.world_size
         self.rank = parallel_state.global_rank
+        self.profile_session = TorchProfileSession("model_runner", rank=self.rank)
         self.dp_rank = parallel_state.dp_rank
         self.dp_world_size = parallel_state.dp_size
         self.cross_dp_ep = parallel_state.is_cross_dp_ep
@@ -113,6 +115,8 @@ class ModelRunnerBase(
         self.start_worker_loop()
 
     def exit(self):
+        if hasattr(self, "profile_session"):
+            self.profile_session.stop()
         if not getattr(self, "_runner_exited", False):
             self._runner_exited = True
         else:
@@ -213,7 +217,14 @@ class ModelRunnerBase(
         if self.world_size > 1 and self.rank == 0:
             self.write_shm(method_name, *args)
         method = getattr(self, method_name, None)
-        return method(*args)
+        if method_name == "run":
+            self.profile_session.start()
+            with record_function(f"diffulex.model_runner.rank{self.rank}.run"):
+                result = method(*args)
+            self.profile_session.step()
+            return result
+        with record_function(f"diffulex.model_runner.rank{self.rank}.{method_name}"):
+            return method(*args)
 
     def load_model(self, config: Config):
         """Instantiate the underlying model; override to customize."""

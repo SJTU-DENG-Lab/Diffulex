@@ -132,9 +132,11 @@ class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
                 if state is not None:
                     block.commit_ready = bool(state.get("committable", False))
                     block.same_as_previous = bool(state.get("same_as_previous", False))
+                    block.same_token_ratio = float(state.get("same_token_ratio", 0.0))
                     block.all_confident = bool(state.get("all_confident", False))
                 elif block.is_complete:
                     block.commit_ready = True
+                    block.same_token_ratio = 1.0
 
             req.postprocess()
             req.nfe += 1

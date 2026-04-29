@@ -6,6 +6,36 @@ from typing import Any
 from diffulex_bench.tasks.utils import evaluate_code_function, evaluate_code_stdio
 
 
+def process_docs_dinfer_sanitized(dataset):
+    def _process_doc(doc):
+        doc["text"] = doc.get("prompt", doc.get("text", ""))
+        doc["test_list_str"] = "\n".join(doc.get("test_list", []))
+        doc["test_method"] = "function"
+        doc["test_time_limit"] = doc.get("test_time_limit", 1)
+        return doc
+
+    return dataset.map(_process_doc)
+
+
+def doc_to_text_code_function_dinfer_chat(doc: dict) -> str:
+    problem = doc.get("text", doc.get("prompt", doc.get("question", "")))
+    test_list_str = doc.get("test_list_str")
+    if test_list_str is None:
+        test_list_str = "\n".join(doc.get("test_list", []))
+    user_content = (
+        "You are an expert Python programmer, and here is your task: "
+        f"{problem} Your code should pass these tests:\n\n"
+        f"{test_list_str}\n\n"
+        "Please enclose your code within delimiters as follows:\n"
+        "```python\n# YOUR CODE HERE\n```\n\n"
+    )
+    return (
+        "<role>SYSTEM</role>detailed thinking off<|role_end|>"
+        f"<role>HUMAN</role>{user_content}<|role_end|>"
+        "<role>ASSISTANT</role>"
+    )
+
+
 def doc_to_text_code_function_dmax_chat(doc: dict) -> str:
     problem = doc.get("text", doc.get("prompt", doc.get("question", "")))
     user_content = (
@@ -39,7 +69,16 @@ def doc_to_text_code_stdio_dmax_chat(doc: dict) -> str:
 def extract_code(text: str) -> str:
     blocks = re.findall(r"```(?:python)?\n(.*?)\n```", text, re.DOTALL)
     if blocks:
-        text = blocks[0].strip()
+        for block in reversed(blocks):
+            candidate = block.strip()
+            try:
+                ast.parse(candidate)
+            except Exception:
+                continue
+            text = candidate
+            break
+        else:
+            text = blocks[-1].strip()
 
     patterns = [
         r"'(.*)'\s*$$DONE$$",

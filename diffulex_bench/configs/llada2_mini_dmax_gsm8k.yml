@@ -41,10 +41,14 @@ engine:
   token_merge_weight: 1.0
 
   decoding_thresholds:
-    add_block_threshold: 0.1
-    semi_complete_threshold: 0.9
-    accept_threshold: 0.65
+    # For Code
+    # add_block_threshold: 0.90
+    # semi_complete_threshold: 0.90
+    add_block_threshold: 0.10
+    semi_complete_threshold: 0.90
+    accept_threshold: 0.5
     remask_threshold: 0.4
+    token_stability_threshold: 0.0
 
   block_size: 32
   buffer_size: 1

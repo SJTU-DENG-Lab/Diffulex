@@ -18,6 +18,7 @@ from diffulex.engine.request import AutoReq, DllmReq
 from diffulex.engine.status import DllmReqStatus
 from diffulex.engine.model_runner import ModelRunnerBase
 from diffulex.logger import get_logger
+from diffulex.profiling import record_function
 from diffulex.strategy_template.multi_block.engine.full_static_runner import FullStaticRunner
 from diffulex.vllm_compat import vllm_graph_capture
 
@@ -754,36 +755,51 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ):
-        attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
-        full_runner = self._full_static_runner()
+        with record_function("diffulex.multi_block.model_forward"):
+            attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
+            full_runner = self._full_static_runner()
 
-        if (attn_metadata.status_table == 0).any():
-            if full_runner.can_run_prefill(attn_metadata, int(input_ids.size(0))):
-                return full_runner.run_prefill(input_ids, positions, attn_metadata)
-            return self.model.compute_logits(self.model(input_ids, positions))
+            if (attn_metadata.status_table == 0).any():
+                if full_runner.can_run_prefill(attn_metadata, int(input_ids.size(0))):
+                    with record_function("diffulex.multi_block.full_static_prefill"):
+                        return full_runner.run_prefill(input_ids, positions, attn_metadata)
+                with record_function("diffulex.multi_block.eager_prefill"):
+                    return self.model.compute_logits(self.model(input_ids, positions))
 
-        if not full_runner.can_run_decode(input_ids):
-            return self.model.compute_logits(self.model(input_ids, positions))
-        return full_runner.run_decode(input_ids, positions, attn_metadata)
+            if not full_runner.can_run_decode(input_ids):
+                with record_function("diffulex.multi_block.eager_decode"):
+                    return self.model.compute_logits(self.model(input_ids, positions))
+            with record_function("diffulex.multi_block.full_static_decode"):
+                return full_runner.run_decode(input_ids, positions, attn_metadata)
 
     def run_multi_block(self: ModelRunnerBase, reqs: list[DllmReq]) -> list[int]:
         return self._run_multi_block_subgroup(reqs)
 
     def _run_multi_block_subgroup(self: ModelRunnerBase, reqs: list[DllmReq]):
-        local_reqs = self.filter_local_reqs(reqs)
+        with record_function("diffulex.multi_block.filter_local_reqs"):
+            local_reqs = self.filter_local_reqs(reqs)
         if not local_reqs:
             if self.cross_dp_ep:
-                input_ids, positions = self.prepare_idle_multi_block()
-                self.run_idle_multi_block(input_ids, positions)
-                self.reset_attn_metadata()
-            return self.gather_dp_sample_output(None)
+                with record_function("diffulex.multi_block.prepare_idle"):
+                    input_ids, positions = self.prepare_idle_multi_block()
+                with record_function("diffulex.multi_block.idle_forward"):
+                    self.run_idle_multi_block(input_ids, positions)
+                with record_function("diffulex.multi_block.reset_attn_metadata"):
+                    self.reset_attn_metadata()
+            with record_function("diffulex.multi_block.gather_dp_sample_output"):
+                return self.gather_dp_sample_output(None)
 
-        input_ids, positions = self.prepare_chunked_prefill_multi_block(local_reqs)
-        temperatures = self.prepare_sample(local_reqs) if self.is_model_parallel_root else None
+        with record_function("diffulex.multi_block.prepare_chunked_prefill"):
+            input_ids, positions = self.prepare_chunked_prefill_multi_block(local_reqs)
+        with record_function("diffulex.multi_block.prepare_sample"):
+            temperatures = self.prepare_sample(local_reqs) if self.is_model_parallel_root else None
         logits = self.run_model_multi_block(input_ids, positions)
-        sample_output = self.sampler(local_reqs, logits, temperatures) if self.is_model_parallel_root else None
-        self.reset_attn_metadata()
-        return self.gather_dp_sample_output(sample_output)
+        with record_function("diffulex.multi_block.sampler"):
+            sample_output = self.sampler(local_reqs, logits, temperatures) if self.is_model_parallel_root else None
+        with record_function("diffulex.multi_block.reset_attn_metadata"):
+            self.reset_attn_metadata()
+        with record_function("diffulex.multi_block.gather_dp_sample_output"):
+            return self.gather_dp_sample_output(sample_output)
 
     @torch.inference_mode()
     def capture_cudagraph_multi_block(self: ModelRunnerBase):

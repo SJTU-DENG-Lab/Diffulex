@@ -20,12 +20,14 @@ DEFAULT_DECODING_THRESHOLDS = {
     "semi_complete_threshold": 0.9,
     "accept_threshold": 0.9,
     "remask_threshold": 0.4,
+    "token_stability_threshold": 0.0,
 }
 FLAT_THRESHOLD_KEYS = (
     "add_block_threshold",
     "semi_complete_threshold",
     "accept_threshold",
     "remask_threshold",
+    "token_stability_threshold",
 )
 
 
@@ -156,7 +158,7 @@ class EngineConfig:
 
     # D2F/MultiBD-specific configuration
     decoding_thresholds: Optional[Dict[str, float]] = (
-        None  # {add_block_threshold, semi_complete_threshold, accept_threshold, remask_threshold}
+        None  # {add_block_threshold, semi_complete_threshold, accept_threshold, remask_threshold, token_stability_threshold}
     )
     block_size: int = 32  # Aligned with diffulex.config.Config.block_size
     buffer_size: int = 4

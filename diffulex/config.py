@@ -23,6 +23,7 @@ class DecodingThresholds:
     semi_complete_threshold: float  # whether unleash the decoding of the next block
     accept_threshold: float  # whether the token should be decoded
     remask_threshold: float = 0.4  # whether a filled token should be remasked
+    token_stability_threshold: float = 0.0  # whether decoded tokens are stable enough to add a new block
 
 
 @dataclass
@@ -57,6 +58,7 @@ class Config:
     semi_complete_threshold: float | None = None
     accept_threshold: float | None = None
     remask_threshold: float | None = None
+    token_stability_threshold: float | None = None
     # Truncation
     auto_max_nfe_warmup_steps: int = 8
     auto_max_nfe_tpf_floor: float = 1.0
@@ -202,9 +204,9 @@ class Config:
                 "moe_dispatcher_backend must be one of {'standard', 'naive', 'deepep'}, "
                 f"got: {self.moe_dispatcher_backend}"
             )
-        if self.moe_gemm_impl not in {"triton", "vllm", "naive"}:
+        if self.moe_gemm_impl not in {"triton", "vllm", "vllm_modular", "naive"}:
             raise ValueError(
-                "moe_gemm_impl must be one of {'triton', 'vllm', 'naive'}, "
+                "moe_gemm_impl must be one of {'triton', 'vllm', 'vllm_modular', 'naive'}, "
                 f"got: {self.moe_gemm_impl}"
             )
         if self.deepep_mode not in {"normal", "low_latency", "auto"}:
@@ -323,22 +325,29 @@ class Config:
                 "semi_complete_threshold",
                 "accept_threshold",
                 "remask_threshold",
+                "token_stability_threshold",
             ):
                 if d.get(key) is not None:
                     self.decoding_thresholds[key] = d[key]
             if "remask_threshold" not in self.decoding_thresholds:
                 self.decoding_thresholds["remask_threshold"] = 0.4
+            if "token_stability_threshold" not in self.decoding_thresholds:
+                self.decoding_thresholds["token_stability_threshold"] = 0.0
             self.decoding_thresholds = DecodingThresholds(**self.decoding_thresholds)
         elif self.decoding_thresholds is None:
             add_block_threshold = d.get("add_block_threshold")
             semi_complete_threshold = d.get("semi_complete_threshold")
             accept_threshold = d.get("accept_threshold")
             remask_threshold = d.get("remask_threshold")
+            token_stability_threshold = d.get("token_stability_threshold")
             self.decoding_thresholds = DecodingThresholds(
                 add_block_threshold=0.1 if add_block_threshold is None else add_block_threshold,
                 semi_complete_threshold=0.9 if semi_complete_threshold is None else semi_complete_threshold,
                 accept_threshold=0.9 if accept_threshold is None else accept_threshold,
                 remask_threshold=0.4 if remask_threshold is None else remask_threshold,
+                token_stability_threshold=0.0
+                if token_stability_threshold is None
+                else token_stability_threshold,
             )
 
         if not 0.0 <= self.decoding_thresholds.accept_threshold <= 1.0:
@@ -350,6 +359,11 @@ class Config:
             raise ValueError(
                 "decoding_thresholds.remask_threshold must be in [0, 1], "
                 f"got: {self.decoding_thresholds.remask_threshold}"
+            )
+        if not 0.0 <= self.decoding_thresholds.token_stability_threshold <= 1.0:
+            raise ValueError(
+                "decoding_thresholds.token_stability_threshold must be in [0, 1], "
+                f"got: {self.decoding_thresholds.token_stability_threshold}"
             )
         self.accept_threshold = self.decoding_thresholds.accept_threshold
         self.remask_threshold = self.decoding_thresholds.remask_threshold

@@ -122,6 +122,17 @@ class TPFusedMoE(FusedMoE):
         target.copy_(shard)
 
     def resolve_checkpoint_weight(self, suffix: str, ctx: LoadContext) -> ResolvedWeight | None:
+        # Stacked format: experts.gate_proj.weight (all experts in one tensor)
+        stacked_match = re.fullmatch(r"experts\.(gate_proj|up_proj|down_proj)\.weight", suffix)
+        if stacked_match is not None:
+            proj_name = stacked_match.group(1)
+            return ResolvedWeight(
+                loader=lambda loaded_weight, proj_name=proj_name: self._load_stacked_expert(
+                    loaded_weight, proj_name
+                )
+            )
+
+        # Individual expert format: experts.0.gate_proj.weight
         match = re.fullmatch(r"experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight", suffix)
         if match is None:
             return None
@@ -144,7 +155,7 @@ class TPFusedMoE(FusedMoE):
                     expert_idx,
                 )
             )
-        
+
         if proj_name == "down_proj":
             return ResolvedWeight(
                 loader=lambda loaded_weight, expert_idx=expert_idx: self.load_w2(
@@ -152,7 +163,23 @@ class TPFusedMoE(FusedMoE):
                     expert_idx,
                 )
             )
-        
+
         return None
+
+    def _load_stacked_expert(self, loaded_weight: torch.Tensor, proj_name: str) -> None:
+        """Load stacked expert weight [num_experts, ...] and slice own TP shard."""
+        # loaded_weight: [total_experts, ...]
+        local_slice = loaded_weight[self.local_expert_start:self.local_expert_end]
+        if proj_name == "gate_proj":
+            self.w13.data[:, :self.intermediate_size].copy_(local_slice)
+        elif proj_name == "up_proj":
+            self.w13.data[:, self.intermediate_size:].copy_(local_slice)
+        elif proj_name == "down_proj":
+            # loaded_weight: [local_experts, hidden, intermediate]
+            if local_slice.shape == self.w2.data.shape:
+                self.w2.data.copy_(local_slice)
+            else:
+                # [local_experts, intermediate, hidden] → [local_experts, hidden, intermediate]
+                self.w2.data.copy_(local_slice.transpose(1, 2).contiguous())
 
 __all__ = ["TPFusedMoE"]

@@ -110,6 +110,7 @@ class DiffulexLM(LM):
         semi_complete_threshold: Optional[float] = None,
         accept_threshold: Optional[float] = None,
         remask_threshold: Optional[float] = None,
+        token_stability_threshold: Optional[float] = None,
         block_size: Optional[int] = 32,
         buffer_size: Optional[int] = 4,
         multi_block_prefix_full: Optional[bool] = False,
@@ -162,6 +163,7 @@ class DiffulexLM(LM):
         self.last_e2e_throughput = 0.0
         self.last_prefill_throughput = 0.0
         self.last_decode_throughput = 0.0
+        self.last_tpf = 0.0
 
         engine_sources = locals().copy()
         extra_engine_kwargs = engine_sources.pop("kwargs")
@@ -315,6 +317,7 @@ class DiffulexLM(LM):
             self.last_e2e_throughput = float(outputs[0].get("e2e_throughput_tok_s", 0.0) or 0.0)
             self.last_prefill_throughput = float(outputs[0].get("prefill_throughput_tok_s", 0.0) or 0.0)
             self.last_decode_throughput = float(outputs[0].get("decode_throughput_tok_s", 0.0) or 0.0)
+            self.last_tpf = float(outputs[0].get("tpf", 0.0) or 0.0)
 
         # Extract results and accumulate statistics
         results = []
@@ -391,6 +394,8 @@ class DiffulexLM(LM):
             "tpot_s": self.last_tpot,
             "prefill_throughput_tok_s": self.last_prefill_throughput,
             "decode_throughput_tok_s": self.last_decode_throughput,
+            "tpf": self.total_generated_tokens / self.total_nfe if self.total_nfe > 0 else 0,
+            "last_batch_tpf": self.last_tpf,
             "nfe_per_token": self.total_nfe / self.total_generated_tokens if self.total_generated_tokens > 0 else 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }

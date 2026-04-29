@@ -117,6 +117,7 @@ class BenchmarkRunner:
                 "prefill_throughput_tok_s": getattr(raw_outputs, "prefill_throughput", 0.0),
                 "decode_throughput_tok_s": getattr(raw_outputs, "decode_throughput", 0.0),
                 "batch_total_time_s": getattr(raw_outputs, "total_time", 0.0),
+                "tpf": getattr(raw_outputs, "tpf", 0.0),
             }
         else:
             outputs = raw_outputs
@@ -152,14 +153,17 @@ class BenchmarkRunner:
         total_tokens = sum(len(o["token_ids"]) for o in outputs)
         total_time = sum(o.get("generation_time", 0) for o in outputs)
         avg_nfe = sum(o.get("nfe", o.get("num_nfes", o.get("n_diff_steps", 0))) for o in outputs) / len(outputs) if outputs else 0
+        total_nfe = sum(o.get("nfe", o.get("num_nfes", o.get("n_diff_steps", 0))) for o in outputs)
 
         return {
             "outputs": outputs,
             "num_samples": len(outputs),
             "total_tokens": total_tokens,
+            "total_nfe": total_nfe,
             "total_time": total_time,
             "avg_tokens_per_sample": total_tokens / len(outputs) if outputs else 0,
             "avg_nfe": avg_nfe,
+            "tpf": total_tokens / total_nfe if total_nfe > 0 else 0,
             "e2e_total_time_s": outputs[0].get("e2e_total_time_s", 0.0) if outputs else 0.0,
             "ttft_s": outputs[0].get("ttft_s", 0.0) if outputs else 0.0,
             "tpot_s": outputs[0].get("tpot_s", 0.0) if outputs else 0.0,

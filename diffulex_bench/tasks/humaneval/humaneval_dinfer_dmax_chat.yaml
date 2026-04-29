@@ -1,0 +1,36 @@
+tag:
+  - code
+task: humaneval_dinfer_dmax_chat
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files: diffulex_bench/data/HumanEval_instruct.json
+process_docs: !function llada2_utils.process_docs_dinfer_instruct
+test_split: train
+output_type: generate_until
+unsafe_code: true
+doc_to_text: !function llada2_utils.doc_to_text_code_function_dinfer_chat
+doc_to_target: "{{test_list_str}}"
+process_results: !function llada2_utils.process_results_code_dmax_chat
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "\nclass"
+    - "\ndef"
+    - "\n#"
+    - "\nif"
+    - "\nprint"
+    - "\n```\n"
+    - "<|role_end|>"
+    - "</s>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 2048
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 1.0
+  description: "DInfer-aligned HumanEval instruct prompt and stop terms for DMax chat, using local HumanEval JSON."

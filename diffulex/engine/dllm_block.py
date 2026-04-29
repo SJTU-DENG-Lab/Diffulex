@@ -35,6 +35,7 @@ class DllmBlock:
     editable_start: int = 0
     commit_ready: bool = False
     same_as_previous: bool = False
+    same_token_ratio: float = 0.0
     all_confident: bool = False
 
     def __repr__(self):
@@ -142,7 +143,11 @@ class DllmBlock:
 
     @property
     def should_add_block(self):
-        return self.progress >= self.thresholds.add_block_threshold and not self.is_last_in_context
+        return (
+            self.progress >= self.thresholds.add_block_threshold
+            and self.same_token_ratio >= self.thresholds.token_stability_threshold
+            and not self.is_last_in_context
+        )
 
     @property
     def is_dummy(self):

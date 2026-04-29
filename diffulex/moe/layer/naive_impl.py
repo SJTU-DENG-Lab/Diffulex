@@ -49,7 +49,7 @@ class NaiveFusedMoE(FusedMoE):
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         original_shape = hidden_states.shape
         flat_hidden_states = hidden_states.reshape(-1, original_shape[-1])
-        
+
         router_logits = self.gate(flat_hidden_states)
         topk_output = self.router(router_logits)
         topk_weights = topk_output.weights
@@ -79,6 +79,17 @@ class NaiveFusedMoE(FusedMoE):
         self.w2.data[expert_idx].copy_(loaded_weight)
 
     def resolve_checkpoint_weight(self, suffix: str, ctx: LoadContext) -> ResolvedWeight | None:
+        # Stacked format: experts.gate_proj.weight  ([num_experts, ...])
+        stacked_match = re.fullmatch(r"experts\.(gate_proj|up_proj|down_proj)\.weight", suffix)
+        if stacked_match is not None:
+            proj_name = stacked_match.group(1)
+            return ResolvedWeight(
+                loader=lambda loaded_weight, proj_name=proj_name: self._load_stacked_expert(
+                    loaded_weight, proj_name
+                )
+            )
+
+        # Individual expert format: experts.0.gate_proj.weight
         match = re.fullmatch(r"experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight", suffix)
         if match is None:
             return None
@@ -101,7 +112,7 @@ class NaiveFusedMoE(FusedMoE):
                     expert_idx,
                 )
             )
-        
+
         if proj_name == "down_proj":
             return ResolvedWeight(
                 loader=lambda loaded_weight, expert_idx=expert_idx: self.load_w2(
@@ -109,7 +120,18 @@ class NaiveFusedMoE(FusedMoE):
                     expert_idx,
                 )
             )
-        
+
         return None
+
+    def _load_stacked_expert(self, loaded_weight: torch.Tensor, proj_name: str) -> None:
+        if proj_name == "gate_proj":
+            self.w13.data[:, :self.intermediate_size].copy_(loaded_weight)
+        elif proj_name == "up_proj":
+            self.w13.data[:, self.intermediate_size:].copy_(loaded_weight)
+        elif proj_name == "down_proj":
+            if loaded_weight.shape == self.w2.data.shape:
+                self.w2.data.copy_(loaded_weight)
+            else:
+                self.w2.data.copy_(loaded_weight.transpose(1, 2).contiguous())
 
 __all__ = ["NaiveFusedMoE"]

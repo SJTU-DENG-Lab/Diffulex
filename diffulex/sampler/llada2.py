@@ -136,7 +136,12 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
     ) -> tuple[dict[int, int], dict[int, dict | None], dict]:
         editable_start = int(getattr(block, "editable_start", 0) or 0)
         if editable_start >= int(block.block_size):
-            return {}, {}, {"committable": True, "same_as_previous": True, "all_confident": True}
+            return {}, {}, {
+                "committable": True,
+                "same_as_previous": True,
+                "same_token_ratio": 1.0,
+                "all_confident": True,
+            }
 
         mask_id = int(block.mask_token_id)
         accept_threshold = float(block.thresholds.accept_threshold)
@@ -185,6 +190,20 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         token_merge_entries: dict[int, dict | None] = {}
         changed_positions = torch.nonzero(target_tokens.ne(full_block_before), as_tuple=False).flatten()
         same_as_previous = not bool(changed_positions.numel())
+        comparable_positions = torch.nonzero(
+            full_block_before.ne(mask_id) & target_tokens.ne(mask_id),
+            as_tuple=False,
+        ).flatten()
+        if comparable_positions.numel() > 0:
+            same_token_ratio = float(
+                target_tokens.index_select(0, comparable_positions)
+                .eq(full_block_before.index_select(0, comparable_positions))
+                .to(torch.float32)
+                .mean()
+                .item()
+            )
+        else:
+            same_token_ratio = 1.0
         all_confident = bool((top1_confidence >= 0.9).all().item()) if top1_confidence.numel() > 0 else True
         for rel_idx in changed_positions.tolist():
             if int(rel_idx) < editable_start:
@@ -217,6 +236,7 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         return block_writes, token_merge_entries, {
             "committable": bool(same_as_previous or all_confident),
             "same_as_previous": bool(same_as_previous),
+            "same_token_ratio": same_token_ratio,
             "all_confident": bool(all_confident),
         }
 
@@ -247,6 +267,7 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
                 req_block_states[str(block_id)] = {
                     "committable": False,
                     "same_as_previous": False,
+                    "same_token_ratio": 0.0,
                     "all_confident": False,
                 }
                 block_logits = self._extract_block_logits(req, req_logits, block, attn_metadata.is_prefill[req_idx])

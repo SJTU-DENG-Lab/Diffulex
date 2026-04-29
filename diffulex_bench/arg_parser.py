@@ -21,7 +21,7 @@ MODEL_NAME_CHOICES = [
 DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
 TOKEN_MERGE_MODE_CHOICES = ["dmax_topk", "iter_smooth_topk"]
 ATTN_IMPL_CHOICES = ["triton", "naive"]
-MOE_GEMM_IMPL_CHOICES = ["triton", "vllm", "naive"]
+MOE_GEMM_IMPL_CHOICES = ["triton", "vllm", "vllm_modular", "naive"]
 MOE_DISPATCHER_BACKEND_CHOICES = ["standard", "naive", "deepep"]
 DEEP_EP_MODE_CHOICES = ["normal", "low_latency", "auto"]
 
@@ -401,6 +401,12 @@ Examples:
         type=float,
         default=0.4,
         help="Remask threshold for DMax-style edit decode",
+    )
+    parser.add_argument(
+        "--token-stability-threshold",
+        type=float,
+        default=0.0,
+        help="Minimum non-mask token stability ratio required before adding the next DMax edit block",
     )
     parser.add_argument(
         "--block-size",
