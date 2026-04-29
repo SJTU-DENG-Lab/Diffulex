@@ -23,8 +23,8 @@ python -m diffulex.server.launch \
   --decoding-strategy multi_bd \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 24 \
   --block-size 32 \
   --buffer-size 1
@@ -43,8 +43,8 @@ python -m diffulex.server.launch \
   --decoding-strategy multi_bd \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 24 \
   --block-size 32 \
   --buffer-size 1
@@ -59,14 +59,14 @@ python -m diffulex.server.launch \
   --decoding-strategy multi_bd \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 48 \
   --block-size 32 \
   --buffer-size 1
 ```
 
-Keep `max_num_batched_tokens >= max_model_len`.
+For interactive serving, keep `max_num_batched_tokens` larger than `max_model_len`; the recommended server preset uses `8192` with `max_model_len` `4096` to leave room for longer chat turns. If GPU memory becomes the bottleneck, reduce `max_num_reqs` before lowering the context length.
 
 ## 4. Model Startup
 
@@ -79,8 +79,8 @@ python -m diffulex.server.launch \
   --decoding-strategy multi_bd \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 24 \
   --block-size 32 \
   --buffer-size 1
@@ -111,4 +111,3 @@ Use the benchmark command above for GSM8K exact-match evaluation. For balanced s
 ### 5.2 Speed Benchmark
 
 For throughput-focused evaluation, increase `max_num_reqs` and monitor accuracy. The throughput-oriented preset uses higher concurrency while keeping `buffer_size=1`.
-

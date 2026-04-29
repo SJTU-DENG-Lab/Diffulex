@@ -23,8 +23,8 @@ python -m diffulex.server.launch \
   --decoding-strategy d2f \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 24 \
   --block-size 32 \
   --buffer-size 1 \
@@ -48,8 +48,8 @@ python -m diffulex.server.launch \
   --decoding-strategy d2f \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 24 \
   --block-size 32 \
   --buffer-size 1 \
@@ -69,8 +69,8 @@ python -m diffulex.server.launch \
   --decoding-strategy d2f \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 2 \
   --block-size 32 \
   --buffer-size 2 \
@@ -81,7 +81,7 @@ python -m diffulex.server.launch \
   --lora-path /YOUR-CKPT-PATH/SJTU-Deng-Lab/D2F_LLaDA_Instruct_8B_Lora
 ```
 
-Keep `max_num_batched_tokens >= max_model_len`. `block_size` must be one of `4`, `8`, `16`, or `32`.
+For interactive serving, keep `max_num_batched_tokens` larger than `max_model_len`; the recommended server preset uses `8192` with `max_model_len` `4096` to leave room for longer chat turns. If GPU memory becomes the bottleneck, reduce `max_num_reqs` before lowering the context length. `block_size` must be one of `4`, `8`, `16`, or `32`.
 
 ## 4. Model Startup
 
@@ -94,8 +94,8 @@ python -m diffulex.server.launch \
   --decoding-strategy d2f \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 24 \
   --block-size 32 \
   --buffer-size 1 \
@@ -132,4 +132,3 @@ Use the benchmark command above for GSM8K exact-match evaluation. For general se
 ### 5.2 Speed Benchmark
 
 For throughput-focused evaluation, sweep `max_num_reqs` under the two presets. In our tests, `buffer_size=1` is the safer default for high-concurrency serving, while `buffer_size=2` is useful as a low-concurrency speed option.
-

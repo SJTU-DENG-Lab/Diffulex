@@ -11,11 +11,13 @@ python -m diffulex.server.launch \
   --decoding-strategy <strategy> \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 2048 \
-  --max-num-batched-tokens 4096 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
   --max-num-reqs 128 \
   --gpu-memory-utilization 0.9
 ```
+
+For interactive chat serving, keep `max_num_batched_tokens` larger than `max_model_len`. If you increase `max_model_len` for longer conversations, increase `max_num_batched_tokens` with it and reduce `max_num_reqs` if GPU memory becomes the bottleneck.
 
 The server process accepts the same core engine arguments as the benchmark path, plus HTTP-specific flags:
 
