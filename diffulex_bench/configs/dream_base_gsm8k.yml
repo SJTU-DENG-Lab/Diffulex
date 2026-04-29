@@ -28,7 +28,7 @@ engine:
     semi_complete_threshold: 0.9
     accept_threshold: 0.95
   block_size: 32
-  buffer_size: 4
+  buffer_size: 1
 
 eval:
   dataset_name: "gsm8k_diffulex"
