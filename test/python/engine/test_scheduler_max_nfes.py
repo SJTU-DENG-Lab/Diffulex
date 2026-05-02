@@ -272,7 +272,7 @@ def test_scheduler_postprocess_raises_when_req_id_map_is_missing() -> None:
         scheduler.postprocess_multi_block([req], sample_output)
 
 
-def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -> None:
+def test_scheduler_postprocess_observes_block_edit_state_from_sample_output() -> None:
     scheduler = _Scheduler()
     req = _Req(req_id=19)
 
@@ -284,9 +284,7 @@ def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -
             self.editable_start = 0
             self.status = SimpleNamespace(name="ACTIVE")
             self.mask_token_id = 0
-            self.commit_ready = False
-            self.same_as_previous = False
-            self.all_confident = False
+            self.observed_state = None
 
         @property
         def is_active(self):
@@ -303,6 +301,12 @@ def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -
         def write_token(self, token_id, rel_idx):
             raise AssertionError("write_token should not be called in this test")
 
+        def observe_edit_state(self, token_ids, confidences=None):
+            self.observed_state = {
+                "token_ids": token_ids,
+                "confidences": confidences,
+            }
+
     block = _Block()
     req.dllm_blocks = [block]
     sample_output = SimpleNamespace(
@@ -310,14 +314,15 @@ def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -
         accepted_ids_map={"19": {}},
         sampled_tokens_map={"19": {}},
         edit_writes_map={"19": {}},
-        block_state_map={"19": {"0": {"committable": True, "same_as_previous": False, "all_confident": True}}},
+        block_state_map={"19": {"0": {"token_ids": [1, 2], "confidences": [0.95, 0.97]}}},
     )
 
     scheduler.postprocess_multi_block([req], sample_output)
 
-    assert block.commit_ready is True
-    assert block.same_as_previous is False
-    assert block.all_confident is True
+    assert block.observed_state == {
+        "token_ids": [1, 2],
+        "confidences": [0.95, 0.97],
+    }
 
 
 def test_multiblock_req_postprocess_requires_commit_ready_before_to_cache() -> None:

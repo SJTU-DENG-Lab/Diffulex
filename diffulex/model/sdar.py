@@ -4,15 +4,11 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from diffulex.attention import Attention
 from diffulex.layer.layernorm import RMSNorm
-from diffulex.layer.activation import SiluAndMul
-from diffulex.layer.rotary_embedding import get_rope
-from diffulex.layer.linear import RowParallelLinear, ColumnParallelLinear
 from diffulex.layer.embed_head import VocabParallelEmbedding, ParallelLMHead
+from diffulex.model.common import MergedQKVAttention, MergedSwiGLUMLP
 from diffulex.model.auto_model import AutoModelForDiffusionLM
 from diffulex.model.config.sdar.configuration_sdar import SDARConfig
-from diffulex.distributed.parallel_state import fetch_parallel_state
 
 
 if os.environ.get("TRITON_INTERPRET", None) == "1":
@@ -21,7 +17,7 @@ if os.environ.get("TRITON_INTERPRET", None) == "1":
     torch.backends.optimized_mode = False
 
 
-class SDARAttention(nn.Module):
+class SDARAttention(MergedQKVAttention):
     """SDAR attention (Diffulex native KV cache path).
 
     Compatible with Diffulex runner KV cache injection:
@@ -30,122 +26,27 @@ class SDARAttention(nn.Module):
     """
 
     def __init__(self, config: SDARConfig) -> None:
-        super().__init__()
-        parallel_state = fetch_parallel_state()
-        tp_size = parallel_state.get_tp_world_size()
-        self.total_num_heads = config.num_attention_heads
-        assert self.total_num_heads % tp_size == 0
-        self.num_heads = self.total_num_heads // tp_size
-
-        self.total_num_kv_heads = config.num_key_value_heads
-        assert self.total_num_kv_heads % tp_size == 0
-        self.num_kv_heads = self.total_num_kv_heads // tp_size
-
-        head_dim = getattr(config, "head_dim", None)
-        self.head_dim = head_dim or (config.hidden_size // self.total_num_heads)
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
-        self.scaling = self.head_dim**-0.5
-
         bias = getattr(config, "attention_bias", False)
-        self.q_proj = ColumnParallelLinear(
-            config.hidden_size,
-            self.total_num_heads * self.head_dim,
-            bias=bias,
-        )
-        self.k_proj = ColumnParallelLinear(
-            config.hidden_size,
-            self.total_num_kv_heads * self.head_dim,
-            bias=bias,
-        )
-        self.v_proj = ColumnParallelLinear(
-            config.hidden_size,
-            self.total_num_kv_heads * self.head_dim,
-            bias=bias,
-        )
-        self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            config.hidden_size,
-            bias=bias,
-        )
-
-        # SDAR uses q/k per-head RMSNorm.
-        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-
-        self.rotary_emb = get_rope(
-            self.head_dim,
-            rotary_dim=self.head_dim,
+        super().__init__(
+            hidden_size=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads,
             max_position=config.max_position_embeddings,
-            base=getattr(config, "rope_theta", 10000),
+            head_dim=getattr(config, "head_dim", None),
+            qkv_bias=bias,
+            out_bias=bias,
+            rope_theta=getattr(config, "rope_theta", 10000),
             rope_scaling=getattr(config, "rope_scaling", None),
-        )
-
-        # Diffulex Attention implements KV cache store/load via injected k_cache/v_cache.
-        self.attn = Attention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            self.num_kv_heads,
             attn_impl=getattr(config, "attn_impl", "triton"),
+            qk_norm_eps=config.rms_norm_eps,
         )
 
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
 
-        q = rearrange(
-            self.q_norm(
-                rearrange(q, "token (head head_dim) -> token head head_dim", head=self.num_heads)
-            ),
-            "token head head_dim -> token (head head_dim)",
-        )
-        k = rearrange(
-            self.k_norm(
-                rearrange(k, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
-            ),
-            "token head head_dim -> token (head head_dim)",
-        )
-
-        q, k = self.rotary_emb(positions, q, k)
-        o = self.attn(q, k, v, mask)
-        return self.o_proj(o)
-
-
-class SDARMLP(nn.Module):
+class SDARMLP(MergedSwiGLUMLP):
     """SDAR MLP: SiLU(gate) * up -> down."""
 
     def __init__(self, config: SDARConfig) -> None:
-        super().__init__()
-        self.gate_proj = ColumnParallelLinear(
-            config.hidden_size,
-            config.intermediate_size,
-            bias=False,
-        )
-        self.up_proj = ColumnParallelLinear(
-            config.hidden_size,
-            config.intermediate_size,
-            bias=False,
-        )
-        self.down_proj = RowParallelLinear(
-            config.intermediate_size,
-            config.hidden_size,
-            bias=False,
-        )
-        assert getattr(config, "hidden_act", "silu") == "silu"
-        self.act_fn = SiluAndMul()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate = self.gate_proj(x)
-        up = self.up_proj(x)
-        x = self.act_fn(torch.cat([gate, up], dim=-1))
-        return self.down_proj(x)
+        super().__init__(config.hidden_size, config.intermediate_size, hidden_act=getattr(config, "hidden_act", "silu"))
 
 
 class SDARDecoderLayer(nn.Module):
@@ -198,7 +99,13 @@ class SDARModel(nn.Module):
 
 @AutoModelForDiffusionLM.register("sdar")
 class SDARForDiffusionLM(nn.Module):
-    packed_modules_mapping = {}
+    packed_modules_mapping = {
+        "q_proj": ("self_attn.qkv_proj", "q"),
+        "k_proj": ("self_attn.qkv_proj", "k"),
+        "v_proj": ("self_attn.qkv_proj", "v"),
+        "gate_proj": ("mlp.gate_up_proj", 0),
+        "up_proj": ("mlp.gate_up_proj", 1),
+    }
 
     def __init__(self, config: SDARConfig) -> None:
         super().__init__()

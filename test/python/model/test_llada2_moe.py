@@ -15,6 +15,7 @@ from diffulex.model.llada2 import (
     LLaDA2TPMoE,
 )
 from diffulex.moe import is_moe_layer
+from diffulex.moe.layer.sglang_backend import SGLangTPFusedMoEAdapter
 from diffulex.moe.topk import GroupLimitedTopKRouter
 from diffulex.utils.loader import apply_resolved_weight, resolve_weight_spec
 
@@ -118,9 +119,92 @@ def test_llada2_tp_moe_shards_experts_not_intermediate(monkeypatch):
 
 def test_llada2_moe_gemm_impl_is_configurable(monkeypatch):
     _mock_tp_rank(monkeypatch, tp_size=2, global_rank=0)
-    moe = LLaDA2TPMoE.from_config(_make_config(moe_gemm_impl="vllm"))
+    moe = LLaDA2TPMoE.from_config(_make_config(moe_gemm_impl="flashinfer", moe_topk_impl="flashinfer"))
 
-    assert moe.moe_gemm_impl == "vllm"
+    assert moe.moe_gemm_impl == "flashinfer"
+    assert moe.moe_topk_impl == "flashinfer"
+
+
+def test_llada2_tp_moe_maps_sglang_backend_name(monkeypatch):
+    _mock_tp_rank(monkeypatch, tp_size=2, global_rank=0)
+    triton_moe = LLaDA2TPMoE.from_config(_make_config(moe_gemm_impl="triton"))
+    flashinfer_moe = LLaDA2TPMoE.from_config(_make_config(moe_gemm_impl="flashinfer"))
+
+    assert triton_moe.sglang_backend_name == "triton"
+    assert triton_moe.sglang_moe.backend_name == "triton"
+    assert flashinfer_moe.sglang_backend_name == "flashinfer_cutlass"
+    assert flashinfer_moe.sglang_moe.backend_name == "flashinfer_cutlass"
+
+
+def test_llada2_tp_moe_forward_smoke_uses_sglang_adapter(monkeypatch):
+    _mock_tp_rank(monkeypatch, tp_size=2, global_rank=0)
+    captured = {}
+
+    def _fake_forward(self, *, hidden_states, topk_ids, topk_weights, router_logits):
+        captured["hidden_states_shape"] = tuple(hidden_states.shape)
+        captured["topk_ids_shape"] = tuple(topk_ids.shape)
+        captured["topk_weights_shape"] = tuple(topk_weights.shape)
+        captured["router_logits_shape"] = tuple(router_logits.shape)
+        return torch.zeros_like(hidden_states)
+
+    monkeypatch.setattr(SGLangTPFusedMoEAdapter, "forward", _fake_forward)
+    monkeypatch.setattr("diffulex.moe.layer.tp_impl.tp_all_reduce", lambda x, group: x)
+    moe = LLaDA2TPMoE.from_config(
+        _make_config(
+            moe_gemm_impl="triton",
+            moe_topk_impl="naive",
+            num_shared_experts=0,
+            n_group=0,
+            topk_group=0,
+        )
+    )
+    hidden_states = torch.randn(3, 8)
+
+    out, router_logits = moe(hidden_states)
+
+    assert tuple(out.shape) == (3, 8)
+    assert tuple(router_logits.shape) == (3, 4)
+    assert out.dtype == hidden_states.dtype
+    assert captured == {
+        "hidden_states_shape": (3, 8),
+        "topk_ids_shape": (3, 2),
+        "topk_weights_shape": (3, 2),
+        "router_logits_shape": (3, 4),
+    }
+
+
+def test_llada2_tp_moe_loader_supports_individual_expert_weights(monkeypatch):
+    _mock_tp_rank(monkeypatch, tp_size=2, global_rank=1)
+    moe = LLaDA2TPMoE.from_config(_make_config(num_experts=4, moe_intermediate_size=6))
+
+    gate = torch.arange(48, dtype=moe.w13.dtype).reshape(6, 8)
+    up = torch.arange(48, dtype=moe.w13.dtype).reshape(6, 8) + 100
+    down = torch.arange(48, dtype=moe.w2.dtype).reshape(8, 6) + 200
+
+    moe.load_w1(gate, 2)
+    moe.load_w3(up, 2)
+    moe.load_w2(down, 2)
+
+    assert torch.equal(moe.w13[0, :6], gate)
+    assert torch.equal(moe.w13[0, 6:], up)
+    assert torch.equal(moe.w2[0], down)
+
+
+def test_llada2_tp_moe_loader_supports_stacked_expert_weights(monkeypatch):
+    _mock_tp_rank(monkeypatch, tp_size=2, global_rank=1)
+    moe = LLaDA2TPMoE.from_config(_make_config(num_experts=4, moe_intermediate_size=6))
+
+    gate = torch.arange(4 * 6 * 8, dtype=moe.w13.dtype).reshape(4, 6, 8)
+    up = torch.arange(4 * 6 * 8, dtype=moe.w13.dtype).reshape(4, 6, 8) + 100
+    down = torch.arange(4 * 8 * 6, dtype=moe.w2.dtype).reshape(4, 8, 6) + 200
+
+    moe._load_stacked_expert(gate, "gate_proj")
+    moe._load_stacked_expert(up, "up_proj")
+    moe._load_stacked_expert(down, "down_proj")
+
+    assert torch.equal(moe.w13[:, :6], gate[2:4])
+    assert torch.equal(moe.w13[:, 6:], up[2:4])
+    assert torch.equal(moe.w2, down[2:4])
 
 
 def test_llada2_attention_impl_is_configurable(monkeypatch):
@@ -136,12 +220,12 @@ def test_llada2_parameter_names_match_dmax_layout(monkeypatch):
     param_names = set(model.state_dict().keys())
 
     assert "model.word_embeddings.weight" in param_names
-    assert "model.layers.0.attention.query_key_value.weight" in param_names
-    assert "model.layers.0.attention.dense.weight" in param_names
-    assert "model.layers.0.mlp.gate_proj.weight" in param_names
+    assert "model.layers.0.attention.qkv_proj.weight" in param_names
+    assert "model.layers.0.attention.o_proj.weight" in param_names
+    assert "model.layers.0.mlp.gate_up_proj.weight" in param_names
     assert "model.layers.1.mlp.gate.weight" in param_names
     assert "model.layers.1.mlp.gate.expert_bias" in param_names
-    assert "model.layers.1.mlp.shared_experts.gate_proj.weight" in param_names
+    assert "model.layers.1.mlp.shared_experts.gate_up_proj.weight" in param_names
     assert "lm_head.weight" in param_names
 
 
@@ -154,6 +238,32 @@ def test_llada2_qkv_loader_accepts_combined_weight(monkeypatch):
     qkv.weight.weight_loader(qkv.weight, loaded)
 
     assert torch.equal(qkv.weight, loaded)
+
+
+def test_llada2_resolve_split_attention_weight_into_merged_qkv(monkeypatch):
+    _mock_single_rank(monkeypatch)
+    model = LLaDA2ForDiffusionLM(_make_config())
+    weight_name = "model.layers.0.attention.q_proj.weight"
+    loaded = torch.arange(64, dtype=torch.float32).reshape(8, 8)
+
+    spec = resolve_weight_spec(model, weight_name, config=SimpleNamespace())
+
+    assert spec is not None
+    apply_resolved_weight(spec, loaded)
+    assert torch.equal(model.model.layers[0].attention.qkv_proj.weight[:8], loaded)
+
+
+def test_llada2_resolve_split_mlp_weight_into_merged_gate_up(monkeypatch):
+    _mock_single_rank(monkeypatch)
+    model = LLaDA2ForDiffusionLM(_make_config())
+    weight_name = "model.layers.0.mlp.gate_proj.weight"
+    loaded = torch.arange(128, dtype=torch.float32).reshape(16, 8)
+
+    spec = resolve_weight_spec(model, weight_name, config=SimpleNamespace())
+
+    assert spec is not None
+    apply_resolved_weight(spec, loaded)
+    assert torch.equal(model.model.layers[0].mlp.gate_up_proj.weight[:16], loaded)
 
 
 def test_llada2_moe_loads_score_correction_bias_alias(monkeypatch):
@@ -196,7 +306,7 @@ def test_llada2_token_merge_hook_uses_attention_metadata(monkeypatch):
         )
 
     metadata = DMaxAttnMetaData()
-    metadata.init_token_merging(
+    metadata.init_token_merge(
         merge_mask=torch.tensor([True, False]),
         topk_ids=torch.tensor([[2, 3], [0, 0]]),
         topk_probs=torch.tensor([[0.25, 0.50], [0.0, 0.0]]),
@@ -207,7 +317,7 @@ def test_llada2_token_merge_hook_uses_attention_metadata(monkeypatch):
     set_fetch_fn_for_attn_metadata(lambda: metadata)
 
     hidden = model.word_embeddings(torch.tensor([0, 1]))
-    merged = model._maybe_apply_token_merging(hidden)
+    merged = model._maybe_apply_token_merge(hidden)
 
     expected_first = 0.25 * model.word_embeddings.weight[2] + 0.50 * model.word_embeddings.weight[3]
     expected_first = expected_first + 0.25 * model.word_embeddings.weight[4]
@@ -225,7 +335,7 @@ def test_llada2_token_merge_hook_supports_iter_smooth_mode(monkeypatch):
         model.word_embeddings.weight.copy_(torch.eye(8, 4))
 
     metadata = DMaxAttnMetaData()
-    metadata.init_token_merging(
+    metadata.init_token_merge(
         merge_mask=torch.tensor([True, False]),
         topk_ids=torch.tensor([[2], [0]]),
         topk_probs=torch.tensor([[0.5], [0.0]]),
@@ -238,7 +348,7 @@ def test_llada2_token_merge_hook_supports_iter_smooth_mode(monkeypatch):
     set_fetch_fn_for_attn_metadata(lambda: metadata)
 
     hidden = model.word_embeddings(torch.tensor([0, 1]))
-    merged = model._maybe_apply_token_merging(hidden)
+    merged = model._maybe_apply_token_merge(hidden)
 
     assert torch.allclose(merged[0], hidden[0] + 0.25 * 0.5 * model.word_embeddings.weight[2])
     assert torch.allclose(merged[1], hidden[1])
@@ -267,7 +377,7 @@ def test_llada2_dmax_topk_token_merge_applies_renormalize(monkeypatch):
         )
 
     metadata = DMaxAttnMetaData()
-    metadata.init_token_merging(
+    metadata.init_token_merge(
         merge_mask=torch.tensor([True]),
         topk_ids=torch.tensor([[2, 3]]),
         topk_probs=torch.tensor([[0.25, 0.50]]),
@@ -279,7 +389,7 @@ def test_llada2_dmax_topk_token_merge_applies_renormalize(monkeypatch):
     set_fetch_fn_for_attn_metadata(lambda: metadata)
 
     hidden = model.word_embeddings(torch.tensor([0]))
-    merged = model._maybe_apply_token_merging(hidden)
+    merged = model._maybe_apply_token_merge(hidden)
 
     blended = (
         0.25 * model.word_embeddings.weight[2]

@@ -21,7 +21,7 @@ MODEL_NAME_CHOICES = [
 DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
 TOKEN_MERGE_MODE_CHOICES = ["dmax_topk", "iter_smooth_topk"]
 ATTN_IMPL_CHOICES = ["triton", "naive"]
-MOE_GEMM_IMPL_CHOICES = ["triton", "vllm", "vllm_modular", "naive"]
+MOE_GEMM_IMPL_CHOICES = ["triton", "flashinfer", "naive"]
 MOE_DISPATCHER_BACKEND_CHOICES = ["standard", "naive", "deepep"]
 DEEP_EP_MODE_CHOICES = ["normal", "low_latency", "auto"]
 

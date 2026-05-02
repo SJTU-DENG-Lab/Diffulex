@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 from diffulex.config import Config
 from diffulex.engine.kv_cache_manager import AutoKVCacheManager
-from diffulex.strategy_template.token_merging_multi_block.engine.kv_cache_manager import (
-    TokenMergingMultiBlockKVCacheManagerTemplate,
+from diffulex.strategy_template.token_merge.engine.kv_cache_manager import (
+    TokenMergeKVCacheManagerTemplate,
 )
 
 if TYPE_CHECKING:
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 @AutoKVCacheManager.register("dmax")
-class DMaxKVCacheManager(TokenMergingMultiBlockKVCacheManagerTemplate):
+class DMaxKVCacheManager(TokenMergeKVCacheManagerTemplate):
     def __init__(self, config: Config):
         super().__init__(config)
 

@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 
 from typing import Callable
@@ -21,15 +23,6 @@ class AttnMetaDataBase:
     block_size: int = 32
 
     kv_cache_layout: str = "unified"
-    token_merge_enabled: bool = False
-    token_merge_mask: torch.Tensor | None = None
-    token_merge_topk_ids: torch.Tensor | None = None
-    token_merge_topk_probs: torch.Tensor | None = None
-    token_merge_residual_probs: torch.Tensor | None = None
-    token_merge_mask_token_id: int | None = None
-    token_merge_renormalize: bool = True
-    token_merge_mode: str = "dmax_topk"
-    token_merge_weight: float = 1.0
 
     @property
     def num_reqs(self) -> int:
@@ -72,3 +65,12 @@ def is_warming_up() -> bool:
 def reset_warming_up() -> None:
     global WARMING_UP
     WARMING_UP = False
+
+
+@contextmanager
+def warming_up_context():
+    set_warming_up(True)
+    try:
+        yield
+    finally:
+        reset_warming_up()

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from diffulex.config import DecodingThresholds
 from diffulex.engine.status import DllmBlockStatus, DllmBlockType
+from diffulex.mixin.edit.dllm_block import DllmBlockEditMixin
 
 from typing import TYPE_CHECKING
 
@@ -20,7 +21,7 @@ weakref_fn = lambda x: weakref.ref(x) if x is not None else None
 
 
 @dataclass
-class DllmBlock:
+class DllmBlock(DllmBlockEditMixin):
     block_id: int
     start: int
     end: int
@@ -32,11 +33,6 @@ class DllmBlock:
     prev_block: "DllmBlock" = None
 
     block_type: DllmBlockType = DllmBlockType.IN_CONTEXT
-    editable_start: int = 0
-    commit_ready: bool = False
-    same_as_previous: bool = False
-    same_token_ratio: float = 0.0
-    all_confident: bool = False
 
     def __repr__(self):
         prev_block_id = self.prev_block.block_id if self.prev_block is not None else None
@@ -57,8 +53,7 @@ class DllmBlock:
 
         if self.status is None:
             self.status = DllmBlockStatus.TO_CACHE if self.is_complete else DllmBlockStatus.ACTIVE
-        if self.is_complete:
-            self.commit_ready = True
+        self.observe_edit_state(self.token_ids)
 
         self.make_in_context()
 
@@ -94,10 +89,6 @@ class DllmBlock:
     @property
     def token_ids(self) -> list[int]:
         return self.req[self.start : self.end]
-
-    @property
-    def editable_relative_ids(self) -> list[int]:
-        return list(range(int(self.editable_start), self.block_size))
 
     @property
     def mask_token_relative_ids(self) -> list[int]:
@@ -184,7 +175,6 @@ class DllmBlock:
                 f"rel_idx={rel_idx}, editable_start={self.editable_start}"
             )
         self.req.token_ids[self.start + rel_idx] = token_id
-        self.commit_ready = False
 
     def write_tokens_parallel(self, token_ids: torch.Tensor, abs_ids: torch.Tensor):
         token_ids_list = token_ids.tolist() if isinstance(token_ids, torch.Tensor) else list(token_ids)
@@ -196,8 +186,6 @@ class DllmBlock:
                     f"abs_idx={abs_idx}, editable_start={self.editable_start}"
                 )
             self.req.token_ids[int(abs_idx)] = int(token_id)
-        if abs_ids_list:
-            self.commit_ready = False
 
     def to_cache(self):
         if self.is_active:

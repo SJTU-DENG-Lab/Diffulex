@@ -8,14 +8,14 @@ class TokenMergeSamplerMixin:
         if token_merge_top_k is None:
             token_merge_top_k = int(getattr(config, "token_merge_top_k", 1)) if config is not None else 1
         self.token_merge_top_k = max(1, int(token_merge_top_k))
-        self._last_token_merge_map: dict[str, dict[int, dict | None]] = {}
+        self.last_token_merge_map: dict[str, dict[int, dict | None]] = {}
         super().__init__(*args, config=config, **kwargs)
 
     def _reset_token_merge_map(self) -> None:
-        self._last_token_merge_map = {}
+        self.last_token_merge_map = {}
 
     def _set_token_merge_entries(self, req_id_str: str, entries: dict[int, dict | None]) -> None:
-        self._last_token_merge_map[req_id_str] = entries
+        self.last_token_merge_map[req_id_str] = entries
 
     def _build_token_merge_descriptor(
         self,
@@ -67,5 +67,5 @@ class TokenMergeSamplerMixin:
             attn_metadata=attn_metadata,
             **kwargs,
         )
-        sample_output.token_merge_map = self._last_token_merge_map
+        sample_output.token_merge_map = self.last_token_merge_map
         return sample_output

@@ -2,17 +2,13 @@ import os
 import torch
 import torch.nn as nn
 
-from diffulex.attention import Attention
 from diffulex.layer.layernorm import RMSNorm
-from diffulex.layer.activation import SiluAndMul
-from diffulex.layer.rotary_embedding import get_rope
 from diffulex.model.auto_model import AutoModelForDiffusionLM
-from diffulex.layer.linear import RowParallelLinear, ColumnParallelLinear
 from diffulex.layer.embed_head import VocabParallelEmbedding, ParallelLMHead
+from diffulex.model.common import MergedQKVAttention, MergedSwiGLUMLP
 from diffulex.model.config.fast_dllm_v2.configuration_fast_dllm_v2 import (
     FastdLLMV2Config,
 )
-from diffulex.distributed.parallel_state import fetch_parallel_state
 
 
 if os.environ.get("TRITON_INTERPRET", None) == "1":
@@ -26,7 +22,7 @@ class FastdLLMV2RMSNorm(RMSNorm):
         super().__init__(hidden_size, eps)
 
 
-class FastdLLMV2Attention(nn.Module):
+class FastdLLMV2Attention(MergedQKVAttention):
     """FastdLLM V2 attention mechanism."""
 
     def __init__(
@@ -42,72 +38,21 @@ class FastdLLMV2Attention(nn.Module):
         rope_scaling: tuple | None = None,
         attn_impl: str = "triton",
     ) -> None:
-        super().__init__()
-        parallel_state = fetch_parallel_state()
-        tp_size = parallel_state.get_tp_world_size()
-        self.total_num_heads = num_heads
-        assert self.total_num_heads % tp_size == 0
-        self.num_heads = self.total_num_heads // tp_size
-        self.total_num_kv_heads = num_kv_heads
-        assert self.total_num_kv_heads % tp_size == 0
-        self.num_kv_heads = self.total_num_kv_heads // tp_size
-        self.head_dim = head_dim or hidden_size // self.total_num_heads
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
-        self.scaling = self.head_dim**-0.5
-
-        self.q_proj = ColumnParallelLinear(
-            hidden_size,
-            self.total_num_heads * self.head_dim,
-            bias=qkv_bias,
-        )
-        self.k_proj = ColumnParallelLinear(
-            hidden_size,
-            self.total_num_kv_heads * self.head_dim,
-            bias=qkv_bias,
-        )
-        self.v_proj = ColumnParallelLinear(
-            hidden_size,
-            self.total_num_kv_heads * self.head_dim,
-            bias=qkv_bias,
-        )
-        self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            hidden_size,
-            bias=False,
-        )
-        self.rotary_emb = get_rope(
-            self.head_dim,
-            rotary_dim=self.head_dim,
+        super().__init__(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
             max_position=max_position,
-            base=rope_theta,
+            head_dim=head_dim,
+            qkv_bias=qkv_bias,
+            out_bias=False,
+            rope_theta=rope_theta,
             rope_scaling=rope_scaling,
-        )
-        self.attn = Attention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            self.num_kv_heads,
             attn_impl=attn_impl,
         )
 
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        q = self.q_proj(hidden_states)
-        k = self.k_proj(hidden_states)
-        v = self.v_proj(hidden_states)
 
-        q, k = self.rotary_emb(positions, q, k)
-        o = self.attn(q, k, v, mask)
-        output = self.o_proj(o)
-        return output
-
-
-class FastdLLMV2MLP(nn.Module):
+class FastdLLMV2MLP(MergedSwiGLUMLP):
     """FastdLLM V2 MLP with SiLU activation."""
 
     def __init__(
@@ -116,31 +61,7 @@ class FastdLLMV2MLP(nn.Module):
         intermediate_size: int,
         hidden_act: str,
     ) -> None:
-        super().__init__()
-        self.gate_proj = ColumnParallelLinear(
-            hidden_size,
-            intermediate_size,
-            bias=False,
-        )
-        self.up_proj = ColumnParallelLinear(
-            hidden_size,
-            intermediate_size,
-            bias=False,
-        )
-        self.down_proj = RowParallelLinear(
-            intermediate_size,
-            hidden_size,
-            bias=False,
-        )
-        assert hidden_act == "silu"
-        self.act_fn = SiluAndMul()
-
-    def forward(self, x):
-        gate = self.gate_proj(x)
-        up = self.up_proj(x)
-        x = self.act_fn(torch.cat([gate, up], dim=-1))
-        x = self.down_proj(x)
-        return x
+        super().__init__(hidden_size, intermediate_size, hidden_act=hidden_act)
 
 
 class FastdLLMV2DecoderLayer(nn.Module):
@@ -219,7 +140,13 @@ class FastdLLMV2Model(nn.Module):
 class FastdLLMV2ForDiffusionLM(nn.Module):
     """FastdLLM V2 model for diffusion language modeling with LM head."""
 
-    packed_modules_mapping = {}
+    packed_modules_mapping = {
+        "q_proj": ("self_attn.qkv_proj", "q"),
+        "k_proj": ("self_attn.qkv_proj", "k"),
+        "v_proj": ("self_attn.qkv_proj", "v"),
+        "gate_proj": ("mlp.gate_up_proj", 0),
+        "up_proj": ("mlp.gate_up_proj", 1),
+    }
 
     def __init__(
         self,

@@ -7,13 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
 
-from diffulex.attention import Attention
-from diffulex.layer.activation import SiluAndMul
 from diffulex.layer.embed_head import ParallelLMHead, VocabParallelEmbedding
 from diffulex.layer.layernorm import RMSNorm
-from diffulex.layer.linear import ColumnParallelLinear, RowParallelLinear, divide
-from diffulex.layer.rotary_embedding import get_rope
+from diffulex.layer.linear import divide
 from diffulex.model.auto_model import AutoModelForDiffusionLM
+from diffulex.model.common import MergedQKVAttention, MergedSwiGLUMLP
 from diffulex.moe.config import get_norm_topk_prob, is_moe_layer
 from diffulex.moe.layer.base import FusedMoE
 from diffulex.moe.layer.ep_impl import EPFusedMoE
@@ -36,168 +34,64 @@ def _llada2_gate_use_fp32() -> bool:
     # Keep fp32 gate as default for alignment; allow explicit opt-out for perf probing.
     return os.getenv("DIFFULEX_LLADA2_GATE_FP32", "1") != "0"
 
-
-class LLaDA2QKVParallelLinear(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        head_size: int,
-        total_num_heads: int,
-        total_num_kv_heads: int,
-        *,
-        bias: bool = False,
-    ) -> None:
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.head_size = head_size
-        self.total_num_heads = total_num_heads
-        self.total_num_kv_heads = total_num_kv_heads
-        parallel_state = fetch_parallel_state()
-        self.tp_size = parallel_state.get_tp_world_size()
-        self.tp_rank = parallel_state.get_tp_rank()
-        self.num_heads = divide(total_num_heads, self.tp_size)
-        self.num_kv_heads = divide(total_num_kv_heads, self.tp_size)
-        self.q_size = self.num_heads * head_size
-        self.kv_size = self.num_kv_heads * head_size
-        self.weight = nn.Parameter(torch.empty(self.q_size + 2 * self.kv_size, hidden_size))
-        self.weight.weight_loader = self.weight_loader
-        if bias:
-            self.bias = nn.Parameter(torch.empty(self.q_size + 2 * self.kv_size))
-            self.bias.weight_loader = self.weight_loader
-        else:
-            self.register_parameter("bias", None)
-
-    def _local_qkv(self, loaded_weight: torch.Tensor) -> torch.Tensor:
-        q_total = self.total_num_heads * self.head_size
-        kv_total = self.total_num_kv_heads * self.head_size
-        q, k, v = loaded_weight.split((q_total, kv_total, kv_total), dim=0)
-        q = q.chunk(self.tp_size, dim=0)[self.tp_rank]
-        k = k.chunk(self.tp_size, dim=0)[self.tp_rank]
-        v = v.chunk(self.tp_size, dim=0)[self.tp_rank]
-        return torch.cat((q, k, v), dim=0).contiguous()
-
-    def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor) -> None:
-        param.data.copy_(self._local_qkv(loaded_weight))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, self.weight, self.bias)
-
-
-class LLaDA2Attention(nn.Module):
+class LLaDA2Attention(MergedQKVAttention):
     def __init__(self, config, layer_idx: int) -> None:
-        super().__init__()
         self.layer_idx = layer_idx
-        parallel_state = fetch_parallel_state()
-        tp_size = parallel_state.get_tp_world_size()
-        self.total_num_heads = config.num_attention_heads
-        self.total_num_kv_heads = config.num_key_value_heads or config.num_attention_heads
-        self.num_heads = divide(self.total_num_heads, tp_size)
-        self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
-        self.head_dim = getattr(config, "head_dim", None) or config.hidden_size // self.total_num_heads
-        self.q_size = self.num_heads * self.head_dim
-        self.kv_size = self.num_kv_heads * self.head_dim
-        self.scaling = self.head_dim**-0.5
-
-        self.query_key_value = LLaDA2QKVParallelLinear(
-            config.hidden_size,
-            self.head_dim,
-            self.total_num_heads,
-            self.total_num_kv_heads,
-            bias=bool(getattr(config, "use_qkv_bias", False)),
-        )
-        self.query_layernorm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.key_layernorm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.dense = RowParallelLinear(
-            self.total_num_heads * self.head_dim,
-            config.hidden_size,
-            bias=bool(getattr(config, "use_bias", False)),
-        )
         partial_rotary_factor = float(getattr(config, "partial_rotary_factor", 1.0))
-        rotary_dim = int(self.head_dim * partial_rotary_factor)
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        rotary_dim = int(head_dim * partial_rotary_factor)
         rotary_dim = int(getattr(config, "rotary_dim", rotary_dim) or rotary_dim)
-        self.rotary_emb = get_rope(
-            head_size=self.head_dim,
-            rotary_dim=rotary_dim,
+        super().__init__(
+            hidden_size=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            num_kv_heads=config.num_key_value_heads or config.num_attention_heads,
             max_position=config.max_position_embeddings,
-            base=getattr(config, "rope_theta", 10000),
-        )
-        self.attn = Attention(
-            self.num_heads,
-            self.head_dim,
-            self.scaling,
-            self.num_kv_heads,
+            head_dim=head_dim,
+            qkv_bias=bool(getattr(config, "use_qkv_bias", False)),
+            out_bias=bool(getattr(config, "use_bias", False)),
+            rope_theta=getattr(config, "rope_theta", 10000),
+            rotary_dim=rotary_dim,
             attn_impl=getattr(config, "attn_impl", "triton"),
+            qk_norm_eps=config.rms_norm_eps,
+            q_norm_name="query_layernorm",
+            k_norm_name="key_layernorm",
         )
 
-    def _split_qkv_reference(
-        self,
-        qkv: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        tokens = qkv.size(0)
-        qkv = qkv.view(tokens, self.num_heads + 2 * self.num_kv_heads, self.head_dim)
-        q = qkv[:, : self.num_heads, :]
-        k = qkv[:, self.num_heads : self.num_heads + self.num_kv_heads, :]
-        v = qkv[:, self.num_heads + self.num_kv_heads :, :]
-        return q, k, v
+    @property
+    def query_key_value(self):
+        return self.qkv_proj
 
-    def _split_qkv_default(
-        self,
-        qkv: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
-        q = rearrange(q, "token (head head_dim) -> token head head_dim", head=self.num_heads)
-        k = rearrange(k, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
-        v = rearrange(v, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
-        return q, k, v
+    @property
+    def dense(self):
+        return self.o_proj
 
-    def forward(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor,
-        mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        qkv = self.query_key_value(hidden_states)
+    def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        qkv = self.qkv_proj(hidden_states)
         if _llada2_use_legacy_qkv_path():
             q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
             q = rearrange(
-                self.query_layernorm(
+                self.q_norm_module(
                     rearrange(q, "token (head head_dim) -> token head head_dim", head=self.num_heads)
                 ),
                 "token head head_dim -> token (head head_dim)",
             )
             k = rearrange(
-                self.key_layernorm(
+                self.k_norm_module(
                     rearrange(k, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
                 ),
                 "token head head_dim -> token (head head_dim)",
             )
             q, k = self.rotary_emb(positions, q, k)
-            return self.dense(self.attn(q, k, v, mask))
-        if _llada2_use_reference_view_path():
-            q, k, v = self._split_qkv_reference(qkv)
-        else:
-            q, k, v = self._split_qkv_default(qkv)
-        q = self.query_layernorm(q)
-        k = self.key_layernorm(k)
-        q, k = self.rotary_emb(positions, q, k)
-        attn_out = self.attn(q, k, v, mask)
-        attn_out = self.dense(attn_out)
-        return attn_out
+            return self.o_proj(self.attn(q, k, v, mask))
+        return super().forward(positions, hidden_states, mask)
 
 
-class LLaDA2DenseMLP(nn.Module):
+class LLaDA2DenseMLP(MergedSwiGLUMLP):
     def __init__(self, config, intermediate_size: int | None = None) -> None:
-        super().__init__()
         intermediate_size = int(intermediate_size or config.intermediate_size)
-        self.gate_proj = ColumnParallelLinear(config.hidden_size, intermediate_size, bias=False)
-        self.up_proj = ColumnParallelLinear(config.hidden_size, intermediate_size, bias=False)
-        self.down_proj = RowParallelLinear(intermediate_size, config.hidden_size, bias=False)
         if getattr(config, "hidden_act", "silu") != "silu":
             raise NotImplementedError("LLaDA2 dense MLP currently supports only silu.")
-        self.act_fn = SiluAndMul()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(self.act_fn(torch.cat((self.gate_proj(x), self.up_proj(x)), dim=-1)))
+        super().__init__(config.hidden_size, intermediate_size, hidden_act="silu")
 
 
 class LLaDA2MoEMixin:
@@ -210,6 +104,7 @@ class LLaDA2MoEMixin:
             n_group=int(getattr(config, "n_group", 0) or 0),
             topk_group=int(getattr(config, "topk_group", 0) or 0),
             routed_scaling_factor=float(getattr(config, "routed_scaling_factor", 1.0)),
+            kernel_impl=str(getattr(config, "moe_topk_impl", "triton")),
             renormalize=get_norm_topk_prob(config),
             expert_bias_getter=lambda: self.gate.expert_bias,
         )
@@ -243,6 +138,7 @@ class LLaDA2NaiveMoE(LLaDA2MoEMixin, NaiveFusedMoE):
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
             moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
+            moe_topk_impl=getattr(config, "moe_topk_impl", "triton"),
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=int(config.moe_intermediate_size) * num_shared_experts,
         )
@@ -262,6 +158,7 @@ class LLaDA2TPMoE(LLaDA2MoEMixin, TPFusedMoE):
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
             moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
+            moe_topk_impl=getattr(config, "moe_topk_impl", "triton"),
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=int(config.moe_intermediate_size) * num_shared_experts,
         )
@@ -281,6 +178,7 @@ class LLaDA2EPMoE(LLaDA2MoEMixin, EPFusedMoE):
             hidden_act=getattr(config, "hidden_act", "silu"),
             norm_topk_prob=get_norm_topk_prob(config),
             moe_gemm_impl=getattr(config, "moe_gemm_impl", "triton"),
+            moe_topk_impl=getattr(config, "moe_topk_impl", "triton"),
             dispatcher_backend=getattr(config, "moe_dispatcher_backend", "naive"),
             deepep_mode=getattr(config, "deepep_mode", "auto"),
             deepep_num_max_dispatch_tokens_per_rank=getattr(
@@ -322,20 +220,22 @@ class LLaDA2DecoderLayer(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = residual + self.attention(positions, hidden_states, mask)
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if residual is None:
+            residual = hidden_states
+            hidden_states = self.input_layernorm(hidden_states)
+        else:
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        hidden_states = self.attention(positions, hidden_states, mask)
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         mlp_output = self.mlp(hidden_states)
         if isinstance(mlp_output, tuple):
             hidden_states, _router_logits = mlp_output
         else:
             hidden_states = mlp_output
-        hidden_states = residual + hidden_states
-        return hidden_states
+        return hidden_states, residual
 
 
 class LLaDA2Model(nn.Module):
@@ -363,18 +263,19 @@ class LLaDA2Model(nn.Module):
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.word_embeddings(input_ids)
-        hidden_states = self._maybe_apply_token_merging(hidden_states)
+        hidden_states = self._maybe_apply_token_merge(hidden_states)
+        residual = None
         for layer in self.layers:
-            hidden_states = layer(positions, hidden_states, mask)
-        hidden_states = self.norm(hidden_states)
+            hidden_states, residual = layer(positions, hidden_states, residual, mask)
+        hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
 
-    def _maybe_apply_token_merging(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def _maybe_apply_token_merge(self, hidden_states: torch.Tensor) -> torch.Tensor:
         from diffulex.attention import fetch_attn_metadata
 
         attn_metadata = fetch_attn_metadata()
 
-        if not attn_metadata.token_merge_enabled:
+        if not bool(getattr(attn_metadata, "token_merge_enabled", False)):
             return hidden_states
 
         merge_mask = attn_metadata.token_merge_mask
@@ -479,7 +380,14 @@ def build_llada2_runtime_config(config):
 @AutoModelForDiffusionLM.register("llada2_moe", use_full_config=True)
 @AutoModelForDiffusionLM.register("llada2_mini", use_full_config=True)
 class LLaDA2ForDiffusionLM(nn.Module):
-    packed_modules_mapping = {}
+    packed_modules_mapping = {
+        "q_proj": ("attention.qkv_proj", "q"),
+        "k_proj": ("attention.qkv_proj", "k"),
+        "v_proj": ("attention.qkv_proj", "v"),
+        "query_key_value": ("attention.qkv_proj", None),
+        "gate_proj": ("mlp.gate_up_proj", 0),
+        "up_proj": ("mlp.gate_up_proj", 1),
+    }
 
     def __init__(self, config) -> None:
         super().__init__()

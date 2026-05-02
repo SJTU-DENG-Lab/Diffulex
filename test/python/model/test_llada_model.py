@@ -37,15 +37,11 @@ def test_llada_block_respects_include_qkv_bias_false():
     _mock_single_rank()
     block = LLaDABlock(_make_config(include_qkv_bias=False))
 
-    assert block.self_attn.q_proj.bias is None
-    assert block.self_attn.k_proj.bias is None
-    assert block.self_attn.v_proj.bias is None
+    assert block.self_attn.qkv_proj.bias is None
 
 
 def test_llada_block_respects_include_qkv_bias_true():
     _mock_single_rank()
     block = LLaDABlock(_make_config(include_qkv_bias=True))
 
-    assert block.self_attn.q_proj.bias is not None
-    assert block.self_attn.k_proj.bias is not None
-    assert block.self_attn.v_proj.bias is not None
+    assert block.self_attn.qkv_proj.bias is not None

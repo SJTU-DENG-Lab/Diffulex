@@ -24,4 +24,6 @@ def test_multi_block_methods_live_on_strategy_template_not_base() -> None:
     assert hasattr(MultiBDModelRunner, "run_multi_block")
 
     assert not hasattr(AttnMetaDataBase, "init_multi_block")
+    assert not hasattr(AttnMetaDataBase, "token_merge_enabled")
+    assert not hasattr(AttnMetaDataBase, "token_merge_mask")
     assert hasattr(MultiBDAttnMetaData, "init_multi_block")

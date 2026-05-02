@@ -51,12 +51,14 @@ def triton_attention(
     v: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
+    attn_metadata: AttnMetaDataBase | None = None,
 ) -> torch.Tensor:
     # Keep Triton JIT/autotune state out of torch.compile; CUDA graph capture
     # still records the launched kernels.
-    from diffulex.attention import fetch_attn_metadata
+    if attn_metadata is None:
+        from diffulex.attention import fetch_attn_metadata
 
-    attn_metadata: AttnMetaDataBase = fetch_attn_metadata()
+        attn_metadata = fetch_attn_metadata()
     is_unified_layout = attn_metadata.kv_cache_layout == "unified"
     if k_cache.numel() and v_cache.numel():
         if attn_metadata.need_kv_cache_store:
@@ -126,6 +128,11 @@ class Attention(nn.Module):
             v = v.contiguous()
         else:
             raise ValueError(f"Unsupported v ndim for Attention: {v.dim()}")
+
+        # Keep the kernel boundary explicit: packed QKV splits and some rotary
+        # paths can produce strided views for Q/K as well.
+        q = q.contiguous()
+        k = k.contiguous()
         
         if q.shape[0] == 0:
             return rearrange(q, "s nh hd -> s (nh hd)").contiguous()
@@ -147,7 +154,7 @@ class Attention(nn.Module):
 
         k_cache, v_cache = self.k_cache, self.v_cache
 
-        o = triton_attention(q, k, v, k_cache, v_cache)
+        o = triton_attention(q, k, v, k_cache, v_cache, self.fetch_attn_metadata())
 
         # Final reshape
         return rearrange(o, "s nh hd -> s (nh hd)").contiguous()

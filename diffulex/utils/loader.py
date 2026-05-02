@@ -35,7 +35,9 @@ def enable_lora_for_model(model: nn.Module, lora_config: dict):
             should_apply = True
             if target_modules:
                 leaf = name.split(".")[-1] if name else name
-                should_apply = any(target == leaf for target in target_modules)
+                aliases = set(getattr(module, "lora_target_aliases", ()))
+                aliases.add(leaf)
+                should_apply = any(target in aliases for target in target_modules)
             if should_apply:
                 module.__init_lora__(r, lora_alpha, lora_dropout)
     return model
@@ -215,7 +217,7 @@ def load_model(model: nn.Module, config: Config):
             model = load_lora_weights(
                 model,
                 config.lora_path,
-                packed_modules_mapping=packed_modules_mapping if config.model_name == "llada" else None,
+                packed_modules_mapping=packed_modules_mapping or None,
                 pre_merge_lora=getattr(config, "pre_merge_lora", False),
             )
         else:
@@ -255,38 +257,45 @@ def load_lora_weights(
 
         modified_modules = None
         if packed_modules_mapping is not None:
-            modified_modules = [v for k, (v, _) in packed_modules_mapping.items() if k in target_modules]
-            rev_mapping = {v: k for k, (v, _) in packed_modules_mapping.items()}
+            alias_map = {}
+            for legacy_name, (module_name, _shard_id) in packed_modules_mapping.items():
+                alias_map.setdefault(module_name, []).append(legacy_name)
+            modified_modules = {module_name for module_name, aliases in alias_map.items() if set(aliases) & set(target_modules)}
 
         for name, module in model.named_modules():
             if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
                 should_apply = True
 
                 if modified_modules is not None:
-                    modified_module_type = ".".join(name.split(".")[-2:])
-                    org_module_type = rev_mapping[modified_module_type]
-                    org_name = name.replace(modified_module_type, org_module_type)
-                    should_apply = any(target in modified_module_type for target in modified_modules)
+                    module_suffixes = {".".join(name.split(".")[-2:]), name.split(".")[-1]}
+                    matched_suffixes = module_suffixes & modified_modules
+                    should_apply = bool(matched_suffixes)
                 elif target_modules:
                     module_type = name.split(".")[-1] if "." in name else name
-                    should_apply = any(target in module_type for target in target_modules)
+                    aliases = set(getattr(module, "lora_target_aliases", ()))
+                    aliases.add(module_type)
+                    should_apply = any(target in aliases for target in target_modules)
 
                 if not should_apply:
                     continue
 
-                base_patterns = (
-                    [
-                        name,
-                        f"base_model.model.{name}",
-                        f"model.{name}",
-                    ]
-                    if modified_modules is None
-                    else [
-                        org_name,
-                        f"base_model.model.{org_name}",
-                        f"model.{org_name}",
-                    ]
-                )
+                base_patterns = [name, f"base_model.model.{name}", f"model.{name}"]
+                if modified_modules is not None:
+                    for suffix in matched_suffixes:
+                        legacy_aliases = alias_map.get(suffix, [])
+                        for legacy_name in legacy_aliases:
+                            if name.endswith(suffix):
+                                legacy_full_name = name[: -len(suffix)] + legacy_name
+                            else:
+                                legacy_full_name = name.replace(suffix, legacy_name)
+                            base_patterns.extend(
+                                [
+                                    legacy_full_name,
+                                    f"base_model.model.{legacy_full_name}",
+                                    f"model.{legacy_full_name}",
+                                ]
+                            )
+                base_patterns = list(dict.fromkeys(base_patterns))
 
                 found_a = found_b = None
                 for base_name in base_patterns:

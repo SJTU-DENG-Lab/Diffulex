@@ -83,7 +83,7 @@ def test_sdar_moe_parameter_names_match_reference_layout(monkeypatch):
     assert "model.layers.1.mlp.gate.weight" in param_names
     assert "model.layers.1.mlp.w13" in param_names
     assert "model.layers.1.mlp.w2" in param_names
-    assert "model.layers.0.mlp.gate_proj.weight" in param_names
+    assert "model.layers.0.mlp.gate_up_proj.weight" in param_names
 
 
 def test_sdar_moe_forward_shape(monkeypatch):

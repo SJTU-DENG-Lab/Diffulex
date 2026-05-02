@@ -2,16 +2,16 @@ import torch
 
 from dataclasses import dataclass
 
-from diffulex.strategy_template.token_merging_multi_block.attention.metadata import (
-    TokenMergingMultiBlockAttnMetaDataTemplate,
+from diffulex.strategy_template.token_merge.attention.metadata import (
+    TokenMergeAttnMetaDataTemplate,
 )
 
 
 @dataclass
-class DMaxAttnMetaData(TokenMergingMultiBlockAttnMetaDataTemplate):
+class DMaxAttnMetaData(TokenMergeAttnMetaDataTemplate):
     def __post_init__(self):
         self.init_multi_block()
-        self.reset_token_merging()
+        self.reset_token_merge()
 
 
 DMAX_ATTN_METADATA = DMaxAttnMetaData()

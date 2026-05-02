@@ -8,7 +8,7 @@ from diffulex.strategy_template.multi_block.attention.metadata import MultiBlock
 
 
 @dataclass
-class TokenMergingMultiBlockAttnMetaDataTemplate(MultiBlockAttnMetaDataTemplate):
+class TokenMergeAttnMetaDataTemplate(MultiBlockAttnMetaDataTemplate):
     token_merge_enabled: bool = False
     token_merge_mask: torch.Tensor | None = None
     token_merge_topk_ids: torch.Tensor | None = None
@@ -19,7 +19,7 @@ class TokenMergingMultiBlockAttnMetaDataTemplate(MultiBlockAttnMetaDataTemplate)
     token_merge_mode: str = "dmax_topk"
     token_merge_weight: float = 1.0
 
-    def init_token_merging(
+    def init_token_merge(
         self,
         merge_mask: torch.Tensor | None = None,
         topk_ids: torch.Tensor | None = None,
@@ -47,5 +47,5 @@ class TokenMergingMultiBlockAttnMetaDataTemplate(MultiBlockAttnMetaDataTemplate)
             and bool(merge_mask.any().item())
         )
 
-    def reset_token_merging(self) -> None:
-        self.init_token_merging()
+    def reset_token_merge(self) -> None:
+        self.init_token_merge()

@@ -1,11 +1,10 @@
 import re
 
 import torch
-import torch.nn as nn
-import torch.distributed as dist
 
 from diffulex.layer.linear import ReplicatedLinear, divide, tp_all_reduce
 from diffulex.moe.layer.base import FusedMoE
+from diffulex.moe.layer.sglang_backend import SGLangTPFusedMoEAdapter
 from diffulex.utils.checkpoint import LoadContext, ResolvedWeight
 from diffulex.distributed.parallel_state import fetch_parallel_state
 
@@ -30,6 +29,7 @@ class TPFusedMoE(FusedMoE):
         hidden_act: str = "silu",
         norm_topk_prob: bool = True,
         moe_gemm_impl: str = "triton",
+        moe_topk_impl: str = "triton",
         num_shared_experts: int = 0,
         shared_expert_intermediate_size: int | None = None,
     ) -> None:
@@ -41,6 +41,7 @@ class TPFusedMoE(FusedMoE):
             hidden_act=hidden_act,
             norm_topk_prob=norm_topk_prob,
             moe_gemm_impl=moe_gemm_impl,
+            moe_topk_impl=moe_topk_impl,
             num_shared_experts=num_shared_experts,
             shared_expert_intermediate_size=shared_expert_intermediate_size,
         )
@@ -52,14 +53,35 @@ class TPFusedMoE(FusedMoE):
         self.num_local_experts = divide(self.num_experts, self.tp_size)
         self.local_expert_start = self.tp_rank * self.num_local_experts
         self.local_expert_end = self.local_expert_start + self.num_local_experts
+        self.sglang_backend_name = self._map_sglang_backend_name(self.moe_gemm_impl)
 
         self.gate = ReplicatedLinear(hidden_size, self.num_experts, bias=False)
-        self.w13 = nn.Parameter(
-            torch.empty(self.num_local_experts, self.intermediate_size * 2, hidden_size)
+        self.sglang_moe = SGLangTPFusedMoEAdapter(
+            num_experts=self.num_experts,
+            hidden_size=hidden_size,
+            intermediate_size=self.intermediate_size,
+            top_k=self.top_k,
+            hidden_act=self.hidden_act,
+            backend_name=self.sglang_backend_name,
         )
-        self.w2 = nn.Parameter(
-            torch.empty(self.num_local_experts, hidden_size, self.intermediate_size)
-        )
+
+    @staticmethod
+    def _map_sglang_backend_name(impl: str) -> str:
+        if impl == "triton":
+            return "triton"
+        if impl == "flashinfer":
+            return "flashinfer_cutlass"
+        if impl == "naive":
+            return "triton"
+        raise ValueError(f"Unknown MoE expert_gemm impl: {impl}")
+
+    @property
+    def w13(self) -> torch.nn.Parameter:
+        return self.sglang_moe.w13_weight
+
+    @property
+    def w2(self) -> torch.nn.Parameter:
+        return self.sglang_moe.w2_weight
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         original_shape = hidden_states.shape
@@ -69,16 +91,24 @@ class TPFusedMoE(FusedMoE):
         topk_output = self.router(router_logits)
         topk_weights = topk_output.weights
         topk_ids = topk_output.ids
-        final_hidden_states = self.expert_gemm(
-            impl=self.moe_gemm_impl,
-            hidden_states=flat_hidden_states,
-            w13=self.w13,
-            w2=self.w2,
-            topk_ids=topk_ids,
-            topk_weights=topk_weights,
-            local_expert_start=self.local_expert_start,
-            hidden_act=self.hidden_act,
-        )
+        if self.moe_gemm_impl == "naive":
+            final_hidden_states = super().expert_gemm(
+                impl="naive",
+                hidden_states=flat_hidden_states,
+                w13=self.w13,
+                w2=self.w2,
+                topk_ids=topk_ids,
+                topk_weights=topk_weights,
+                local_expert_start=self.local_expert_start,
+                hidden_act=self.hidden_act,
+            )
+        else:
+            final_hidden_states = self.sglang_moe(
+                hidden_states=flat_hidden_states,
+                topk_ids=topk_ids,
+                topk_weights=topk_weights,
+                router_logits=router_logits,
+            )
         if self.tp_size > 1:
             final_hidden_states = tp_all_reduce(final_hidden_states, self.tp_group)
 
@@ -90,36 +120,20 @@ class TPFusedMoE(FusedMoE):
         if expert_idx < self.local_expert_start or expert_idx >= self.local_expert_end:
             return None
         return expert_idx - self.local_expert_start
+
+    def _load_sglang_w13(self, loaded_weight: torch.Tensor, expert_idx: int, shard_id: str) -> None:
+        self.sglang_moe.layer.weight_loader(self.w13, loaded_weight, "weight", shard_id, expert_idx)
     
     def load_w1(self, loaded_weight: torch.Tensor, expert_idx: int) -> None:
-        local_expert_idx = self._local_expert_idx(expert_idx)
-        if local_expert_idx is None:
-            return
-        # loaded_weight: [intermediate_size, hidden_size]
-        self.w13.data[local_expert_idx, 0:self.intermediate_size].copy_(loaded_weight)
+        self._load_sglang_w13(loaded_weight, expert_idx, "w1")
     
     def load_w3(self, loaded_weight: torch.Tensor, expert_idx: int) -> None:
-        local_expert_idx = self._local_expert_idx(expert_idx)
-        if local_expert_idx is None:
-            return
-        # loaded_weight: [intermediate_size, hidden_size]
-        self.w13.data[local_expert_idx, self.intermediate_size:2*self.intermediate_size].copy_(loaded_weight)
+        self._load_sglang_w13(loaded_weight, expert_idx, "w3")
     
     def load_w2(self, loaded_weight: torch.Tensor, expert_idx: int) -> None:
-        local_expert_idx = self._local_expert_idx(expert_idx)
-        if local_expert_idx is None:
-            return
-        target = self.w2.data[local_expert_idx]  # [hidden_size, intermediate_size]
-        if loaded_weight.shape == (self.hidden_size, self.intermediate_size):
-            shard = loaded_weight
-        elif loaded_weight.shape == (self.intermediate_size, self.hidden_size):
-            shard = loaded_weight.transpose(0, 1).contiguous()
-        else:
-            raise ValueError(
-                f"Unexpected down_proj weight shape: {loaded_weight.shape}, "
-                f"target shape: {target.shape}"
-            )
-        target.copy_(shard)
+        if loaded_weight.shape == (self.intermediate_size, self.hidden_size):
+            loaded_weight = loaded_weight.transpose(0, 1).contiguous()
+        self.sglang_moe.layer.weight_loader(self.w2, loaded_weight, "weight", "w2", expert_idx)
 
     def resolve_checkpoint_weight(self, suffix: str, ctx: LoadContext) -> ResolvedWeight | None:
         # Stacked format: experts.gate_proj.weight (all experts in one tensor)
@@ -168,18 +182,13 @@ class TPFusedMoE(FusedMoE):
 
     def _load_stacked_expert(self, loaded_weight: torch.Tensor, proj_name: str) -> None:
         """Load stacked expert weight [num_experts, ...] and slice own TP shard."""
-        # loaded_weight: [total_experts, ...]
-        local_slice = loaded_weight[self.local_expert_start:self.local_expert_end]
-        if proj_name == "gate_proj":
-            self.w13.data[:, :self.intermediate_size].copy_(local_slice)
-        elif proj_name == "up_proj":
-            self.w13.data[:, self.intermediate_size:].copy_(local_slice)
-        elif proj_name == "down_proj":
-            # loaded_weight: [local_experts, hidden, intermediate]
-            if local_slice.shape == self.w2.data.shape:
-                self.w2.data.copy_(local_slice)
-            else:
-                # [local_experts, intermediate, hidden] → [local_experts, hidden, intermediate]
-                self.w2.data.copy_(local_slice.transpose(1, 2).contiguous())
+        for expert_idx in range(int(loaded_weight.shape[0])):
+            expert_weight = loaded_weight[expert_idx]
+            if proj_name == "gate_proj":
+                self.load_w1(expert_weight, expert_idx)
+            elif proj_name == "up_proj":
+                self.load_w3(expert_weight, expert_idx)
+            elif proj_name == "down_proj":
+                self.load_w2(expert_weight, expert_idx)
 
 __all__ = ["TPFusedMoE"]

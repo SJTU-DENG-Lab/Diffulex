@@ -19,8 +19,8 @@ class TokenMergeDescriptor:
             raise ValueError("topk_ids and topk_probs must have the same length")
 
 
-class TokenMergingMultiBlockReqTemplate(MultiBlockReqTemplate):
-    def init_token_merging_multi_block(self: TokenMergingMultiBlockReqTemplate, config: Config) -> None:
+class TokenMergeReqTemplate(MultiBlockReqTemplate):
+    def init_token_merge(self: TokenMergeReqTemplate, config: Config) -> None:
         self.init_multi_block(config)
         self.token_merge_enabled = True
         self.token_merge_mode = config.token_merge_mode

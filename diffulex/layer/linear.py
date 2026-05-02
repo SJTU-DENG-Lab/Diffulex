@@ -6,15 +6,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 from diffulex.distributed.parallel_state import fetch_parallel_state
-from diffulex.vllm_compat import get_vllm_tp_group
-
-
-def tp_all_reduce(x: torch.Tensor, group) -> torch.Tensor:
-    vllm_tp_group = get_vllm_tp_group()
-    if vllm_tp_group is not None:
-        return vllm_tp_group.all_reduce(x)
-    dist.all_reduce(x, group=group)
-    return x
+from diffulex.distributed.tp_comm import tp_all_reduce
 
 
 def divide(numerator, denominator):
@@ -184,7 +176,19 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             lora_dropout=lora_dropout,
         )
 
-    def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: int):
+    def weight_loader(
+        self,
+        param: nn.Parameter,
+        loaded_weight: torch.Tensor,
+        loaded_shard_id: int | None = None,
+    ):
+        if loaded_shard_id is None:
+            offset = 0
+            for shard_id, output_size in enumerate(self.output_sizes):
+                shard_weight = loaded_weight.narrow(self.tp_dim, offset, output_size)
+                self.weight_loader(param, shard_weight, shard_id)
+                offset += output_size
+            return
         param_data = param.data
         shard_offset = sum(self.output_sizes[:loaded_shard_id]) // self.tp_size
         shard_size = self.output_sizes[loaded_shard_id] // self.tp_size
@@ -211,9 +215,21 @@ class QKVParallelLinear(ColumnParallelLinear):
         parallel_state = fetch_parallel_state()
         tp_size = parallel_state.get_tp_world_size()
         self.num_heads = divide(self.total_num_heads, tp_size)
-        self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
+        if tp_size >= self.total_num_kv_heads:
+            self.num_kv_heads = 1
+            self.num_kv_head_replicas = divide(tp_size, self.total_num_kv_heads)
+        else:
+            self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
+            self.num_kv_head_replicas = 1
+        self.q_proj_shard_size = self.num_heads * self.head_size
+        self.kv_proj_shard_size = self.num_kv_heads * self.head_size
         input_size = hidden_size
-        output_size = (self.total_num_heads + 2 * self.total_num_kv_heads) * self.head_size
+        output_size = (self.q_proj_shard_size + 2 * self.kv_proj_shard_size) * tp_size
+        self.output_sizes = [
+            self.q_proj_shard_size * tp_size,
+            self.kv_proj_shard_size * tp_size,
+            self.kv_proj_shard_size * tp_size,
+        ]
         super().__init__(
             input_size,
             output_size,
@@ -223,20 +239,39 @@ class QKVParallelLinear(ColumnParallelLinear):
             lora_dropout,
         )
 
-    def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: str):
+    def weight_loader(
+        self,
+        param: nn.Parameter,
+        loaded_weight: torch.Tensor,
+        loaded_shard_id: str | None = None,
+    ):
+        if loaded_shard_id is None:
+            q_size = self.total_num_heads * self.head_size
+            kv_size = self.total_num_kv_heads * self.head_size
+            q, k, v = loaded_weight.split((q_size, kv_size, kv_size), dim=self.tp_dim)
+            self.weight_loader(param, q, "q")
+            self.weight_loader(param, k, "k")
+            self.weight_loader(param, v, "v")
+            return
         param_data = param.data
         assert loaded_shard_id in ["q", "k", "v"]
         if loaded_shard_id == "q":
-            shard_size = self.num_heads * self.head_size
+            shard_size = self.q_proj_shard_size
             shard_offset = 0
-        elif loaded_shard_id == "k":
-            shard_size = self.num_kv_heads * self.head_size
-            shard_offset = self.num_heads * self.head_size
         else:
-            shard_size = self.num_kv_heads * self.head_size
-            shard_offset = self.num_heads * self.head_size + self.num_kv_heads * self.head_size
+            shard_size = self.kv_proj_shard_size
+            shard_offset = self.q_proj_shard_size
+            if loaded_shard_id == "v":
+                shard_offset += self.kv_proj_shard_size
         param_data = param_data.narrow(self.tp_dim, shard_offset, shard_size)
-        loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
+        if loaded_shard_id == "q":
+            shard_id = self.tp_rank
+        else:
+            shard_id = self.tp_rank // self.num_kv_head_replicas
+        loaded_weight = loaded_weight.chunk(
+            self.tp_size if loaded_shard_id == "q" else self.total_num_kv_heads,
+            self.tp_dim,
+        )[shard_id]
         param_data.copy_(loaded_weight)
 
 

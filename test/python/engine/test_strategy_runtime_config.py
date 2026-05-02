@@ -148,7 +148,7 @@ def test_bench_cli_forwards_explicit_engine_fields():
             "naive",
             "--no-enable-prefix-caching",
             "--moe-gemm-impl",
-            "vllm",
+            "flashinfer",
             "--moe-dispatcher-backend",
             "standard",
             "--deepep-mode",
@@ -172,7 +172,7 @@ def test_bench_cli_forwards_explicit_engine_fields():
     assert config.engine.token_merge_weight == 0.75
     assert config.engine.attn_impl == "naive"
     assert config.engine.enable_prefix_caching is False
-    assert config.engine.moe_gemm_impl == "vllm"
+    assert config.engine.moe_gemm_impl == "flashinfer"
     assert config.engine.moe_dispatcher_backend == "standard"
     assert config.engine.deepep_mode == "auto"
     assert config.engine.deepep_num_max_dispatch_tokens_per_rank == 512
@@ -196,10 +196,7 @@ def test_config_file_engine_values_not_overridden_by_cli_defaults(tmp_path):
                     "max_num_batched_tokens": 6144,
                     "kv_cache_layout": "distinct",
                     "attn_impl": "naive",
-                    "moe_gemm_impl": "vllm",
-                    "enable_prefill_cudagraph": False,
-                    "prefill_cudagraph_max_len": 2048,
-                    "enable_cudagraph_torch_compile": False,
+                    "moe_gemm_impl": "flashinfer",
                     "auto_max_nfe_warmup_steps": 5,
                     "auto_max_nfe_tpf_floor": 3.0,
                 },
@@ -213,43 +210,13 @@ def test_config_file_engine_values_not_overridden_by_cli_defaults(tmp_path):
     args = parser.parse_args(["--config", str(config_path)])
     config = load_config_from_args(args)
 
-    assert config.engine.moe_gemm_impl == "vllm"
+    assert config.engine.moe_gemm_impl == "flashinfer"
     assert config.engine.max_model_len == 3072
     assert config.engine.max_num_batched_tokens == 6144
     assert config.engine.kv_cache_layout == "distinct"
     assert config.engine.attn_impl == "naive"
-    assert config.engine.enable_prefill_cudagraph is False
-    assert config.engine.prefill_cudagraph_max_len == 2048
-    assert config.engine.enable_cudagraph_torch_compile is False
     assert config.engine.auto_max_nfe_warmup_steps == 5
     assert config.engine.auto_max_nfe_tpf_floor == 3.0
-
-
-def test_config_file_prefill_cudagraph_max_len_can_be_overridden_to_zero(tmp_path):
-    config_path = Path(tmp_path) / "bench.yml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "engine": {
-                    "model_path": MODEL_PATH,
-                    "model_name": "llada2_mini",
-                    "decoding_strategy": "dmax",
-                    "sampling_mode": "edit",
-                    "tensor_parallel_size": 1,
-                    "data_parallel_size": 1,
-                    "prefill_cudagraph_max_len": 2048,
-                },
-                "eval": {"dataset_name": "gsm8k_diffulex_dmax_chat"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    parser = create_argument_parser()
-    args = parser.parse_args(["--config", str(config_path), "--prefill-cudagraph-max-len", "0"])
-    config = load_config_from_args(args)
-
-    assert config.engine.prefill_cudagraph_max_len == 0
 
 
 def test_config_rejects_edit_sampling_for_non_llada2_model(config_no_model_load):

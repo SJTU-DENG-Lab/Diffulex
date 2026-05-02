@@ -12,7 +12,13 @@ class _Runner(MultiBlockModelRunnerTemplate):
         self.block_size = 32
         self.rank = 0
         self.is_prefix_full = True
-        self.config = SimpleNamespace(buffer_size=4, kv_cache_layout="unified")
+        self.config = SimpleNamespace(
+            buffer_size=4,
+            kv_cache_layout="unified",
+            max_num_batched_tokens=128,
+            max_num_reqs=1,
+            max_model_len=128,
+        )
         self.captured_kwargs = None
 
     def prepare_page_tables(self, reqs):
@@ -44,10 +50,12 @@ class _Req:
     def __init__(self):
         self.status = SimpleNamespace(PENDING="PENDING")
         self.is_prefilling = True
+        self.is_execution_prepared = False
         self.block_size = 32
         self.buffer_size = 4
         self.running_sequence = list(range(32, 64))
         self.running_position_ids = list(range(32, 64))
+        self.contiguous_in_cache_prefix_len = 32
         self.in_cache_len = 32
         self.running_len = 64
         self.valid_len = 32

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from diffulex.strategy_template.multi_block.engine.scheduler import MultiBlockSchedulerTemplate
-from diffulex.strategy_template.token_merging_multi_block.engine.request import TokenMergingMultiBlockReqTemplate
+from diffulex.strategy_template.token_merge.engine.request import TokenMergeReqTemplate
 
 
-class TokenMergingMultiBlockSchedulerTemplate(MultiBlockSchedulerTemplate):
-    def postprocess_token_merging_multi_block(
+class TokenMergeSchedulerTemplate(MultiBlockSchedulerTemplate):
+    def postprocess_token_merge(
         self,
-        reqs: list[TokenMergingMultiBlockReqTemplate],
+        reqs: list[TokenMergeReqTemplate],
         sample_output,
     ) -> None:
         self.postprocess_multi_block(reqs, sample_output)

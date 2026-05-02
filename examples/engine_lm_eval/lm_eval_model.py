@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import json
 import logging
 import os
@@ -14,8 +13,6 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from transformers import AutoTokenizer
-
-from diffulex.profiling import TorchProfileSession, record_function
 
 eval_logger = logging.getLogger(__name__)
 T = TypeVar("T", bound="LM")
@@ -95,9 +92,6 @@ class EngineOpenAILM(LM):
         self._responses_full: list[str] = []
         self._responses_extracted: list[str] = []
         self._sample_metrics: list[dict[str, float]] = []
-        self.profile_session = TorchProfileSession(f"{self._file_prefix}_client")
-        atexit.register(self.profile_session.stop)
-
     @property
     def _file_prefix(self) -> str:
         return "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in self.engine_name) or "engine"
@@ -165,59 +159,58 @@ class EngineOpenAILM(LM):
             return {}
 
     def _stream_openai_chunks(self, url: str, payload: Dict[str, Any]) -> tuple[str, dict, dict]:
-        with record_function(f"{self.engine_name}.client.http_stream"):
-            start = time.perf_counter()
-            first_chunk_at: float | None = None
-            text_pieces: list[str] = []
-            chunk_token_counts: list[int] = []
-            usage = {"prompt_tokens": 0, "completion_tokens": 0}
-            with requests.post(
-                url,
-                headers=self.headers,
-                json=payload,
-                timeout=self.timeout,
-                verify=self.verify,
-                stream=True,
-            ) as resp:
-                resp.raise_for_status()
-                for raw_line in resp.iter_lines(decode_unicode=True):
-                    if not raw_line:
-                        continue
-                    if not raw_line.startswith("data:"):
-                        continue
-                    line = raw_line[len("data:") :].strip()
-                    if line == "[DONE]":
-                        break
-                    obj = json.loads(line)
-                    if "error" in obj:
-                        raise RuntimeError(f"Engine streaming error: {obj['error']}")
-                    if "usage" in obj and obj["usage"] is not None:
-                        usage["prompt_tokens"] = obj["usage"].get("prompt_tokens", usage["prompt_tokens"])
-                        usage["completion_tokens"] = obj["usage"].get("completion_tokens", usage["completion_tokens"])
-                    choices = obj.get("choices") or []
-                    if not choices:
-                        continue
-                    choice = choices[0]
-                    delta_text = ""
-                    if "text" in choice:
-                        delta_text = choice.get("text") or ""
-                    elif "delta" in choice:
-                        delta_text = choice.get("delta", {}).get("content") or ""
-                    if not delta_text:
-                        continue
-                    if first_chunk_at is None:
-                        first_chunk_at = time.perf_counter()
-                    text_pieces.append(delta_text)
-                    chunk_token_counts.append(len(self.tok_encode(delta_text, add_special_tokens=False)))
-            end = time.perf_counter()
-            text = "".join(text_pieces)
-            ttft = (first_chunk_at - start) if first_chunk_at is not None else end - start
-            total_time = end - start
-            return text, usage, {
-                "ttft": ttft,
-                "total_time": total_time,
-                "chunk_token_counts": chunk_token_counts,
-            }
+        start = time.perf_counter()
+        first_chunk_at: float | None = None
+        text_pieces: list[str] = []
+        chunk_token_counts: list[int] = []
+        usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        with requests.post(
+            url,
+            headers=self.headers,
+            json=payload,
+            timeout=self.timeout,
+            verify=self.verify,
+            stream=True,
+        ) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                if not raw_line.startswith("data:"):
+                    continue
+                line = raw_line[len("data:") :].strip()
+                if line == "[DONE]":
+                    break
+                obj = json.loads(line)
+                if "error" in obj:
+                    raise RuntimeError(f"Engine streaming error: {obj['error']}")
+                if "usage" in obj and obj["usage"] is not None:
+                    usage["prompt_tokens"] = obj["usage"].get("prompt_tokens", usage["prompt_tokens"])
+                    usage["completion_tokens"] = obj["usage"].get("completion_tokens", usage["completion_tokens"])
+                choices = obj.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta_text = ""
+                if "text" in choice:
+                    delta_text = choice.get("text") or ""
+                elif "delta" in choice:
+                    delta_text = choice.get("delta", {}).get("content") or ""
+                if not delta_text:
+                    continue
+                if first_chunk_at is None:
+                    first_chunk_at = time.perf_counter()
+                text_pieces.append(delta_text)
+                chunk_token_counts.append(len(self.tok_encode(delta_text, add_special_tokens=False)))
+        end = time.perf_counter()
+        text = "".join(text_pieces)
+        ttft = (first_chunk_at - start) if first_chunk_at is not None else end - start
+        total_time = end - start
+        return text, usage, {
+            "ttft": ttft,
+            "total_time": total_time,
+            "chunk_token_counts": chunk_token_counts,
+        }
 
     def _completion_request(self, prompt: str, until_terms: list[str], max_new_tokens: int) -> dict:
         if self.chat_completions:
@@ -272,18 +265,15 @@ class EngineOpenAILM(LM):
         del disable_tqdm
         outputs = []
         for req in requests_list:
-            self.profile_session.start()
-            with record_function(f"{self.engine_name}.client.generate_one"):
-                prompt = self._format_prompt(req.arguments[0])
-                gen_kwargs = req.arguments[1] if len(req.arguments) > 1 else {}
-                until_terms = _normalize_until_terms(gen_kwargs.get("until") if isinstance(gen_kwargs, dict) else None)
-                max_new_tokens = (
-                    int(gen_kwargs.get("max_gen_toks", self.max_new_tokens))
-                    if isinstance(gen_kwargs, dict)
-                    else self.max_new_tokens
-                )
-                outputs.append(self._completion_request(prompt, until_terms, max_new_tokens))
-            self.profile_session.step()
+            prompt = self._format_prompt(req.arguments[0])
+            gen_kwargs = req.arguments[1] if len(req.arguments) > 1 else {}
+            until_terms = _normalize_until_terms(gen_kwargs.get("until") if isinstance(gen_kwargs, dict) else None)
+            max_new_tokens = (
+                int(gen_kwargs.get("max_gen_toks", self.max_new_tokens))
+                if isinstance(gen_kwargs, dict)
+                else self.max_new_tokens
+            )
+            outputs.append(self._completion_request(prompt, until_terms, max_new_tokens))
 
         info = self._server_info()
         if info.get("internal_states"):
@@ -345,8 +335,6 @@ class EngineOpenAILM(LM):
         self.total_samples += len(outputs)
         if self.save_dir:
             self._save_statistics()
-        if self.profile_session.steps >= self.profile_session.active_steps > 0:
-            self.profile_session.stop()
         return results
 
     def _save_statistics(self) -> None:

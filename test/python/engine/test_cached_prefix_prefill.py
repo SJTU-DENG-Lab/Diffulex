@@ -4,6 +4,7 @@ import pytest
 import torch
 import diffulex.attention.attn_impl as attn_impl
 from diffulex.attention.attn_impl import Attention, reference_torch_attention
+from diffulex.attention.metadata import is_warming_up, warming_up_context
 from diffulex.mixin.edit.sampler import EditSamplerMixin
 from diffulex.mixin.token_merge.sampler import TokenMergeSamplerMixin
 from diffulex.sampler.auto_sampler import AutoSampler
@@ -14,11 +15,18 @@ from diffulex.sampler.llada2 import LLaDA2DMaxSampler, LLaDA2Sampler, LLaDA2dot1
 from diffulex.sampler.sdar import SDARSampler
 from diffulex.sampler.base import SampleOutputBase
 from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
-from diffulex.strategy_template.token_merging_multi_block.attention.metadata import (
-    TokenMergingMultiBlockAttnMetaDataTemplate,
+from diffulex.strategy_template.multi_block.engine.cudagraph import (
+    MultiBlockCudaGraphState,
+    MultiBlockGraphBuffers,
 )
-from diffulex.strategy_template.token_merging_multi_block.engine.model_runner import (
-    TokenMergingMultiBlockModelRunnerTemplate,
+from diffulex.strategy_template.token_merge.attention.metadata import (
+    TokenMergeAttnMetaDataTemplate,
+)
+from diffulex.strategy_template.token_merge.engine.cudagraph import (
+    TokenMergeCudaGraphMixin,
+)
+from diffulex.strategy_template.token_merge.engine.model_runner import (
+    TokenMergeModelRunnerTemplate,
 )
 from diffulex.engine.dllm_block import DllmBlock
 from diffulex.config import DecodingThresholds
@@ -63,7 +71,7 @@ class _BatchRunner(_MultiBlockRunnerTestBase):
         )
 
 
-class _TokenMergingRunner(TokenMergingMultiBlockModelRunnerTemplate):
+class _TokenMergeRunner(TokenMergeModelRunnerTemplate):
     def __init__(self):
         self.config = SimpleNamespace(
             mask_token_id=99,
@@ -74,6 +82,7 @@ class _TokenMergingRunner(TokenMergingMultiBlockModelRunnerTemplate):
             buffer_size=1,
             block_size=4,
             max_num_reqs=4,
+            max_num_batched_tokens=16,
             max_model_len=16,
             kv_cache_layout="unified",
         )
@@ -92,6 +101,15 @@ class _TokenMergingRunner(TokenMergingMultiBlockModelRunnerTemplate):
 
     def capture_cudagraph(self):
         pass
+
+
+def test_token_merge_runner_inherits_graph_hooks_from_graph_mixin() -> None:
+    assert TokenMergeModelRunnerTemplate.__mro__[1] is TokenMergeCudaGraphMixin
+    assert TokenMergeModelRunnerTemplate._decode_graph_extra_vars is TokenMergeCudaGraphMixin._decode_graph_extra_vars
+    assert (
+        TokenMergeModelRunnerTemplate._bind_decode_graph_extra_metadata
+        is TokenMergeCudaGraphMixin._bind_decode_graph_extra_metadata
+    )
 
 
 def test_prepare_prefill_req_uses_suffix_positions_and_lengths_for_cached_prefix() -> None:
@@ -124,9 +142,9 @@ def test_prepare_prefill_req_uses_suffix_positions_and_lengths_for_cached_prefix
 
 
 def test_token_merge_graph_binding_copies_runtime_metadata_into_fixed_buffers() -> None:
-    runner = _TokenMergingRunner()
-    attn_metadata = TokenMergingMultiBlockAttnMetaDataTemplate()
-    attn_metadata.init_token_merging(
+    runner = _TokenMergeRunner()
+    attn_metadata = TokenMergeAttnMetaDataTemplate()
+    attn_metadata.init_token_merge(
         merge_mask=torch.tensor([False, True, False], dtype=torch.bool),
         topk_ids=torch.tensor([[99, 99], [7, 8], [99, 99]], dtype=torch.int64),
         topk_probs=torch.tensor([[0.0, 0.0], [0.6, 0.4], [0.0, 0.0]], dtype=torch.float32),
@@ -161,104 +179,56 @@ def test_token_merge_graph_binding_copies_runtime_metadata_into_fixed_buffers() 
     )
 
 
-def test_prefill_graph_bucket_rounds_to_block_size() -> None:
-    runner = _Runner()
-    runner.config = SimpleNamespace(
-        block_size=4,
-        max_model_len=20,
-        max_num_batched_tokens=20,
-        max_num_reqs=4,
-        enable_prefill_cudagraph=True,
-        prefill_cudagraph_max_len=0,
-    )
-
-    assert runner._prefill_graph_bucket_len(17) == 20
-    assert runner._prefill_graph_max_len() == 20
-
-
-def test_torch_compile_capture_patch_restores_forward(monkeypatch) -> None:
-    runner = _Runner()
-    runner.config = SimpleNamespace(
-        enable_torch_compile=True,
-        enable_cudagraph_torch_compile=True,
-        torch_compile_mode="reduce-overhead",
-    )
-    model = torch.nn.Linear(2, 2)
-    runner.model = model
-    original_forward_func = model.forward.__func__
-
-    def fake_compile(fn, **kwargs):
-        def wrapped(*args, **inner_kwargs):
-            return fn(*args, **inner_kwargs)
-
-        wrapped._compiled = True
-        return wrapped
-
-    monkeypatch.setattr(torch, "compile", fake_compile)
-
-    with runner._patch_model_forward_for_cuda_graph_capture(num_tokens=4) as compiled:
-        assert compiled is True
-        assert getattr(model.forward, "_compiled", False) is True
-
-    assert model.forward.__func__ is original_forward_func
-    assert not getattr(model.forward, "_compiled", False)
-
-
-def test_prefill_graph_gate_requires_all_prefill_and_padding_row_capacity() -> None:
+def test_prefill_cuda_graph_is_disabled() -> None:
     runner = _Runner()
     runner.enforce_eager = False
     runner.config = SimpleNamespace(
         block_size=4,
         max_model_len=20,
         max_num_batched_tokens=20,
-        max_num_reqs=1,
-        enable_prefill_cudagraph=True,
-        prefill_cudagraph_max_len=0,
+        max_num_reqs=4,
     )
-
-    attn_metadata = TokenMergingMultiBlockAttnMetaDataTemplate()
+    attn_metadata = TokenMergeAttnMetaDataTemplate()
     attn_metadata.status_table = torch.tensor([0], dtype=torch.int32)
-    assert runner._can_use_prefill_graph(attn_metadata, 17)
 
-    attn_metadata.status_table = torch.tensor([0, 0], dtype=torch.int32)
     assert not runner._can_use_prefill_graph(attn_metadata, 17)
 
-    attn_metadata.status_table = torch.tensor([1], dtype=torch.int32)
-    assert not runner._can_use_prefill_graph(attn_metadata, 16)
 
-
-def test_token_merge_prefill_graph_binding_leaves_padded_tail_inert() -> None:
-    runner = _TokenMergingRunner()
-    attn_metadata = TokenMergingMultiBlockAttnMetaDataTemplate()
-    attn_metadata.init_token_merging(
-        merge_mask=torch.tensor([False, True, False], dtype=torch.bool),
-        topk_ids=torch.tensor([[99, 99], [7, 8], [99, 99]], dtype=torch.int64),
-        topk_probs=torch.tensor([[0.0, 0.0], [0.6, 0.4], [0.0, 0.0]], dtype=torch.float32),
-        residual_probs=torch.tensor([[0.0], [0.1], [0.0]], dtype=torch.float32),
-        mask_token_id=99,
-        renormalize=True,
-        mode="dmax_topk",
-        weight=1.0,
+def test_decode_graph_gate_uses_captured_bucket_upper_bound() -> None:
+    runner = _Runner()
+    runner.enforce_eager = False
+    runner.config = SimpleNamespace(
+        block_size=4,
+        buffer_size=1,
+        max_num_reqs=2,
+        max_model_len=16,
+        kv_cache_layout="unified",
     )
-    graph_vars = {
-        "token_merge_mask": torch.ones(4, dtype=torch.bool),
-        "token_merge_topk_ids": torch.zeros((4, 2), dtype=torch.int64),
-        "token_merge_topk_probs": torch.ones((4, 2), dtype=torch.float32),
-        "token_merge_residual_probs": torch.ones((4, 1), dtype=torch.float32),
-    }
+    runner.cuda_graph_state = MultiBlockCudaGraphState(
+        decode_bucket_tokens=[4, 8],
+        decode_buffers=MultiBlockGraphBuffers(
+            common={
+                "input_ids": torch.zeros(8, dtype=torch.int64),
+                "context_lens": torch.zeros(2, dtype=torch.int32),
+                "page_tables": torch.zeros((2, 4), dtype=torch.int32),
+            }
+        ),
+    )
 
-    runner._bind_prefill_graph_extra_metadata(attn_metadata, graph_vars, bucket_len=4, runtime_num_tokens=3)
+    attn_metadata = TokenMergeAttnMetaDataTemplate(
+        cu_seqlens_q=torch.tensor([0, 4], dtype=torch.int32),
+        page_tables=torch.zeros((1, 4), dtype=torch.int32),
+        status_table=torch.tensor([1], dtype=torch.int32),
+    )
 
-    assert graph_vars["token_merge_mask"].tolist() == [False, True, False, False]
-    assert graph_vars["token_merge_topk_ids"].tolist() == [[99, 99], [7, 8], [99, 99], [99, 99]]
-    assert torch.allclose(graph_vars["token_merge_topk_probs"][3], torch.zeros(2))
-    assert torch.allclose(graph_vars["token_merge_residual_probs"][3], torch.zeros(1))
+    assert runner._can_use_decode_graph(attn_metadata, torch.zeros(8, dtype=torch.int64))
+    assert not runner._can_use_decode_graph(attn_metadata, torch.zeros(12, dtype=torch.int64))
 
 
 def test_token_merge_graph_binding_disables_merge_with_zero_mask_buffers() -> None:
-    runner = _TokenMergingRunner()
-    attn_metadata = TokenMergingMultiBlockAttnMetaDataTemplate()
-    attn_metadata.init_token_merging(mask_token_id=99)
+    runner = _TokenMergeRunner()
+    attn_metadata = TokenMergeAttnMetaDataTemplate()
+    attn_metadata.init_token_merge(mask_token_id=99)
     graph_vars = {
         "token_merge_mask": torch.ones(2, dtype=torch.bool),
         "token_merge_topk_ids": torch.full((2, 4), -1, dtype=torch.int64),
@@ -273,6 +243,71 @@ def test_token_merge_graph_binding_disables_merge_with_zero_mask_buffers() -> No
     assert torch.equal(graph_vars["token_merge_topk_ids"], torch.full((2, 4), 99, dtype=torch.int64))
     assert torch.allclose(graph_vars["token_merge_topk_probs"], torch.zeros((2, 4), dtype=torch.float32))
     assert torch.allclose(graph_vars["token_merge_residual_probs"], torch.zeros((2, 1), dtype=torch.float32))
+
+
+def test_token_merge_graph_capacity_vetoes_topk_over_capture_limit() -> None:
+    runner = _TokenMergeRunner()
+    attn_metadata = TokenMergeAttnMetaDataTemplate()
+    attn_metadata.init_token_merge(
+        merge_mask=torch.tensor([True], dtype=torch.bool),
+        topk_ids=torch.tensor([[1, 2, 3, 4, 5]], dtype=torch.int64),
+        topk_probs=torch.tensor([[0.2, 0.2, 0.2, 0.2, 0.2]], dtype=torch.float32),
+        residual_probs=torch.tensor([[0.0]], dtype=torch.float32),
+        mask_token_id=99,
+        renormalize=True,
+        mode="dmax_topk",
+        weight=1.0,
+    )
+
+    assert not runner._can_use_decode_graph_extra(attn_metadata, num_tokens=1, captured_num_tokens=4)
+
+
+def test_token_merge_decode_graph_binding_uses_graph_owned_metadata_without_mutating_source() -> None:
+    runner = _TokenMergeRunner()
+    source_mask = torch.tensor([False, True, False], dtype=torch.bool)
+    source_topk_ids = torch.tensor([[99, 99], [7, 8], [99, 99]], dtype=torch.int64)
+    source_topk_probs = torch.tensor([[0.0, 0.0], [0.6, 0.4], [0.0, 0.0]], dtype=torch.float32)
+    source_residual_probs = torch.tensor([[0.0], [0.1], [0.0]], dtype=torch.float32)
+    source_attn_metadata = TokenMergeAttnMetaDataTemplate()
+    source_attn_metadata.init_token_merge(
+        merge_mask=source_mask,
+        topk_ids=source_topk_ids,
+        topk_probs=source_topk_probs,
+        residual_probs=source_residual_probs,
+        mask_token_id=99,
+        renormalize=True,
+        mode="dmax_topk",
+        weight=1.0,
+    )
+    replay_attn_metadata = TokenMergeAttnMetaDataTemplate()
+    graph_vars = {
+        "token_merge_mask": torch.zeros(3, dtype=torch.bool),
+        "token_merge_topk_ids": torch.full((3, 4), 99, dtype=torch.int64),
+        "token_merge_topk_probs": torch.zeros((3, 4), dtype=torch.float32),
+        "token_merge_residual_probs": torch.zeros((3, 1), dtype=torch.float32),
+    }
+
+    runner._bind_decode_graph_extra_metadata(
+        replay_attn_metadata,
+        graph_vars,
+        num_tokens=3,
+        source_attn_metadata=source_attn_metadata,
+    )
+
+    assert replay_attn_metadata.token_merge_mask.data_ptr() == graph_vars["token_merge_mask"][:3].data_ptr()
+    assert source_attn_metadata.token_merge_mask.data_ptr() == source_mask.data_ptr()
+    assert torch.equal(source_attn_metadata.token_merge_topk_ids, source_topk_ids)
+
+
+def test_warming_up_context_resets_flag_after_exception() -> None:
+    assert not is_warming_up()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with warming_up_context():
+            assert is_warming_up()
+            raise RuntimeError("boom")
+
+    assert not is_warming_up()
 
 
 def test_prepare_prefill_req_maps_multiple_blocks_to_one_page() -> None:
@@ -576,8 +611,7 @@ def test_llada2dot1_edit_sampler_emits_edit_writes_map() -> None:
     assert not hasattr(out, "token_merge_map")
 
 
-def test_llada2dmax_sampler_emits_edit_writes_and_token_merge_map(monkeypatch) -> None:
-    monkeypatch.setenv("DIFFULEX_DMAX_SAMPLER_FAST", "0")
+def test_llada2dmax_sampler_emits_edit_writes_and_token_merge_map() -> None:
     sampler = LLaDA2DMaxSampler(
         SimpleNamespace(
             sampling_mode="edit",
@@ -619,13 +653,12 @@ def test_llada2dmax_sampler_emits_edit_writes_and_token_merge_map(monkeypatch) -
     assert out.edit_writes_map["0"]["0"] == {0: 1, 1: 1, 2: 2}
     req_merge = out.token_merge_map["0"]
     assert req_merge[4]["topk_ids"] == [1]
-    assert req_merge[4]["residual_prob"] > 0.0
+    assert req_merge[4]["residual_prob"] == 0.0
     assert req_merge[5]["topk_ids"] == [1]
     assert req_merge[6]["topk_ids"] == [2]
 
 
-def test_llada2dmax_sampler_fast_path_is_enabled_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("DIFFULEX_DMAX_SAMPLER_FAST", raising=False)
+def test_llada2dmax_sampler_does_not_expose_probability_path_toggle() -> None:
     sampler = LLaDA2DMaxSampler(
         SimpleNamespace(
             sampling_mode="edit",
@@ -635,19 +668,7 @@ def test_llada2dmax_sampler_fast_path_is_enabled_by_default(monkeypatch) -> None
         )
     )
 
-    assert sampler._fast_prob_path is True
-
-    monkeypatch.setenv("DIFFULEX_DMAX_SAMPLER_FAST", "0")
-    sampler = LLaDA2DMaxSampler(
-        SimpleNamespace(
-            sampling_mode="edit",
-            token_merge_top_k=1,
-            token_merge_mode="dmax_topk",
-            token_merge_weight=1.0,
-        )
-    )
-
-    assert sampler._fast_prob_path is False
+    assert not hasattr(sampler, "_fast_prob_path")
 
 
 def test_dllm_block_editable_start_limits_mask_ids_and_writes() -> None:
@@ -679,6 +700,42 @@ def test_dllm_block_editable_start_limits_mask_ids_and_writes() -> None:
 
     with pytest.raises(ValueError, match="non-editable token"):
         block.write_token(999, 1)
+
+
+def test_dllm_block_edit_state_is_derived_from_token_snapshots_and_confidence() -> None:
+    class _Req:
+        page_size = 4
+
+        def __init__(self) -> None:
+            self.token_ids = [101, 102, 0, 0]
+
+        def __getitem__(self, s):
+            return self.token_ids[s]
+
+    block = DllmBlock(
+        block_id=0,
+        start=0,
+        end=4,
+        block_size=4,
+        mask_token_id=0,
+        thresholds=DecodingThresholds(0.1, 0.9, 0.95, 0.4),
+        editable_start=2,
+    )
+    block.post_init_dllm_block(_Req(), None)
+
+    block.observe_edit_state([101, 102, 7, 8], confidences=[1.0, 1.0, 0.95, 0.96])
+    assert block.previous_token_ids == [101, 102, 0, 0]
+    assert block.current_token_ids == [101, 102, 7, 8]
+    assert block.same_token_ratio == 0.0
+    assert block.same_as_previous is False
+    assert block.all_confident is True
+    assert block.commit_ready is True
+
+    block.observe_edit_state([101, 102, 7, 9], confidences=[1.0, 1.0, 0.95, 0.40])
+    assert block.same_token_ratio == 0.5
+    assert block.same_as_previous is False
+    assert block.all_confident is False
+    assert block.commit_ready is False
 
 
 def test_llada2dmax_sampler_respects_block_editable_start() -> None:
@@ -908,8 +965,7 @@ def test_llada2dmax_sampler_refreshes_editable_non_mask_tokens() -> None:
     assert req_merge[13] is None
 
 
-def test_llada2dmax_sampler_emits_confidence_mask_blend_descriptors_on_dmax_path(monkeypatch) -> None:
-    monkeypatch.setenv("DIFFULEX_DMAX_SAMPLER_FAST", "0")
+def test_llada2dmax_sampler_emits_confidence_mask_blend_descriptors_on_dmax_path() -> None:
     sampler = LLaDA2DMaxSampler(
         SimpleNamespace(
             sampling_mode="edit",
@@ -955,7 +1011,7 @@ def test_llada2dmax_sampler_emits_confidence_mask_blend_descriptors_on_dmax_path
 
     assert out.edit_writes_map["0"]["0"] == {0: 1, 1: 2}
     assert out.token_merge_map["0"][0]["topk_ids"] == [1]
-    assert out.token_merge_map["0"][0]["residual_prob"] > 0.0
+    assert out.token_merge_map["0"][0]["residual_prob"] == 0.0
     assert out.token_merge_map["0"][1]["topk_ids"] == [2]
     assert out.token_merge_map["0"][1]["residual_prob"] > 0.0
 

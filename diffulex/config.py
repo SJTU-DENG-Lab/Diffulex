@@ -77,16 +77,11 @@ class Config:
     # CUDA Graph
     enforce_eager: bool = False
     attn_impl: str = "triton"  # "triton" or "naive"
-    enable_prefill_cudagraph: bool = True
-    enable_full_static_runner: bool = True
-    prefill_cudagraph_max_len: int = 0
-    enable_torch_compile: bool = True
-    enable_cudagraph_torch_compile: bool = False
-    torch_compile_mode: str = "reduce-overhead"
 
     # MoE
     moe_dispatcher_backend: str = "standard"  # "standard", "naive", or "deepep"
-    moe_gemm_impl: str = "triton"  # "triton", "vllm", or "naive"
+    moe_gemm_impl: str = "triton"  # "triton", "flashinfer", or "naive"
+    moe_topk_impl: str = "triton"  # "triton", "flashinfer", or "naive"
     deepep_mode: str = "auto"  # "normal", "low_latency", or "auto"
     deepep_num_max_dispatch_tokens_per_rank: int = 256
 
@@ -204,10 +199,15 @@ class Config:
                 "moe_dispatcher_backend must be one of {'standard', 'naive', 'deepep'}, "
                 f"got: {self.moe_dispatcher_backend}"
             )
-        if self.moe_gemm_impl not in {"triton", "vllm", "vllm_modular", "naive"}:
+        if self.moe_gemm_impl not in {"triton", "flashinfer", "naive"}:
             raise ValueError(
-                "moe_gemm_impl must be one of {'triton', 'vllm', 'vllm_modular', 'naive'}, "
+                "moe_gemm_impl must be one of {'triton', 'flashinfer', 'naive'}, "
                 f"got: {self.moe_gemm_impl}"
+            )
+        if self.moe_topk_impl not in {"triton", "flashinfer", "naive"}:
+            raise ValueError(
+                "moe_topk_impl must be one of {'triton', 'flashinfer', 'naive'}, "
+                f"got: {self.moe_topk_impl}"
             )
         if self.deepep_mode not in {"normal", "low_latency", "auto"}:
             raise ValueError(
@@ -262,6 +262,7 @@ class Config:
             "attn_impl",
             "moe_dispatcher_backend",
             "moe_gemm_impl",
+            "moe_topk_impl",
             "deepep_mode",
             "deepep_num_max_dispatch_tokens_per_rank",
             "expert_parallel_size",
@@ -282,11 +283,6 @@ class Config:
                 "max_num_batched_tokens must be >= max_model_len after HF config clamp, "
                 f"got max_num_batched_tokens={self.max_num_batched_tokens}, "
                 f"max_model_len={self.max_model_len}"
-            )
-        if self.prefill_cudagraph_max_len < 0:
-            raise ValueError(
-                "prefill_cudagraph_max_len must be non-negative, "
-                f"got: {self.prefill_cudagraph_max_len}"
             )
         if self.auto_max_nfe_warmup_steps <= 0:
             raise ValueError(

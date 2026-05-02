@@ -13,14 +13,14 @@ from diffulex.strategy.dmax.attention.metadata import (
     set_dmax_attn_metadata,
 )
 from diffulex.strategy.dmax.engine.request import DMaxReq
-from diffulex.strategy_template.token_merging_multi_block.engine.model_runner import (
-    TokenMergingMultiBlockModelRunnerTemplate,
+from diffulex.strategy_template.token_merge.engine.model_runner import (
+    TokenMergeModelRunnerTemplate,
 )
 
 
 @AutoModelRunner.register("dmax")
-class DMaxModelRunner(TokenMergingMultiBlockModelRunnerTemplate):
-    """DMax-style block diffusion runner with metadata-driven token merging."""
+class DMaxModelRunner(TokenMergeModelRunnerTemplate):
+    """DMax-style block diffusion runner with metadata-driven token merge."""
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
         set_fetch_fn_for_attn_metadata(fetch_dmax_attn_metadata)
@@ -34,7 +34,7 @@ class DMaxModelRunner(TokenMergingMultiBlockModelRunnerTemplate):
         super().__init__(config, rank, event)
 
     def prepare_prefill(self, reqs: list[DMaxReq]):
-        self.prepare_chunked_prefill_token_merging_multi_block(reqs)
+        self.prepare_chunked_prefill_token_merge(reqs)
 
     def prepare_decode(self, reqs: list[DMaxReq]):
         self.prepare_decode_multi_block(reqs)
@@ -48,4 +48,4 @@ class DMaxModelRunner(TokenMergingMultiBlockModelRunnerTemplate):
 
     @torch.inference_mode()
     def capture_cudagraph(self):
-        self.capture_cudagraph_token_merging_multi_block()
+        self.capture_cudagraph_multi_block()

@@ -129,14 +129,17 @@ class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
                 if not getattr(block, "is_active", False):
                     continue
                 state = block_state_map.get(str(block.block_id))
-                if state is not None:
-                    block.commit_ready = bool(state.get("committable", False))
-                    block.same_as_previous = bool(state.get("same_as_previous", False))
-                    block.same_token_ratio = float(state.get("same_token_ratio", 0.0))
-                    block.all_confident = bool(state.get("all_confident", False))
-                elif block.is_complete:
-                    block.commit_ready = True
-                    block.same_token_ratio = 1.0
+                observe_edit_state = getattr(block, "observe_edit_state", None)
+                if callable(observe_edit_state) and state is not None:
+                    observe_edit_state(
+                        token_ids=state["token_ids"],
+                        confidences=state.get("confidences"),
+                    )
+                elif callable(observe_edit_state) and block.is_complete:
+                    observe_edit_state(
+                        token_ids=block.token_ids,
+                        confidences=[1.0] * int(block.block_size),
+                    )
 
             req.postprocess()
             req.nfe += 1

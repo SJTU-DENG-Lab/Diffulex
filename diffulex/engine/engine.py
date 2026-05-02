@@ -18,7 +18,6 @@ from diffulex.engine.request import AutoReq
 from diffulex.engine.scheduler import AutoScheduler, DataParallelScheduler, SchedulerBase
 from diffulex.logger import get_logger
 from diffulex.mixin.async_serving.engine import DiffulexAsyncEngineMixin
-from diffulex.profiling import TorchProfileSession, record_function
 from diffulex.sampling_params import SamplingParams
 from diffulex.utils.output import GenerationOutputs
 
@@ -70,7 +69,6 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             self.ps.append(process)
             self.events.append(event)
         self._exited = False
-        self.profile_session = TorchProfileSession("engine")
         atexit.register(self.exit)
         self._install_signal_handlers()
 
@@ -152,8 +150,6 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         if getattr(self, "_exited", False):
             return
         self._exited = True
-        if hasattr(self, "profile_session"):
-            self.profile_session.stop()
         if hasattr(self, "model_runner") and self.model_runner is not None:
             try:
                 self.model_runner.call("exit")
@@ -169,35 +165,24 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
-            with record_function("diffulex.engine.tokenizer_encode"):
-                prompt = self.tokenizer.encode(prompt)
+            prompt = self.tokenizer.encode(prompt)
 
-        with record_function("diffulex.engine.add_request"):
-            req = AutoReq.create(self.config, prompt, sampling_params)
+        req = AutoReq.create(self.config, prompt, sampling_params)
         req.page_size = self.config.kv_cache_page_size
-        with record_function("diffulex.engine.scheduler_add"):
-            self.scheduler.add(req)
+        self.scheduler.add(req)
         return req.req_id
 
     def step(self):
-        self.profile_session.start()
-        with record_function("diffulex.engine.scheduler_schedule"):
-            reqs, is_prefill = self.scheduler.schedule()
-        with record_function("diffulex.engine.prepare_reqs_for_execution"):
-            self._prepare_reqs_for_execution(reqs)
+        reqs, is_prefill = self.scheduler.schedule()
+        self._prepare_reqs_for_execution(reqs)
         try:
-            with record_function("diffulex.engine.model_runner_run"):
-                sample_output = self.model_runner.call("run", reqs)
+            sample_output = self.model_runner.call("run", reqs)
         finally:
-            with record_function("diffulex.engine.clear_execution_prepared"):
-                self._clear_execution_prepared(reqs)
-        with record_function("diffulex.engine.scheduler_postprocess"):
-            self.scheduler.postprocess(reqs, sample_output)
+            self._clear_execution_prepared(reqs)
+        self.scheduler.postprocess(reqs, sample_output)
         finished_req_ids = [req.req_id for req in reqs if (req.is_completed or req.is_finished)]
         if finished_req_ids:
-            with record_function("diffulex.engine.evict_sampler_state"):
-                self.model_runner.call("evict_sampler_state", finished_req_ids)
-        self.profile_session.step()
+            self.model_runner.call("evict_sampler_state", finished_req_ids)
         return reqs, is_prefill
 
     @staticmethod
@@ -229,50 +214,47 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         sampling_params: SamplingParams | list[SamplingParams],
         use_tqdm: bool = True,
     ) -> list[str]:
-        with record_function("diffulex.engine.generate"):
-            if use_tqdm:
-                pbar = tqdm(total=len(prompts), desc="Diffulex Generating", dynamic_ncols=True)
+        if use_tqdm:
+            pbar = tqdm(total=len(prompts), desc="Diffulex Generating", dynamic_ncols=True)
 
-            if not isinstance(sampling_params, list):
-                sampling_params = [sampling_params] * len(prompts)
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
 
-            req_id_to_prompt_id = {}
-            for prompt_id, (prompt, sp) in tqdm(
-                enumerate(zip(prompts, sampling_params)),
-                total=len(prompts),
-                desc="Adding Requests to Scheduler",
-                dynamic_ncols=True,
-            ):
-                req_id = self.add_request(prompt, sp)
-                req_id_to_prompt_id[req_id] = prompt_id
+        req_id_to_prompt_id = {}
+        for prompt_id, (prompt, sp) in tqdm(
+            enumerate(zip(prompts, sampling_params)),
+            total=len(prompts),
+            desc="Adding Requests to Scheduler",
+            dynamic_ncols=True,
+        ):
+            req_id = self.add_request(prompt, sp)
+            req_id_to_prompt_id[req_id] = prompt_id
 
-            step = 0
-            outputs = GenerationOutputs(len(prompts))
-            while not self.is_finished():
-                step += 1
+        step = 0
+        outputs = GenerationOutputs(len(prompts))
+        while not self.is_finished():
+            step += 1
 
-                start = perf_counter()
-                reqs, is_prefill = self.step()
-                step_time = perf_counter() - start
+            start = perf_counter()
+            reqs, is_prefill = self.step()
+            step_time = perf_counter() - start
 
-                with record_function("diffulex.engine.record_outputs"):
-                    outputs.record_step(reqs, step_time, req_id_to_prompt_id)
-
-                if use_tqdm:
-                    pbar.set_postfix(outputs.postfix())
-
-                for req in reqs:
-                    if (req.is_completed or req.is_finished) and use_tqdm:
-                        pbar.update(1)
+            outputs.record_step(reqs, step_time, req_id_to_prompt_id)
 
             if use_tqdm:
-                pbar.close()
+                pbar.set_postfix(outputs.postfix())
 
-            outputs.log_summary()
-            with record_function("diffulex.engine.convert_outputs_to_text"):
-                outputs.convert_to_text(self.tokenizer)
+            for req in reqs:
+                if (req.is_completed or req.is_finished) and use_tqdm:
+                    pbar.update(1)
 
-            return outputs
+        if use_tqdm:
+            pbar.close()
+
+        outputs.log_summary()
+        outputs.convert_to_text(self.tokenizer)
+
+        return outputs
 
 
 __all__ = ["DiffulexEngine"]

@@ -5,6 +5,8 @@ from datetime import timedelta
 
 import torch.distributed as dist
 
+from diffulex.distributed.sglang_backend import ParallelStateSGLangMixin, reset_sglang_backend_state
+
 
 @dataclass(frozen=True)
 class WorldMesh:
@@ -47,7 +49,7 @@ class MoEParallelLayout:
 
 
 @dataclass(frozen=True)
-class ParallelState:
+class ParallelState(ParallelStateSGLangMixin):
     world: WorldMesh
     base_model: BaseModelParallelLayout
     moe: MoEParallelLayout | None
@@ -483,6 +485,7 @@ def init_parallel_state(
 
 def reset_parallel_state() -> None:
     global PARALLEL_STATE
+    reset_sglang_backend_state()
     PARALLEL_STATE = None
 
 
