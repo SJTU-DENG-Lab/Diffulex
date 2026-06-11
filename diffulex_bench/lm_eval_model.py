@@ -164,6 +164,8 @@ class DiffulexLM(LM):
         self.last_prefill_throughput = 0.0
         self.last_decode_throughput = 0.0
         self.last_tpf = 0.0
+        self.last_avg_e2e_tps = 0.0
+        self.last_avg_decode_tps = 0.0
 
         engine_sources = locals().copy()
         extra_engine_kwargs = engine_sources.pop("kwargs")
@@ -318,6 +320,8 @@ class DiffulexLM(LM):
             self.last_prefill_throughput = float(outputs[0].get("prefill_throughput_tok_s", 0.0) or 0.0)
             self.last_decode_throughput = float(outputs[0].get("decode_throughput_tok_s", 0.0) or 0.0)
             self.last_tpf = float(outputs[0].get("tpf", 0.0) or 0.0)
+            self.last_avg_e2e_tps = float(outputs[0].get("avg_e2e_tps", 0.0) or 0.0)
+            self.last_avg_decode_tps = float(outputs[0].get("avg_decode_tps", 0.0) or 0.0)
 
         # Extract results and accumulate statistics
         results = []
@@ -396,6 +400,8 @@ class DiffulexLM(LM):
             "decode_throughput_tok_s": self.last_decode_throughput,
             "tpf": self.total_generated_tokens / self.total_nfe if self.total_nfe > 0 else 0,
             "last_batch_tpf": self.last_tpf,
+            "avg_e2e_tps": self.last_avg_e2e_tps,
+            "avg_decode_tps": self.last_avg_decode_tps,
             "nfe_per_token": self.total_nfe / self.total_generated_tokens if self.total_generated_tokens > 0 else 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -416,6 +422,17 @@ class DiffulexLM(LM):
                 with open(resp_path, "w", encoding="utf-8") as f:
                     json.dump(rows, f, indent=2, ensure_ascii=False)
                 self.logger.info(f"Responses saved to {resp_path}")
+
+            # Save per-step decode trajectory (block-level mask ratios, active status, etc.)
+            # Set DIFFULEX_SAVE_TRACE=0 to disable.
+            if os.environ.get("DIFFULEX_SAVE_TRACE", "1") != "0":
+                outputs = getattr(self.runner, "last_outputs", None)
+                if outputs is not None and outputs.trajectories:
+                    trace_path = os.path.join(self.save_dir, "0x3_decode_trajectory.json")
+                    trajectory_data = [t.to_dict() for t in outputs.trajectories if t.trajectory]
+                    with open(trace_path, "w", encoding="utf-8") as f:
+                        json.dump(trajectory_data, f, indent=2, ensure_ascii=False)
+                    self.logger.info(f"Decode trajectory saved to {trace_path}")
 
     def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
         """

@@ -1,0 +1,30 @@
+tag:
+  - code
+task: mbpp_plus_sanitized_sdar
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files: diffulex_bench/data/MBPP_plus_sanitized.json
+process_docs: !function sdar_utils.process_docs_sanitized
+test_split: train
+output_type: generate_until
+unsafe_code: true
+doc_to_text: !function sdar_utils.doc_to_text_code_function
+doc_to_target: "{{prompt}}"
+process_results: !function sdar_utils.process_results_code
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "<|im_end|>"
+    - "</s>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 2048
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 1.0
+  description: "MBPP+ sanitized — sdar_utils with process_docs. Uses MBPP_sanitized data; replace with MBPP+sanitized data for extended tests."

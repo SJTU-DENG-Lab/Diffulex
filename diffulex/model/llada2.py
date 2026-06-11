@@ -478,6 +478,7 @@ def build_llada2_runtime_config(config):
 @AutoModelForDiffusionLM.register("llada2", use_full_config=True)
 @AutoModelForDiffusionLM.register("llada2_moe", use_full_config=True)
 @AutoModelForDiffusionLM.register("llada2_mini", use_full_config=True)
+@AutoModelForDiffusionLM.register("llada2dot1_mini", use_full_config=True)
 class LLaDA2ForDiffusionLM(nn.Module):
     packed_modules_mapping = {}
 

@@ -37,6 +37,8 @@ class DllmBlock:
     same_as_previous: bool = False
     same_token_ratio: float = 0.0
     all_confident: bool = False
+    post_edit_steps: int = 0
+    total_steps: int = 0
 
     def __repr__(self):
         prev_block_id = self.prev_block.block_id if self.prev_block is not None else None

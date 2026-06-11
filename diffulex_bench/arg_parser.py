@@ -409,6 +409,18 @@ Examples:
         help="Minimum non-mask token stability ratio required before adding the next DMax edit block",
     )
     parser.add_argument(
+        "--edit-threshold",
+        type=float,
+        default=0.0,
+        help="Confidence threshold for T2T token edits in JointThreshold edit sampler",
+    )
+    parser.add_argument(
+        "--max-post-edit-steps",
+        type=int,
+        default=16,
+        help="Maximum refinement steps after all masks are filled (JointThreshold)",
+    )
+    parser.add_argument(
         "--block-size",
         type=int,
         default=None,

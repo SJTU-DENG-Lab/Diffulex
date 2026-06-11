@@ -421,7 +421,10 @@ class MultiBlockReqTemplate(DllmReq):
 
     def step(self):
         self.lazy_activate()
-        
+
+        for block in self.dllm_block_buffer.active_blocks:
+            block.total_steps += 1
+
         # Condition to activate the next block, when buffer contains active blocks
         activate_cond = self.dllm_block_buffer.should_add_block and not self.dllm_block_buffer.is_overflow
 

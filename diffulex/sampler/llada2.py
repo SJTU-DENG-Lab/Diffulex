@@ -39,8 +39,239 @@ class LLaDA2Sampler(LLaDA2AcceptedIdsMixin, DllmSamplerNoShiftBase):
 
 class LLaDA2dot1Sampler(EditSamplerMixin, LLaDA2Sampler):
     def __init__(self, config=None):
-        del config
-        super().__init__()
+        super().__init__(config=config)
+        self.edit_threshold = float(getattr(config, "edit_threshold", 0.0))
+        self.max_post_edit_steps = int(getattr(config, "max_post_edit_steps", 16))
+        self.penalty_lambda = float(getattr(config, "penalty_lambda", 0.0))
+        self._last_block_state_map: dict[str, dict[str, dict]] = {}
+
+    def _reset_block_state_map(self) -> None:
+        self._last_block_state_map = {}
+
+    @staticmethod
+    def _sample_argmax(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+        if temperature > 0:
+            gumbel = -torch.log(-torch.log(torch.rand_like(logits, dtype=torch.float32).clamp_(1e-6, 1 - 1e-6)))
+            logits = logits.to(torch.float32) + gumbel * temperature
+        return torch.argmax(logits, dim=-1)
+
+    @staticmethod
+    def _extract_block_logits(req, req_logits: torch.Tensor, block, is_prefill: bool) -> torch.Tensor | None:
+        if req_logits.shape[0] == 0:
+            return None
+        if is_prefill:
+            prefix_offset = int(req.contiguous_in_cache_prefix_len)
+            local_start = int(block.start - prefix_offset)
+            local_end = int(block.end - prefix_offset)
+            if local_start < 0 or local_end > req_logits.shape[0]:
+                return None
+            return req_logits[local_start:local_end, ...]
+
+        buf_offset = int(block.start - req.dllm_block_buffer.first_running_block.start)
+        local_start = buf_offset
+        local_end = buf_offset + int(block.block_size)
+        if local_start < 0 or local_end > req_logits.shape[0]:
+            return None
+        return req_logits[local_start:local_end, ...]
+
+    def forward(
+        self,
+        reqs,
+        logits: torch.Tensor,
+        temperatures: torch.Tensor,
+        top_p=None,
+        top_k=None,
+        margin_confidence=False,
+        neg_entropy=False,
+        **kwargs,
+    ):
+        del top_p, top_k, margin_confidence, neg_entropy
+        attn_metadata = self.fetch_attn_metadata()
+        split_logits = self._split_logits_per_req(attn_metadata, reqs, logits)
+
+        empty_per_req = {str(req.req_id): {} for req in reqs}
+        sample_output = self.output_cls(
+            true_local_ids_map=dict(empty_per_req),
+            accepted_ids_map=dict(empty_per_req),
+            sampled_tokens_map=dict(empty_per_req),
+            mask_token_rel_ids_map=dict(empty_per_req),
+            confidence_map=dict(empty_per_req),
+            initial_confidence_map=dict(empty_per_req),
+        )
+        return self._postprocess_sample_output(
+            reqs=reqs,
+            split_logits=split_logits,
+            temperatures=temperatures,
+            sample_output=sample_output,
+            attn_metadata=attn_metadata,
+            **kwargs,
+        )
+
+    def _build_edit_writes_map(
+        self,
+        reqs,
+        split_logits,
+        temperatures: torch.Tensor,
+        sample_output,
+        attn_metadata,
+        **kwargs,
+    ) -> dict[str, dict[str, dict[int, int]]]:
+        del sample_output, kwargs
+        edit_writes_map: dict[str, dict[str, dict[int, int]]] = {}
+        self._reset_block_state_map()
+
+        for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
+            req_id_str = str(req.req_id)
+            req_edit_writes: dict[str, dict[int, int]] = {}
+            req_block_states: dict[str, dict] = {}
+
+            for block_id, block in enumerate(req.dllm_blocks):
+                if not block.is_active:
+                    continue
+
+                post_edit_steps = int(getattr(block, "post_edit_steps", 0))
+                total_steps = int(getattr(block, "total_steps", 0))
+                editable_start = int(getattr(block, "editable_start", 0) or 0)
+                accept_threshold = float(block.thresholds.accept_threshold)
+                mask_id = int(block.mask_token_id)
+
+                block_logits = self._extract_block_logits(
+                    req, req_logits, block, attn_metadata.is_prefill[req_idx]
+                )
+                if block_logits is None or block_logits.shape[0] != int(block.block_size):
+                    continue
+
+                block_tokens = torch.tensor(block.token_ids, dtype=torch.long, device=block_logits.device)
+                block_size = int(block.block_size)
+
+                # Argmax + confidence over full block
+                temperature = float(temperatures[req_idx].item())
+                x = self._sample_argmax(block_logits, temperature)
+                logits_fp32 = block_logits.to(torch.float32)
+
+                # Penalty lambda: penalize predicting the adjacent previous token
+                if self.penalty_lambda > 0 and block_size > 1:
+                    prev_ids = block_tokens[:-1]
+                    logits_fp32[1:, :].scatter_(
+                        1, prev_ids.unsqueeze(-1), -self.penalty_lambda, reduce="add"
+                    )
+                    x = torch.argmax(logits_fp32, dim=-1)
+
+                top1_logits = logits_fp32.gather(dim=-1, index=x.unsqueeze(-1)).squeeze(-1)
+                logsumexp = torch.logsumexp(logits_fp32, dim=-1)
+                p = torch.exp(top1_logits - logsumexp)
+
+                mask_index = block_tokens.eq(mask_id)
+                has_mask = bool(mask_index.any().item())
+
+                # M2T: mask-to-token transfers
+                mask_transfer_index = torch.zeros(block_size, dtype=torch.bool, device=block_tokens.device)
+                if has_mask:
+                    eligible_mask = mask_index & (
+                        torch.arange(block_size, device=block_tokens.device) >= editable_start
+                    )
+                    confidence_at_mask = torch.where(
+                        eligible_mask, p,
+                        torch.tensor(-float("inf"), device=p.device, dtype=p.dtype),
+                    )
+                    mask_transfer_index = confidence_at_mask > accept_threshold
+                    if not mask_transfer_index.any():
+                        _, select_index = torch.topk(confidence_at_mask, k=1)
+                        mask_transfer_index = torch.zeros(block_size, dtype=torch.bool, device=block_tokens.device)
+                        mask_transfer_index[select_index] = True
+                else:
+                    post_edit_steps += 1
+
+                # T2T: token-to-token edits on editable, non-mask positions
+                editable_positions = torch.arange(block_size, device=block_tokens.device) >= editable_start
+                edit_positions = ~mask_index & editable_positions
+                edit_transfer_index = (
+                    (p > self.edit_threshold) & (block_tokens != x) & edit_positions
+                )
+
+                transfer_index = mask_transfer_index | edit_transfer_index
+
+                # Hard upper bound: block_size + max_post_edit_steps
+                max_steps = block_size + self.max_post_edit_steps
+                timed_out = total_steps >= max_steps
+
+                # Determine finished state
+                finished = False
+                if timed_out:
+                    finished = True
+                elif not transfer_index.any():
+                    finished = True
+                elif not has_mask and post_edit_steps > self.max_post_edit_steps:
+                    finished = True
+
+                # Build block_writes
+                block_writes: dict[int, int] = {}
+                if timed_out:
+                    # Force-fill remaining editable mask positions with argmax
+                    eligible_mask = mask_index & (
+                        torch.arange(block_size, device=block_tokens.device) >= editable_start
+                    )
+                    for rel_idx in torch.nonzero(eligible_mask, as_tuple=False).flatten().tolist():
+                        block_writes[int(rel_idx)] = int(x[int(rel_idx)].item())
+                    # Also include any T2T edits that would have happened
+                    for rel_idx in torch.nonzero(edit_transfer_index, as_tuple=False).flatten().tolist():
+                        rel_idx_int = int(rel_idx)
+                        if rel_idx_int >= editable_start:
+                            block_writes[rel_idx_int] = int(x[rel_idx_int].item())
+                elif not finished:
+                    for rel_idx in torch.nonzero(transfer_index, as_tuple=False).flatten().tolist():
+                        rel_idx_int = int(rel_idx)
+                        if rel_idx_int >= editable_start:
+                            block_writes[rel_idx_int] = int(x[rel_idx_int].item())
+
+                # Persist counters on block
+                block.post_edit_steps = post_edit_steps
+
+                # Block state for scheduler
+                same_as_previous = not bool(transfer_index.any().item()) and not timed_out
+                comparable = ~mask_index & editable_positions
+                if comparable.any() and not timed_out:
+                    same_token_ratio = float(
+                        x[comparable].eq(block_tokens[comparable]).to(torch.float32).mean().item()
+                    )
+                else:
+                    same_token_ratio = 1.0
+                all_confident = bool((p >= accept_threshold).all().item()) if p.numel() > 0 else True
+
+                req_block_states[str(block.block_id)] = {
+                    "committable": finished or (same_as_previous and not has_mask),
+                    "same_as_previous": same_as_previous,
+                    "same_token_ratio": same_token_ratio,
+                    "all_confident": all_confident,
+                }
+
+                if block_writes:
+                    req_edit_writes[str(block.block_id)] = block_writes
+
+            edit_writes_map[req_id_str] = req_edit_writes
+            self._last_block_state_map[req_id_str] = req_block_states
+
+        return edit_writes_map
+
+    def _postprocess_sample_output(
+        self,
+        reqs,
+        split_logits,
+        temperatures: torch.Tensor,
+        sample_output,
+        attn_metadata,
+        **kwargs,
+    ):
+        sample_output = super()._postprocess_sample_output(
+            reqs=reqs,
+            split_logits=split_logits,
+            temperatures=temperatures,
+            sample_output=sample_output,
+            attn_metadata=attn_metadata,
+            **kwargs,
+        )
+        sample_output.block_state_map = self._last_block_state_map
+        return sample_output
 
 
 class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):

@@ -5,9 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-CHECKPOINTS_DIR="${CHECKPOINTS_DIR:-/inspire/hdd/global_user/yangyi-253108120173/inspire_shared/mount/advanced-machine-learning-and-deep-learning-applications/jyj/multibd/llada2_dmax_mbd_oput_coder_v2_60k_e4_bufsz2/checkpoints}"
-CONFIG_PATH="${CONFIG_PATH:-diffulex_bench/configs/llada2_mini_dmax_gsm8k.yml}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-benchmark_results/llada2_mini_dmax_all_convert_v2}"
+DIR_NAME="hf_ckpt"
+
+CHECKPOINTS_DIR="${CHECKPOINTS_DIR:-/inspire/hdd/global_user/yangyi-253108120173/inspire_shared/mount/advanced-machine-learning-and-deep-learning-applications/jyj/multibd/sdar_8Bb4_mbd_v2_sft_code_sdar60k_br2_bufsz4/checkpoints/}"
+CONFIG_PATH="${CONFIG_PATH:-diffulex_bench/configs/sdar_chat_gsm8k.yml}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-benchmark_results/sdar_code_b4}"
 LOG_DIR="${LOG_DIR:-logs/dmax_all_convert}"
 PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
 
@@ -18,26 +20,26 @@ MAX_TOKENS="${MAX_TOKENS:-4096}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-4096}"
 MAX_NUM_REQS="${MAX_NUM_REQS:-128}"
-BLOCK_SIZE="${BLOCK_SIZE:-32}"
-BUFFER_SIZE="${BUFFER_SIZE:-2}"
+BLOCK_SIZE="${BLOCK_SIZE:-4}"
+BUFFER_SIZE="${BUFFER_SIZE:-4}"
 MAX_NFE="${MAX_NFE:-1024}"
 TOKEN_STABILITY_THRESHOLD="${TOKEN_STABILITY_THRESHOLD:-0.0}"
 FORCE_RERUN="${FORCE_RERUN:-0}"
 
 DATASETS=(
-  humaneval_dmax_reference_chat
-  mbpp_sanitized_dinfer_dmax_chat
+  humaneval_plus_sdar                                                                                                                                                                                                            
+  mbpp_plus_sdar
 )
 
 mkdir -p "${LOG_DIR}" "${OUTPUT_ROOT}"
 
 mapfile -t MODEL_DIRS < <(
-  find "${CHECKPOINTS_DIR}" -maxdepth 2 -type d -name hf_ckpt_convert \
+  find "${CHECKPOINTS_DIR}" -maxdepth 2 -type d -name $DIR_NAME \
     | sort -V
 )
 
 if [[ "${#MODEL_DIRS[@]}" -eq 0 ]]; then
-  echo "No hf_ckpt_convert directories found under ${CHECKPOINTS_DIR}" >&2
+  echo "No $DIR_NAME directories found under ${CHECKPOINTS_DIR}" >&2
   exit 1
 fi
 
@@ -76,9 +78,9 @@ for model_path in "${MODEL_DIRS[@]}"; do
       --log-level INFO \
       --config "${CONFIG_PATH}" \
       --model-path "${model_path}" \
-      --model-name llada2_mini \
-      --decoding-strategy dmax \
-      --sampling-mode edit \
+      --model-name sdar \
+      --decoding-strategy multi_bd \
+      --sampling-mode naive \
       --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
       --data-parallel-size "${DATA_PARALLEL_SIZE}" \
       --dataset "${dataset}" \

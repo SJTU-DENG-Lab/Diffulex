@@ -508,6 +508,23 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.deepep_num_max_dispatch_tokens_per_rank = args.deepep_num_max_dispatch_tokens_per_rank
         if getattr(args, "multi_block_prefix_full", None) is not None:
             config.engine.multi_block_prefix_full = bool(args.multi_block_prefix_full)
+
+        # Override decoding_thresholds with CLI args
+        if config.engine.decoding_thresholds is None:
+            config.engine.decoding_thresholds = {}
+        for cli_key, yaml_key in (
+            ("add_block_threshold", "add_block_threshold"),
+            ("semi_complete_threshold", "semi_complete_threshold"),
+            ("accept_threshold", "accept_threshold"),
+            ("edit_threshold", "edit_threshold"),
+            ("remask_threshold", "remask_threshold"),
+            ("token_stability_threshold", "token_stability_threshold"),
+        ):
+            if getattr(args, cli_key, None) is not None:
+                config.engine.decoding_thresholds[yaml_key] = getattr(args, cli_key)
+        if getattr(args, "max_post_edit_steps", None) is not None:
+            config.engine.max_post_edit_steps = args.max_post_edit_steps
+
         apply_engine_arg_overrides(config.engine)
     else:
         if not args.model_path:
@@ -521,6 +538,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
             model_name=args.model_name,
             decoding_strategy=args.decoding_strategy,
             sampling_mode=getattr(args, "sampling_mode", None) or "naive",
+            max_post_edit_steps=getattr(args, "max_post_edit_steps", 16),
             mask_token_id=args.mask_token_id,
             tensor_parallel_size=args.tensor_parallel_size,
             data_parallel_size=args.data_parallel_size,
@@ -594,6 +612,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
                 "add_block_threshold": getattr(args, "add_block_threshold", 0.1),
                 "semi_complete_threshold": getattr(args, "semi_complete_threshold", 0.9),
                 "accept_threshold": getattr(args, "accept_threshold", 0.9),
+                "edit_threshold": getattr(args, "edit_threshold", 0.0),
                 "remask_threshold": getattr(args, "remask_threshold", 0.4),
                 "token_stability_threshold": getattr(args, "token_stability_threshold", 0.0),
             },

@@ -103,6 +103,7 @@ class BenchmarkRunner:
         start_time = time.time()
 
         raw_outputs = self.llm.generate(prompts, sampling_params, use_tqdm=use_tqdm)
+        self.last_outputs = raw_outputs  # keep for trace dump
         end_time = time.time()
 
         # Convert GenerationOutputs to list of dicts if needed (tp_worker returns GenerationOutputs)
@@ -118,6 +119,8 @@ class BenchmarkRunner:
                 "decode_throughput_tok_s": getattr(raw_outputs, "decode_throughput", 0.0),
                 "batch_total_time_s": getattr(raw_outputs, "total_time", 0.0),
                 "tpf": getattr(raw_outputs, "tpf", 0.0),
+                "avg_e2e_tps": getattr(raw_outputs, "avg_e2e_tps", 0.0),
+                "avg_decode_tps": getattr(raw_outputs, "avg_decode_tps", 0.0),
             }
         else:
             outputs = raw_outputs

@@ -111,6 +111,7 @@ class EngineConfig:
     model_name: str = "dream"  # Options: dream, sdar, fast_dllm_v2, llada
     decoding_strategy: str = "d2f"  # Options: d2f, multi_bd
     sampling_mode: str = "naive"  # Options: naive, edit
+    max_post_edit_steps: int = 16  # max refinement steps after all masks filled
     mask_token_id: int = 151666
 
     # LoRA configuration

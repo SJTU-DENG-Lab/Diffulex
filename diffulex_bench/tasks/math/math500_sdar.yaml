@@ -1,0 +1,28 @@
+tag:
+  - math_word_problems
+task: math500_sdar
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files: diffulex_bench/data/MATH500.json
+test_split: train
+output_type: generate_until
+doc_to_text: !function sdar_utils.doc_to_text_math_0shot
+doc_to_target: "{{ground_truth_answer}}"
+process_results: !function sdar_utils.process_results_math
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "<|im_end|>"
+    - "</s>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 2048
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 1.0
+  description: "MATH500 Lightning JSON 0-shot (diffulex)."

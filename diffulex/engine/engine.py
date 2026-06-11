@@ -259,7 +259,7 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
                     outputs.record_step(reqs, step_time, req_id_to_prompt_id)
 
                 if use_tqdm:
-                    pbar.set_postfix(outputs.postfix())
+                    pbar.set_postfix(outputs.fast_postfix())
 
                 for req in reqs:
                     if (req.is_completed or req.is_finished) and use_tqdm:

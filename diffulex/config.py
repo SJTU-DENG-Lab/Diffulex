@@ -21,7 +21,8 @@ DMAX_MODEL_NAMES = EDIT_SAMPLING_MODEL_NAMES
 class DecodingThresholds:
     add_block_threshold: float  # whether add a new block
     semi_complete_threshold: float  # whether unleash the decoding of the next block
-    accept_threshold: float  # whether the token should be decoded
+    accept_threshold: float  # whether the token should be decoded (M2T)
+    edit_threshold: float = 0.0  # whether a filled token should be edited (T2T)
     remask_threshold: float = 0.4  # whether a filled token should be remasked
     token_stability_threshold: float = 0.0  # whether decoded tokens are stable enough to add a new block
 
@@ -46,6 +47,8 @@ class Config:
     token_merge_renormalize: bool = True
     token_merge_weight: float = 1.0
     sampling_mode: str = "naive"  # "naive" or "edit"
+    max_post_edit_steps: int = 16  # max refinement steps after all masks filled (JointThreshold)
+    penalty_lambda: float = 0.0  # repetition penalty coefficient (JointThreshold)
     use_lora: bool = False
     pre_merge_lora: bool = False
     max_num_batched_tokens: int = 4096
@@ -324,11 +327,14 @@ class Config:
                 "add_block_threshold",
                 "semi_complete_threshold",
                 "accept_threshold",
+                "edit_threshold",
                 "remask_threshold",
                 "token_stability_threshold",
             ):
                 if d.get(key) is not None:
                     self.decoding_thresholds[key] = d[key]
+            if "edit_threshold" not in self.decoding_thresholds:
+                self.decoding_thresholds["edit_threshold"] = 0.0
             if "remask_threshold" not in self.decoding_thresholds:
                 self.decoding_thresholds["remask_threshold"] = 0.4
             if "token_stability_threshold" not in self.decoding_thresholds:
@@ -338,12 +344,14 @@ class Config:
             add_block_threshold = d.get("add_block_threshold")
             semi_complete_threshold = d.get("semi_complete_threshold")
             accept_threshold = d.get("accept_threshold")
+            edit_threshold = d.get("edit_threshold")
             remask_threshold = d.get("remask_threshold")
             token_stability_threshold = d.get("token_stability_threshold")
             self.decoding_thresholds = DecodingThresholds(
                 add_block_threshold=0.1 if add_block_threshold is None else add_block_threshold,
                 semi_complete_threshold=0.9 if semi_complete_threshold is None else semi_complete_threshold,
                 accept_threshold=0.9 if accept_threshold is None else accept_threshold,
+                edit_threshold=0.0 if edit_threshold is None else edit_threshold,
                 remask_threshold=0.4 if remask_threshold is None else remask_threshold,
                 token_stability_threshold=0.0
                 if token_stability_threshold is None
@@ -355,6 +363,11 @@ class Config:
                 "decoding_thresholds.accept_threshold must be in [0, 1], "
                 f"got: {self.decoding_thresholds.accept_threshold}"
             )
+        if not 0.0 <= self.decoding_thresholds.edit_threshold <= 1.0:
+            raise ValueError(
+                "decoding_thresholds.edit_threshold must be in [0, 1], "
+                f"got: {self.decoding_thresholds.edit_threshold}"
+            )
         if not 0.0 <= self.decoding_thresholds.remask_threshold <= 1.0:
             raise ValueError(
                 "decoding_thresholds.remask_threshold must be in [0, 1], "
@@ -364,6 +377,16 @@ class Config:
             raise ValueError(
                 "decoding_thresholds.token_stability_threshold must be in [0, 1], "
                 f"got: {self.decoding_thresholds.token_stability_threshold}"
+            )
+        if not isinstance(self.max_post_edit_steps, int) or self.max_post_edit_steps < 0:
+            raise ValueError(
+                "max_post_edit_steps must be a non-negative int, "
+                f"got: {self.max_post_edit_steps}"
+            )
+        if not isinstance(self.penalty_lambda, (int, float)) or self.penalty_lambda < 0:
+            raise ValueError(
+                "penalty_lambda must be a non-negative float, "
+                f"got: {self.penalty_lambda}"
             )
         self.accept_threshold = self.decoding_thresholds.accept_threshold
         self.remask_threshold = self.decoding_thresholds.remask_threshold

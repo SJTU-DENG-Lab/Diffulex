@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 
 from diffulex.engine.request import DllmReq
@@ -29,6 +30,7 @@ class ReqStep:
 
     block_size: int
     buffer_bids: list[int]
+    block_trace: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return dict(
@@ -39,6 +41,7 @@ class ReqStep:
             running_token_ids=self.running_token_ids,
             block_size=self.block_size,
             buffer_bids=self.buffer_bids,
+            block_trace=self.block_trace,
         )
 
 
@@ -166,7 +169,8 @@ class GenerationOutputs:
     @property
     def e2e_throughput(self) -> float:
         total_tokens = sum(len(trajectory.token_ids) for trajectory in self.trajectories)
-        return total_tokens / self.e2e_total_time if self.e2e_total_time > 0 else 0
+        batch_time = max(self._batch_total_time, 0.001)
+        return total_tokens / batch_time
 
     @property
     def prefill_throughput(self) -> float:
@@ -175,6 +179,28 @@ class GenerationOutputs:
     @property
     def decode_throughput(self) -> float:
         return self._decode_batch_tokens / self._decode_batch_time if self._decode_batch_time > 0 else 0
+
+    @property
+    def avg_e2e_tps(self) -> float:
+        """Mean of per-sample TPS (tokens/total_time), matching dInfer's np.mean(tpss)."""
+        per_sample = []
+        for trajectory in self.trajectories:
+            total_time = sum(step.step_time for step in trajectory.trajectory)
+            total_tokens = len(trajectory.token_ids)
+            if total_time > 0 and total_tokens > 0:
+                per_sample.append(total_tokens / total_time)
+        return self._mean(per_sample)
+
+    @property
+    def avg_decode_tps(self) -> float:
+        """Mean of per-sample decode TPS (decode_tokens / decode_time)."""
+        per_sample = []
+        for trajectory in self.trajectories:
+            decode_time = sum(step.step_time for step in trajectory.trajectory if not step.is_prefill)
+            decode_tokens = sum(step.num_generated_tokens for step in trajectory.trajectory if not step.is_prefill)
+            if decode_time > 0 and decode_tokens > 0:
+                per_sample.append(decode_tokens / decode_time)
+        return self._mean(per_sample)
 
     @property
     def total_time(self) -> float:
@@ -215,6 +241,21 @@ class GenerationOutputs:
                 continue
             cur_trajectory = self.trajectories[prompt_idx]
             step_id = len(cur_trajectory.trajectory)
+
+            # Per-block trace: mask ratio and active status
+            block_trace = []
+            if os.environ.get("DIFFULEX_SAVE_TRACE", "1") != "0":
+                for block in req.dllm_block_buffer.dllm_blocks:
+                    block_trace.append({
+                        "block_id": block.block_id,
+                        "is_active": block.is_active,
+                        "is_dummy": block.is_dummy,
+                        "num_mask_tokens": block.num_mask_tokens,
+                        "mask_ratio": block.num_mask_tokens / max(block.block_size, 1),
+                        "progress": block.progress,
+                        "block_status": str(block.status) if hasattr(block, "status") else "?",
+                    })
+
             cur_trajectory.trajectory.append(
                 ReqStep(
                     step_id=step_id,
@@ -226,6 +267,7 @@ class GenerationOutputs:
                     ),
                     block_size=req.block_size,
                     buffer_bids=[block.block_id for block in req.dllm_block_buffer.dllm_blocks],
+                    block_trace=block_trace,
                 )
             )
             cur_trajectory.token_ids = req.truncated_response.copy() if req.truncated_response else []
@@ -248,6 +290,17 @@ class GenerationOutputs:
             dtps=f"{self.decode_throughput:.2f}tok/s",
         )
 
+    def fast_postfix(self) -> dict:
+        """Lightweight postfix using pre-accumulated counters — O(1) per call."""
+        steps = max(self._batch_step_count, 1)
+        elapsed = max(self._batch_total_time, 0.001)
+        decode_elapsed = max(self._decode_batch_time, 0.001)
+        return dict(
+            tpf=f"{self._batch_generated_tokens / steps:.2f}tok/step",
+            dtps=f"{self._decode_batch_tokens / decode_elapsed:.2f}tok/s",
+            e2eps=f"{self._batch_generated_tokens / elapsed:.2f}tok/s",
+        )
+
     def log_summary(self):
         logger.info("--------------------------------")
         logger.info("Generation Outputs Summary:")
@@ -262,6 +315,8 @@ class GenerationOutputs:
         logger.info(f"E2E Throughput: {self.e2e_throughput:.2f} tok/sec")
         logger.info(f"Prefill Throughput: {self.prefill_throughput:.2f} tok/sec")
         logger.info(f"Decode Throughput: {self.decode_throughput:.2f} tok/sec")
+        logger.info(f"Avg E2E TPS (per-sample mean): {self.avg_e2e_tps:.2f} tok/sec")
+        logger.info(f"Avg Decode TPS (per-sample mean): {self.avg_decode_tps:.2f} tok/sec")
         logger.info("--------------------------------")
 
     def convert_to_text(self, tokenizer):

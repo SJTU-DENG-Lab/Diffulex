@@ -15,8 +15,8 @@ engine:
   tensor_parallel_size: 1
   data_parallel_size: 1
   gpu_memory_utilization: 0.5
-  max_model_len: 2048
-  max_num_batched_tokens: 4096
+  max_model_len: 4096
+  max_num_batched_tokens: 2048
   max_num_reqs: 1
 
   enforce_eager: false
@@ -28,13 +28,14 @@ engine:
     accept_threshold: 0.95
   block_size: 32
   buffer_size: 1  # SDAR uses buffer_size=1
+  page_size: 32
 
 eval:
   dataset_name: "gsm8k_diffulex"
   dataset_split: "test"
   dataset_limit: null
   temperature: 0.0
-  max_tokens: 256
+  max_tokens: 1024
   add_bos_token: true  # Chat model: chat template format
   output_dir: "benchmark_results"
   save_results: true
