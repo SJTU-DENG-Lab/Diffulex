@@ -70,3 +70,4 @@ LLaDA
 ep_execution_plan.md
 parallel_state_redesign.md
 core.*
+vllm

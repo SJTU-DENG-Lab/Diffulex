@@ -81,6 +81,7 @@ class DiffulexLM(LM):
         max_repetition_run: Optional[int] = None,
         max_length: Optional[int] = 2048,
         add_bos_token: Optional[bool] = False,
+        ignore_eos: Optional[bool] = False,
         trust_remote_code: Optional[bool] = True,
         temperature: Optional[float] = 0.0,
         model_name: Optional[str] = "dream",
@@ -188,6 +189,7 @@ class DiffulexLM(LM):
             max_tokens=max_new_tokens,
             max_nfe=max_nfe,
             max_repetition_run=max_repetition_run,
+            ignore_eos=_coerce_bool(ignore_eos, default=False),
         )
 
         self.logger.success("Diffulex engine initialized successfully")

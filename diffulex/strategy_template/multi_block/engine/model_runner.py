@@ -193,6 +193,9 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
         return int(req.contiguous_in_cache_prefix_len)
 
     def _prepare_prefill_req(self: ModelRunnerBase, req: DllmReq):
+        if getattr(req, "is_gemma_block", False):
+            return self._prepare_gemma_block_prefill_req(req)
+
         input_ids = list(req.running_sequence)
         q_len = len(input_ids)
         context_len = self._cached_prefix_len(req)
@@ -235,6 +238,34 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             seqlen_q=seqlen_q,
             seqlen_k=seqlen_k,
             valid_slice=valid_slice,
+            slot_mapping=slot_mapping,
+            status=0,
+            prefix_len=req.prefix_len,
+            padded_prefix_len=req.padded_prefix_len,
+        )
+
+    def _prepare_gemma_block_prefill_req(self: ModelRunnerBase, req: DllmReq):
+        context_len = min(self._cached_prefix_len(req), int(req.prefix_len))
+        input_ids = list(req.token_ids[context_len : req.prefix_len])
+        q_len = len(input_ids)
+        positions = list(range(context_len, req.prefix_len))
+
+        slot_mapping = []
+        for pos in range(context_len, int(req.prefix_len)):
+            rel_page_id = pos // self.page_size
+            if rel_page_id >= len(req.page_table):
+                slot_mapping.append(-1)
+                continue
+            abs_page_id = req.page_table[rel_page_id]
+            slot_mapping.append(abs_page_id * self.page_size + pos % self.page_size)
+
+        return dict(
+            input_ids=input_ids,
+            positions=positions,
+            context_len=context_len,
+            seqlen_q=q_len,
+            seqlen_k=q_len,
+            valid_slice=q_len,
             slot_mapping=slot_mapping,
             status=0,
             prefix_len=req.prefix_len,
@@ -473,6 +504,8 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             status_table=graph_vars["status_table"][:graph_num_reqs],
             prefix_lens=graph_vars["prefix_lens"][:graph_num_reqs],
             padded_prefix_lens=graph_vars["padded_prefix_lens"][:graph_num_reqs],
+            mask_prefix_hole=bool(getattr(self, "mask_prefix_hole", False)),
+            prefix_causal=bool(getattr(self, "prefix_causal", False)),
         )
         return attn_metadata
 
@@ -525,6 +558,8 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             status_table=status_table,
             prefix_lens=prefix_lens,
             padded_prefix_lens=padded_prefix_lens,
+            mask_prefix_hole=bool(getattr(self, "mask_prefix_hole", False)),
+            prefix_causal=bool(getattr(self, "prefix_causal", False)),
         )
         graph_vars = dict(
             input_ids=input_ids,
@@ -703,6 +738,8 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             status_table=status_table_tensor,
             prefix_lens=prefix_lens_tensor,
             padded_prefix_lens=padded_prefix_lens_tensor,
+            mask_prefix_hole=bool(getattr(self, "mask_prefix_hole", False)),
+            prefix_causal=bool(getattr(self, "prefix_causal", False)),
         )
         return input_ids_tensor, positions_tensor
 
@@ -736,6 +773,8 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             status_table=empty_i32,
             prefix_lens=empty_i32,
             padded_prefix_lens=empty_i32,
+            mask_prefix_hole=bool(getattr(self, "mask_prefix_hole", False)),
+            prefix_causal=bool(getattr(self, "prefix_causal", False)),
         )
         return input_ids_tensor, positions_tensor
 
@@ -759,6 +798,10 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
             full_runner = self._full_static_runner()
 
+            if bool(getattr(self.config, "is_diffusion_gemma", False)):
+                with record_function("diffulex.multi_block.diffusion_gemma_eager"):
+                    return self.model.compute_logits(self.model(input_ids, positions))
+
             if (attn_metadata.status_table == 0).any():
                 if full_runner.can_run_prefill(attn_metadata, int(input_ids.size(0))):
                     with record_function("diffulex.multi_block.full_static_prefill"):
@@ -774,6 +817,42 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
 
     def run_multi_block(self: ModelRunnerBase, reqs: list[DllmReq]) -> list[int]:
         return self._run_multi_block_subgroup(reqs)
+
+    def _set_diffusion_gemma_self_conditioning_context(self: ModelRunnerBase, reqs: list[DllmReq]) -> None:
+        set_context = getattr(self.model, "set_self_conditioning_context", None)
+        if set_context is None:
+            return
+        if not bool(getattr(self.config, "is_diffusion_gemma", False)):
+            set_context(None)
+            return
+
+        get_embeds = getattr(self.sampler, "get_self_conditioning_embeds", None)
+        if get_embeds is None:
+            set_context(None)
+            return
+
+        context: list[dict] = []
+        token_offset = 0
+        for req in reqs:
+            seq_len = len(req.running_sequence)
+            if getattr(req, "is_gemma_block", False) and req.is_decoding:
+                first_start = int(req.dllm_block_buffer.first_running_block.start)
+                for block in req.dllm_block_buffer.active_blocks:
+                    soft_embeds = get_embeds(req.req_id, block.block_id)
+                    if soft_embeds is None:
+                        continue
+                    local_start = token_offset + int(block.start) - first_start
+                    local_end = local_start + int(block.block_size)
+                    context.append(
+                        {
+                            "start": local_start,
+                            "end": local_end,
+                            "soft_embeds": soft_embeds,
+                        }
+                    )
+            token_offset += seq_len
+
+        set_context(context or None)
 
     def _run_multi_block_subgroup(self: ModelRunnerBase, reqs: list[DllmReq]):
         with record_function("diffulex.multi_block.filter_local_reqs"):
@@ -793,9 +872,19 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
             input_ids, positions = self.prepare_chunked_prefill_multi_block(local_reqs)
         with record_function("diffulex.multi_block.prepare_sample"):
             temperatures = self.prepare_sample(local_reqs) if self.is_model_parallel_root else None
+        self._set_diffusion_gemma_self_conditioning_context(local_reqs)
         logits = self.run_model_multi_block(input_ids, positions)
         with record_function("diffulex.multi_block.sampler"):
-            sample_output = self.sampler(local_reqs, logits, temperatures) if self.is_model_parallel_root else None
+            if bool(getattr(self.config, "is_diffusion_gemma", False)):
+                # DiffusionGemma self-conditioning is tensor-parallel: each rank
+                # consumes the same full-vocab logits, computes its vocab-shard
+                # contribution to probs @ embedding, and participates in the
+                # all-reduce inside the sampler. Only the model-parallel root's
+                # sampled writes are returned to the scheduler.
+                local_sample_output = self.sampler(local_reqs, logits, temperatures)
+                sample_output = local_sample_output if self.is_model_parallel_root else None
+            else:
+                sample_output = self.sampler(local_reqs, logits, temperatures) if self.is_model_parallel_root else None
         with record_function("diffulex.multi_block.reset_attn_metadata"):
             self.reset_attn_metadata()
         with record_function("diffulex.multi_block.gather_dp_sample_output"):
@@ -803,6 +892,15 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
 
     @torch.inference_mode()
     def capture_cudagraph_multi_block(self: ModelRunnerBase):
+        if bool(getattr(self.config, "is_diffusion_gemma", False)):
+            logger.info("Skipping CUDA graph capture for DiffusionGemma until self-conditioning graph buffers are wired.")
+            self.graphs = {}
+            self.prefill_graphs = {}
+            self.graph_bs = []
+            self.graph_vars = {}
+            self.graph_outputs_are_logits = False
+            return
+
         set_warming_up(True)
         config = self.config
         hf_config = config.hf_config
@@ -869,6 +967,8 @@ class MultiBlockModelRunnerTemplate(ModelRunnerBase):
                 status_table=status_table[:num_seqs],
                 prefix_lens=prefix_lens[:num_seqs],
                 padded_prefix_lens=padded_prefix_lens[:num_seqs],
+                mask_prefix_hole=bool(getattr(self, "mask_prefix_hole", False)),
+                prefix_causal=bool(getattr(self, "prefix_causal", False)),
             )
 
             graph = self._capture_model_forward_graph(

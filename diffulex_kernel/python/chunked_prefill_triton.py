@@ -43,6 +43,8 @@ def _autotune_chunked_prefill_kernel(fn):
             "DLLM_BLOCK_SIZE",
             "IS_BLOCK_CAUSAL",
             "IS_PREFIX_FULL",
+            "MASK_PREFIX_HOLE",
+            "PREFIX_CAUSAL",
         ],
         prune_configs_by={"early_config_prune": _prune_chunked_prefill_configs},
     )(fn)
@@ -96,6 +98,8 @@ def _chunked_prefill_attn_unified_kernel(
     DLLM_BLOCK_SIZE: tl.constexpr,
     IS_BLOCK_CAUSAL: tl.constexpr,
     IS_PREFIX_FULL: tl.constexpr,
+    MASK_PREFIX_HOLE: tl.constexpr,
+    PREFIX_CAUSAL: tl.constexpr,
 ):
     req_id = tl.program_id(0)
     head_id = tl.program_id(1)
@@ -141,6 +145,9 @@ def _chunked_prefill_attn_unified_kernel(
         ).to(tl.int32)
         page_offs = offs_kv_cache_block % PAGE_SIZE
         page_token_valid_map = kv_cache_valid_map & (page_abs_ids >= 0)
+        if MASK_PREFIX_HOLE:
+            prefix_hole_map = (offs_kv_cache_block >= prefix_len) & (offs_kv_cache_block < padded_prefix_len)
+            page_token_valid_map = page_token_valid_map & ~prefix_hole_map
 
         k_offs = (
             page_abs_ids[:, None] * k_cache_stride_npages
@@ -195,7 +202,9 @@ def _chunked_prefill_attn_unified_kernel(
         full_range,
     )
 
-    if IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
+    if PREFIX_CAUSAL and status == 0:
+        loop_range = full_range
+    elif IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
         loop_range = block_causal_range
     elif IS_BLOCK_CAUSAL and IS_PREFIX_FULL:
         is_prefilling = status == 0
@@ -223,7 +232,9 @@ def _chunked_prefill_attn_unified_kernel(
 
         scores = tl.dot(q, k).to(tl.float32) * softmax_scale
         score_valid_mask = mask_q_block[:, None] & kv_token_valid_map[None, :]
-        if IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
+        if PREFIX_CAUSAL and status == 0:
+            score_mask = score_valid_mask & (abs_kv_block[None, :] <= abs_q_block[:, None])
+        elif IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
             score_block_mask = ((abs_q_block // DLLM_BLOCK_SIZE + 1) * DLLM_BLOCK_SIZE)[:, None] > abs_kv_block[
                 None, :
             ]
@@ -288,6 +299,7 @@ def _run_chunked_prefill_attn_unified_kernel(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
+    softmax_scale: float | None = None,
 ):
     o = torch.empty_like(q).to(q.device)
     num_heads = q.shape[1]
@@ -296,7 +308,7 @@ def _run_chunked_prefill_attn_unified_kernel(
 
     head_dim = q.shape[-1]
     head_dim_padded = 1 << (head_dim - 1).bit_length()
-    softmax_scale = 1.0 / head_dim**0.5
+    softmax_scale = float(softmax_scale if softmax_scale is not None else 1.0 / head_dim**0.5)
     page_size = k_cache.shape[1]
     num_reqs = attn_metadata.cu_seqlens_q.shape[0] - 1
 
@@ -330,6 +342,8 @@ def _run_chunked_prefill_attn_unified_kernel(
         DLLM_BLOCK_SIZE=attn_metadata.block_size,
         IS_BLOCK_CAUSAL=attn_metadata.is_block_causal,
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
+        MASK_PREFIX_HOLE=bool(getattr(attn_metadata, "mask_prefix_hole", False)),
+        PREFIX_CAUSAL=bool(getattr(attn_metadata, "prefix_causal", False)),
     )
     return o
 
@@ -341,5 +355,6 @@ def chunked_prefill_attn_unified(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
+    softmax_scale: float | None = None,
 ):
-    return _run_chunked_prefill_attn_unified_kernel(q, k, v, k_cache, v_cache, attn_metadata)
+    return _run_chunked_prefill_attn_unified_kernel(q, k, v, k_cache, v_cache, attn_metadata, softmax_scale)

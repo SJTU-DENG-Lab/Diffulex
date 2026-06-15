@@ -116,6 +116,7 @@ def config_to_model_args(config: BenchmarkConfig, *, result_output_dir: Optional
         "max_new_tokens": eval_config.max_tokens,
         "max_nfe": eval_config.max_nfe,
         "max_repetition_run": eval_config.max_repetition_run,
+        "ignore_eos": eval_config.ignore_eos,
         "wait_ready": True,
     }
 
@@ -478,6 +479,8 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.enable_cudagraph_torch_compile = bool(args.enable_cudagraph_torch_compile)
         if getattr(args, "torch_compile_mode", None) is not None:
             config.engine.torch_compile_mode = args.torch_compile_mode
+        if getattr(args, "enable_vllm_layers", None) is not None:
+            config.engine.enable_vllm_layers = bool(args.enable_vllm_layers)
         if getattr(args, "auto_max_nfe_warmup_steps", None) is not None:
             config.engine.auto_max_nfe_warmup_steps = args.auto_max_nfe_warmup_steps
         if getattr(args, "auto_max_nfe_tpf_floor", None) is not None:
@@ -569,6 +572,11 @@ def load_config_from_args(args) -> BenchmarkConfig:
             ),
             enable_cudagraph_torch_compile=bool(getattr(args, "enable_cudagraph_torch_compile", False)),
             torch_compile_mode=(getattr(args, "torch_compile_mode", None) or "reduce-overhead"),
+            enable_vllm_layers=(
+                bool(getattr(args, "enable_vllm_layers", True))
+                if getattr(args, "enable_vllm_layers", None) is not None
+                else True
+            ),
             auto_max_nfe_warmup_steps=(getattr(args, "auto_max_nfe_warmup_steps", None) or 8),
             auto_max_nfe_tpf_floor=(getattr(args, "auto_max_nfe_tpf_floor", None) or 1.0),
             use_lora=args.use_lora,

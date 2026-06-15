@@ -6,7 +6,16 @@ def build_chunked_prefill_configs():
     """Autotune configs for chunked prefill unified kernel.
 
     Note: The autotune key is
-    ["NUM_GROUPS", "HEAD_DIM", "PAGE_SIZE", "DLLM_BLOCK_SIZE", "IS_BLOCK_CAUSAL", "IS_PREFIX_FULL"],
+    [
+        "NUM_GROUPS",
+        "HEAD_DIM",
+        "PAGE_SIZE",
+        "DLLM_BLOCK_SIZE",
+        "IS_BLOCK_CAUSAL",
+        "IS_PREFIX_FULL",
+        "MASK_PREFIX_HOLE",
+        "PREFIX_CAUSAL",
+    ],
     so configs are selected based on those runtime parameters.
     """
     BLOCK_M_LIST = [64, 128]

@@ -1,4 +1,6 @@
 import os
+import json
+import importlib
 
 from dataclasses import dataclass, field
 from transformers import AutoConfig
@@ -7,6 +9,7 @@ from diffulex.logger import get_logger
 
 logger = get_logger(__name__)
 SUPPORTED_PAGE_BLOCK_SIZES = (4, 8, 16, 32)
+GEMMA_BLOCK_SIZE = 256
 EDIT_SAMPLING_MODEL_NAMES = {
     "llada2",
     "llada2_moe",
@@ -15,6 +18,22 @@ EDIT_SAMPLING_MODEL_NAMES = {
     "llada2_mini_dmax",
 }
 DMAX_MODEL_NAMES = EDIT_SAMPLING_MODEL_NAMES
+DIFFUSION_GEMMA_MODEL_NAMES = {"diffusion_gemma"}
+
+ 
+def _register_diffusion_gemma_hf_config() -> None:
+    config_path = os.path.join(
+        os.path.dirname(__file__),
+        "model",
+        "config",
+        "diffusion_gemma",
+        "configuration_diffusion_gemma.py",
+    )
+    spec = importlib.util.spec_from_file_location("_diffulex_diffusion_gemma_config", config_path)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
 
 
 @dataclass
@@ -86,6 +105,7 @@ class Config:
     enable_torch_compile: bool = True
     enable_cudagraph_torch_compile: bool = False
     torch_compile_mode: str = "reduce-overhead"
+    enable_vllm_layers: bool = True
 
     # MoE
     moe_dispatcher_backend: str = "standard"  # "standard", "naive", or "deepep"
@@ -99,6 +119,15 @@ class Config:
     num_pages: int = -1
     k_cache_hdim_split_factor_x: int = 8
     kv_cache_layout: str = "unified"  # "unified" or "distinct"
+
+    # DiffusionGemma block sampler controls. These are only used when
+    # model_name == "diffusion_gemma".
+    diffusion_gemma_max_denoising_steps: int = 48
+    diffusion_gemma_stability_threshold: int = 2
+    diffusion_gemma_t_min: float = 0.0
+    diffusion_gemma_t_max: float = 1.0
+    diffusion_gemma_confidence_threshold: float = 0.1
+    diffusion_gemma_entropy_bound: float = 1.0
 
     def _validate_sampling_mode(self) -> None:
         if self.sampling_mode == "edit" and self.model_name not in EDIT_SAMPLING_MODEL_NAMES:
@@ -121,9 +150,82 @@ class Config:
             if self.sampling_mode != "edit":
                 raise ValueError("decoding_strategy='dmax' requires sampling_mode='edit'.")
 
+    @property
+    def is_diffusion_gemma(self) -> bool:
+        return self.model_name in DIFFUSION_GEMMA_MODEL_NAMES
+
+    def _load_diffusion_gemma_generation_config(self) -> None:
+        path = os.path.join(self.model, "generation_config.json")
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                gen_config = json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to load DiffusionGemma generation_config.json: %s", exc)
+            return
+
+        defaults = {
+            "diffusion_gemma_max_denoising_steps": 48,
+            "diffusion_gemma_stability_threshold": 2,
+            "diffusion_gemma_t_min": 0.0,
+            "diffusion_gemma_t_max": 1.0,
+            "diffusion_gemma_confidence_threshold": 0.1,
+            "diffusion_gemma_entropy_bound": 1.0,
+        }
+        mapping = {
+            "max_denoising_steps": "diffusion_gemma_max_denoising_steps",
+            "stability_threshold": "diffusion_gemma_stability_threshold",
+            "t_min": "diffusion_gemma_t_min",
+            "t_max": "diffusion_gemma_t_max",
+            "confidence_threshold": "diffusion_gemma_confidence_threshold",
+        }
+        for src, dst in mapping.items():
+            if src in gen_config and getattr(self, dst) == defaults[dst]:
+                setattr(self, dst, gen_config[src])
+
+        sampler_config = gen_config.get("sampler_config") or {}
+        entropy_bound = sampler_config.get("entropy_bound")
+        if (
+            entropy_bound is not None
+            and self.diffusion_gemma_entropy_bound == defaults["diffusion_gemma_entropy_bound"]
+        ):
+            self.diffusion_gemma_entropy_bound = float(entropy_bound)
+
     def __post_init__(self):
         if not os.path.isdir(self.model):
             raise ValueError(f"model must be an existing directory, got: {self.model}")
+
+        if self.is_diffusion_gemma:
+            if self.decoding_strategy != "multi_bd":
+                logger.warning(
+                    "Forcing decoding_strategy='multi_bd' for model_name='diffusion_gemma'."
+                )
+                self.decoding_strategy = "multi_bd"
+            if self.block_size != GEMMA_BLOCK_SIZE:
+                logger.warning(
+                    "Forcing block_size=%s for model_name='diffusion_gemma' "
+                    "(got %s).",
+                    GEMMA_BLOCK_SIZE,
+                    self.block_size,
+                )
+                self.block_size = GEMMA_BLOCK_SIZE
+            if self.page_size != GEMMA_BLOCK_SIZE:
+                logger.warning(
+                    "Forcing page_size=%s for model_name='diffusion_gemma' "
+                    "(got %s).",
+                    GEMMA_BLOCK_SIZE,
+                    self.page_size,
+                )
+                self.page_size = GEMMA_BLOCK_SIZE
+            if self.buffer_size != 1:
+                logger.warning(
+                    "Forcing buffer_size=1 for model_name='diffusion_gemma' "
+                    "(got %s).",
+                    self.buffer_size,
+                )
+                self.buffer_size = 1
 
         if self.decoding_strategy == "d2f":
             if not self.multi_block_prefix_full:
@@ -139,14 +241,20 @@ class Config:
             if self.enable_prefix_caching:
                 logger.info(f"Enabling prefix caching for decoding_strategy={self.decoding_strategy}.")
 
-        if self.page_size not in SUPPORTED_PAGE_BLOCK_SIZES:
+        supported_page_block_sizes = (
+            SUPPORTED_PAGE_BLOCK_SIZES + (GEMMA_BLOCK_SIZE,)
+            if self.is_diffusion_gemma
+            else SUPPORTED_PAGE_BLOCK_SIZES
+        )
+
+        if self.page_size not in supported_page_block_sizes:
             raise ValueError(
-                f"page_size must be one of {SUPPORTED_PAGE_BLOCK_SIZES}, got: {self.page_size}"
+                f"page_size must be one of {supported_page_block_sizes}, got: {self.page_size}"
             )
 
-        if self.block_size not in SUPPORTED_PAGE_BLOCK_SIZES:
+        if self.block_size not in supported_page_block_sizes:
             raise ValueError(
-                f"block_size must be one of {SUPPORTED_PAGE_BLOCK_SIZES}, got: {self.block_size}"
+                f"block_size must be one of {supported_page_block_sizes}, got: {self.block_size}"
             )
 
         if self.block_size > self.page_size:
@@ -260,7 +368,17 @@ class Config:
             if not os.path.exists(self.lora_path):
                 logger.warning(f"LoRA path {self.lora_path} does not exist")
 
+        if self.is_diffusion_gemma:
+            _register_diffusion_gemma_hf_config()
         self.hf_config = AutoConfig.from_pretrained(self.model, trust_remote_code=True)
+        hf_canvas_length = getattr(self.hf_config, "canvas_length", None)
+        if self.is_diffusion_gemma:
+            if hf_canvas_length is not None and int(hf_canvas_length) != self.block_size:
+                raise ValueError(
+                    "DiffusionGemma hf_config.canvas_length must match block_size, "
+                    f"got canvas_length={hf_canvas_length}, block_size={self.block_size}."
+                )
+            self._load_diffusion_gemma_generation_config()
         for name in (
             "attn_impl",
             "moe_dispatcher_backend",
@@ -273,11 +391,42 @@ class Config:
             "mask_token_id",
         ):
             setattr(self.hf_config, name, getattr(self, name))
-        cfg_max_model_len = (
-            self.hf_config.max_position_embeddings
-            if hasattr(self.hf_config, "max_position_embeddings")
-            else self.hf_config.max_sequence_length
+            text_config = getattr(self.hf_config, "text_config", None)
+            if text_config is not None:
+                setattr(text_config, name, getattr(self, name))
+        text_config = getattr(self.hf_config, "text_config", None)
+        if self.is_diffusion_gemma and text_config is not None:
+            for name in (
+                "vocab_size",
+                "hidden_size",
+                "intermediate_size",
+                "num_hidden_layers",
+                "num_attention_heads",
+                "num_key_value_heads",
+                "head_dim",
+                "global_head_dim",
+                "max_position_embeddings",
+                "rms_norm_eps",
+            ):
+                if getattr(self.hf_config, name, None) is None and getattr(text_config, name, None) is not None:
+                    setattr(self.hf_config, name, getattr(text_config, name))
+            head_dim = getattr(text_config, "head_dim", None)
+            global_head_dim = getattr(text_config, "global_head_dim", None)
+            if head_dim is not None and global_head_dim is not None:
+                self.hf_config.head_dim = max(int(head_dim), int(global_head_dim))
+        cfg_max_model_len = getattr(
+            self.hf_config,
+            "max_position_embeddings",
+            getattr(self.hf_config, "max_sequence_length", None),
         )
+        if cfg_max_model_len is None and text_config is not None:
+            cfg_max_model_len = getattr(
+                text_config,
+                "max_position_embeddings",
+                getattr(text_config, "max_sequence_length", None),
+            )
+        if cfg_max_model_len is None:
+            raise AttributeError(f"Cannot determine max model length from config: {type(self.hf_config)}")
         self.max_model_len = min(self.max_model_len, cfg_max_model_len)
         
         if self.max_num_batched_tokens < self.max_model_len:

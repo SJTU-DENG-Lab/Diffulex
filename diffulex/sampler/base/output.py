@@ -29,7 +29,10 @@ class SampleOutputBase:
         for req_id_str in req_ids:
             edit_writes_map.setdefault(req_id_str, {})
             block_state_map.setdefault(req_id_str, {})
-        self.edit_writes_map = edict(edit_writes_map)
+        # Keep token-position write maps as plain dicts: their innermost keys
+        # are relative token indices (ints), and EasyDict recursively rejects
+        # non-string attribute names.
+        self.edit_writes_map = edit_writes_map
         self.block_state_map = edict(block_state_map)
 
 

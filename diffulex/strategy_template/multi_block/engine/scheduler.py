@@ -134,6 +134,8 @@ class MultiBlockSchedulerTemplate(EditSchedulerMixin, SchedulerBase):
                     block.same_as_previous = bool(state.get("same_as_previous", False))
                     block.same_token_ratio = float(state.get("same_token_ratio", 0.0))
                     block.all_confident = bool(state.get("all_confident", False))
+                    if "valid_commit_len" in state:
+                        block.valid_commit_len = int(state["valid_commit_len"])
                 elif block.is_complete:
                     block.commit_ready = True
                     block.same_token_ratio = 1.0

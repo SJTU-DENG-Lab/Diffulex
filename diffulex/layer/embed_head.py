@@ -37,6 +37,12 @@ def _tp_gather_to_rank0(x: torch.Tensor, group, tp_size: int, tp_rank: int) -> t
     return torch.cat(gathered, -1) if tp_rank == 0 else None
 
 
+def _tp_all_gather(x: torch.Tensor, group, tp_size: int) -> torch.Tensor:
+    gathered = [torch.empty_like(x) for _ in range(tp_size)]
+    dist.all_gather(gathered, x, group=group)
+    return torch.cat(gathered, -1)
+
+
 class VocabParallelEmbedding(nn.Module):
     def __init__(
         self,
@@ -120,10 +126,17 @@ class ParallelLMHead(VocabParallelEmbedding):
             logits.add_(self.bias)
         return logits
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, gather_all: bool = False):
         logits = self._linear_into_workspace(x)
         if self.tp_size > 1:
-            if LM_HEAD_FP32_GATHER:
+            if gather_all:
+                if LM_HEAD_FP32_GATHER:
+                    logits_dtype = logits.dtype
+                    logits = _tp_all_gather(logits.to(torch.float32), self.tp_group, self.tp_size)
+                    logits = logits.to(logits_dtype)
+                else:
+                    logits = _tp_all_gather(logits, self.tp_group, self.tp_size)
+            elif LM_HEAD_FP32_GATHER:
                 logits_dtype = logits.dtype
                 logits = _tp_gather_to_rank0(logits.to(torch.float32), self.tp_group, self.tp_size, self.tp_rank)
                 logits = logits.to(logits_dtype) if logits is not None else None

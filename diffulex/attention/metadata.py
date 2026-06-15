@@ -16,6 +16,8 @@ class AttnMetaDataBase:
     context_lens: torch.Tensor | None = None
     page_tables: torch.Tensor | None = None
     status_table: torch.Tensor | None = None
+    mask_prefix_hole: bool = False
+    prefix_causal: bool = False
 
     page_size: int = 32
     block_size: int = 32

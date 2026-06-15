@@ -15,5 +15,9 @@ class EditSchedulerMixin:
                 token = int(token)
                 prev_token = dllm_block.token_ids[rel_idx]
                 dllm_block.write_token(token, rel_idx)
-                if prev_token == dllm_block.mask_token_id and token != dllm_block.mask_token_id:
+                if (
+                    not getattr(req, "is_gemma_block", False)
+                    and prev_token == dllm_block.mask_token_id
+                    and token != dllm_block.mask_token_id
+                ):
                     req.new_tokens += 1

@@ -135,6 +135,7 @@ class EngineConfig:
     enable_torch_compile: bool = True
     enable_cudagraph_torch_compile: bool = False
     torch_compile_mode: str = "reduce-overhead"
+    enable_vllm_layers: bool = True
 
     # Scheduler / truncation configuration
     auto_max_nfe_warmup_steps: int = 8

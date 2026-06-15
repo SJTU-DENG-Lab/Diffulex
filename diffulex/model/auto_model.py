@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from diffulex.config import Config
+from diffulex.layer.vllm_backend import set_vllm_layers_enabled
 from diffulex.utils.loader import load_model
 
 
@@ -140,6 +141,7 @@ class AutoModelForDiffusionLM:
         if init_arg is None:
             raise ValueError("Config.hf_config must be initialized before building the model.")
 
+        set_vllm_layers_enabled(bool(getattr(config, "enable_vllm_layers", True)))
         model = factory(init_arg)
         return load_model(model, config)
 

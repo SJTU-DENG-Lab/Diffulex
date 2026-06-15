@@ -106,6 +106,9 @@ class ModelRunnerBase(
         with vllm_current_config(config):
             self.model = self.load_model(config)
         self.sampler = self.load_sampler(config)
+        bind_model = getattr(self.sampler, "bind_model", None)
+        if bind_model is not None:
+            bind_model(self.model)
         self.allocate_kv_cache()
         self.warmup_model()
 
@@ -306,23 +309,26 @@ class ModelRunnerBase(
         storage_dtype = torch.bfloat16
         itemsize = torch.empty(1, dtype=storage_dtype).element_size()
         page_bytes = 2 * hf_config.num_hidden_layers * self.page_size * num_kv_heads * head_dim * itemsize
-        get_num_pages = lambda gpu_memory_utilization: (
-            int(total * gpu_memory_utilization - used - peak + current) // page_bytes
-        )
-        try:
-            num_pages = get_num_pages(config.gpu_memory_utilization)
-            assert num_pages > 0
-        except Exception:
-            gpu_memory_utilization = config.gpu_memory_utilization
-            while num_pages <= 200:
-                logger.warning(
-                    f"GPU memory utilization {gpu_memory_utilization} is too low to allocate kv cache. "
-                    "Automatically adding 0.05."
-                )
-                gpu_memory_utilization += 0.05
-                num_pages = get_num_pages(gpu_memory_utilization)
-            logger.info(f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} to allocate kv cache.")
-            config.gpu_memory_utilization = gpu_memory_utilization
+        if config.num_pages > 0:
+            num_pages = config.num_pages
+        else:
+            get_num_pages = lambda gpu_memory_utilization: (
+                int(total * gpu_memory_utilization - used - peak + current) // page_bytes
+            )
+            try:
+                num_pages = get_num_pages(config.gpu_memory_utilization)
+                assert num_pages > 0
+            except Exception:
+                gpu_memory_utilization = config.gpu_memory_utilization
+                while num_pages <= 200:
+                    logger.warning(
+                        f"GPU memory utilization {gpu_memory_utilization} is too low to allocate kv cache. "
+                        "Automatically adding 0.05."
+                    )
+                    gpu_memory_utilization += 0.05
+                    num_pages = get_num_pages(gpu_memory_utilization)
+                logger.info(f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} to allocate kv cache.")
+                config.gpu_memory_utilization = gpu_memory_utilization
 
         config.num_pages = num_pages
         logger.info(f"Allocated {config.num_pages} pages of size {self.page_size} for kv cache on rank {self.rank}.")

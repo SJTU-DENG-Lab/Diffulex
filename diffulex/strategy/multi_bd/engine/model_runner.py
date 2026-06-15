@@ -27,6 +27,8 @@ class MultiBDModelRunner(MultiBlockModelRunnerTemplate):
         )
         self.mask_token_id = config.mask_token_id
         self.is_prefix_full = config.multi_block_prefix_full
+        self.mask_prefix_hole = bool(getattr(config, "is_diffusion_gemma", False))
+        self.prefix_causal = bool(getattr(config, "is_diffusion_gemma", False))
 
         super().__init__(config, rank, event)
 

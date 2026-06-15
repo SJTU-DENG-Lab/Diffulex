@@ -17,6 +17,10 @@ def dllm_store_kv_cache_kernel_unified(
     k_cache_ptr,
     v_cache_ptr,
     slot_mapping_ptr,
+    cache_token_stride,
+    cache_head_stride,
+    cache_dim_stride,
+    head_dim: tl.constexpr,
     D: tl.constexpr,
 ):
     """BF16 unified layout store kernel - no quantization, direct storage."""
@@ -28,7 +32,14 @@ def dllm_store_kv_cache_kernel_unified(
     value_offsets = token_idx * value_stride + tl.arange(0, D)
     key = tl.load(key_ptr + key_offsets)
     value = tl.load(value_ptr + value_offsets)
-    cache_offsets = slot * D + tl.arange(0, D)
+    elem_offsets = tl.arange(0, D)
+    head_offsets = elem_offsets // head_dim
+    dim_offsets = elem_offsets % head_dim
+    cache_offsets = (
+        slot * cache_token_stride
+        + head_offsets * cache_head_stride
+        + dim_offsets * cache_dim_stride
+    )
     tl.store(k_cache_ptr + cache_offsets, key)
     tl.store(v_cache_ptr + cache_offsets, value)
 
@@ -155,11 +166,27 @@ def store_kv_cache_unified(
     D = num_heads * head_dim
     assert key.stride(-1) == 1 and value.stride(-1) == 1
     assert key.stride(1) == head_dim and value.stride(1) == head_dim
-    assert k_cache.stride(1) == D and v_cache.stride(1) == D
+    assert k_cache.shape[2] >= num_heads and v_cache.shape[2] >= num_heads
+    assert k_cache.shape[3] >= head_dim and v_cache.shape[3] >= head_dim
+    assert k_cache.stride() == v_cache.stride()
     assert N == slot_mapping.numel(), f"`N`: {N}, `slot_mapping.numel()`: {slot_mapping.numel()}"
 
+    cache_token_stride = k_cache.stride(1)
+    cache_head_stride = k_cache.stride(2)
+    cache_dim_stride = k_cache.stride(3)
     dllm_store_kv_cache_kernel_unified[(N,)](
-        key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D
+        key,
+        key.stride(0),
+        value,
+        value.stride(0),
+        k_cache,
+        v_cache,
+        slot_mapping,
+        cache_token_stride,
+        cache_head_stride,
+        cache_dim_stride,
+        head_dim,
+        D,
     )
 
 
@@ -440,21 +467,28 @@ def load_kv_cache(
     # Determine layout from cache shape
     is_unified = k_cache.shape == v_cache.shape and len(k_cache.shape) == 4
 
+    H_KV = k_new.shape[1]
+    HEAD_DIM = k_new.shape[2]
+
     if is_unified:
-        # Unified layout: [num_blocks, page_size, num_kv_heads, head_dim]
-        N_BLOCKS, PAGE_SIZE, H_KV, HEAD_DIM = k_cache.shape
+        # Unified layout: [num_blocks, page_size, max_num_kv_heads, max_head_dim].
+        # DiffusionGemma mixes sliding layers with head_dim=256 and global layers
+        # with head_dim=512, so use the current layer's k_new shape and only rely
+        # on cache strides/capacity for addressing.
+        N_BLOCKS, PAGE_SIZE, CACHE_H_KV, CACHE_HEAD_DIM = k_cache.shape
+        assert CACHE_H_KV >= H_KV
+        assert CACHE_HEAD_DIM >= HEAD_DIM
     else:
         # Distinct layout: k_cache [num_blks, h, hdim // x, blk_sz, x], v_cache [num_blks, h, hdim, blk_sz]
         # For load kernel, we need PAGE_SIZE and HEAD_DIM
         # PAGE_SIZE is typically the block size (blk_sz)
         # HEAD_DIM is the head dimension
         N_BLOCKS = k_cache.shape[0]
-        H_KV = k_cache.shape[1]
+        CACHE_H_KV = k_cache.shape[1]
         PAGE_SIZE = k_cache.shape[3]  # blk_sz
-        # For distinct layout, HEAD_DIM is the total head dimension
-        # k_cache: [num_blks, h, hdim // x, blk_sz, x] -> HEAD_DIM = (hdim // x) * x
-        # v_cache: [num_blks, h, hdim, blk_sz] -> HEAD_DIM = hdim
-        HEAD_DIM = v_cache.shape[2]  # hdim
+        CACHE_HEAD_DIM = v_cache.shape[2]  # hdim
+        assert CACHE_H_KV >= H_KV
+        assert CACHE_HEAD_DIM >= HEAD_DIM
     NUM_SEQS, MAX_SEQ_BLOCKS = attn_metadata.block_tables.shape
 
     ctxlens = attn_metadata.context_lens

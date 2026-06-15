@@ -51,6 +51,7 @@ def triton_attention(
     v: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
+    softmax_scale: float,
 ) -> torch.Tensor:
     # Keep Triton JIT/autotune state out of torch.compile; CUDA graph capture
     # still records the launched kernels.
@@ -62,7 +63,7 @@ def triton_attention(
         if attn_metadata.need_kv_cache_store:
             store_kv_cache = store_kv_cache_unified_layout if is_unified_layout else store_kv_cache_distinct_layout
             store_kv_cache(k, v, k_cache, v_cache, attn_metadata.slot_mapping, attn_metadata)
-    return chunked_prefill_attn_unified(q, k, v, k_cache, v_cache, attn_metadata)
+    return chunked_prefill_attn_unified(q, k, v, k_cache, v_cache, attn_metadata, softmax_scale=softmax_scale)
 
 
 class Attention(nn.Module):
@@ -147,7 +148,7 @@ class Attention(nn.Module):
 
         k_cache, v_cache = self.k_cache, self.v_cache
 
-        o = triton_attention(q, k, v, k_cache, v_cache)
+        o = triton_attention(q, k, v, k_cache, v_cache, self.scale)
 
         # Final reshape
         return rearrange(o, "s nh hd -> s (nh hd)").contiguous()

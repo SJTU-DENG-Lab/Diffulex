@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 from diffulex.config import Config
 from diffulex.engine.dllm_block import DllmBlock, DllmBlockBuffer
@@ -27,6 +28,9 @@ class MultiBlockReqTemplate(DllmReq):
             block.bind_buffer(dllm_block_buffer if id(block) in buffer_block_ids else None)
 
     def init_multi_block(self: DllmReq, config: Config):
+        if getattr(config, "is_diffusion_gemma", False):
+            return self.init_gemma_block(config)
+
         self.is_multi_block = True
         self.status_history = [self.status]
         self.completion_reason = None
@@ -106,10 +110,132 @@ class MultiBlockReqTemplate(DllmReq):
         )
         self.dllm_block_buffer.post_init_dllm_block_buffer(self)
 
+    def init_gemma_block(self: DllmReq, config: Config):
+        self.is_multi_block = True
+        self.is_gemma_block = True
+        self.status_history = [self.status]
+        self.completion_reason = None
+
+        self.block_size = config.block_size
+        self.buffer_size = config.buffer_size
+        self.mask_token_id = config.mask_token_id
+        self.thresholds = config.decoding_thresholds
+        self.eos_token_id = config.eos
+        self.max_model_len = config.max_model_len
+        self.max_new_tokens = self.max_tokens
+        self.auto_max_nfe_enabled = self.max_nfe is None
+        self.auto_max_nfe_warmup_steps = int(getattr(config, "auto_max_nfe_warmup_steps", 8))
+        self.auto_max_nfe_tpf_floor = float(getattr(config, "auto_max_nfe_tpf_floor", 1.0))
+        self.auto_max_nfe_token_count = 0
+        self.auto_max_nfe_value: int | None = None
+        self.auto_max_nfe_avg_tpf: float | None = None
+        self.gemma_block_vocab_size = int(
+            getattr(config, "tokenizer_vocab_size", None)
+            or getattr(config.hf_config, "vocab_size", 0)
+            or getattr(getattr(config.hf_config, "text_config", None), "vocab_size", 0)
+            or 0
+        )
+
+        self.dllm_blocks: list[DllmBlock] = []
+        self.dllm_block_buffer: DllmBlockBuffer = None
+
+        if self.max_model_len_reached and not is_warming_up():
+            self.force_deactivate()
+            return
+
+        self.prefix_len = len(self.token_ids)
+        self.padded_prefix_len = (
+            ((self.prefix_len + self.block_size - 1) // self.block_size) * self.block_size
+            if self.prefix_len > 0
+            else 0
+        )
+        padding_len = self.padded_prefix_len - self.prefix_len
+        if padding_len > 0:
+            # The suffix is a logical block/page hole. It keeps generated blocks
+            # aligned, but prefill extraction and the attention kernel mask it out.
+            self.pad_tokens(padding_len)
+
+        num_prefix_blocks = self.padded_prefix_len // self.block_size
+        for i in range(num_prefix_blocks):
+            start = i * self.block_size
+            end = start + self.block_size
+            dllm_block = DllmBlock(
+                block_id=i,
+                start=start,
+                end=end,
+                block_size=self.block_size,
+                mask_token_id=self.mask_token_id,
+                thresholds=self.thresholds,
+                status=DllmBlockStatus.TO_CACHE,
+                prev_block=None if i == 0 else self.dllm_blocks[-1],
+                editable_start=self.block_size,
+            )
+            dllm_block.post_init_dllm_block(self, None)
+            dllm_block.commit_ready = True
+            self.dllm_blocks.append(dllm_block)
+
+        block_id = len(self.dllm_blocks)
+        start = block_id * self.block_size
+        end = start + self.block_size
+        self.extend_gemma_block_tokens()
+        active_block = DllmBlock(
+            block_id=block_id,
+            start=start,
+            end=end,
+            block_size=self.block_size,
+            mask_token_id=self.mask_token_id,
+            thresholds=self.thresholds,
+            status=DllmBlockStatus.ACTIVE,
+            prev_block=None if not self.dllm_blocks else self.dllm_blocks[-1],
+            editable_start=0,
+        )
+        active_block.post_init_dllm_block(self, None)
+        active_block.commit_ready = False
+        active_block.valid_commit_len = self._gemma_block_next_commit_len()
+        self.dllm_blocks.append(active_block)
+
+        self.dllm_block_buffer = DllmBlockBuffer(
+            buffer_size=self.buffer_size,
+            dllm_blocks=[active_block],
+        )
+        self.dllm_block_buffer.post_init_dllm_block_buffer(self)
+        for block in self.dllm_block_buffer.dllm_blocks:
+            block.commit_ready = False
+
+    def _random_gemma_block_tokens(self, n: int) -> list[int]:
+        vocab_size = int(getattr(self, "gemma_block_vocab_size", 0) or 0)
+        if vocab_size <= 0:
+            return [self.mask_token_id] * n
+        return [random.randrange(vocab_size) for _ in range(n)]
+
+    def extend_gemma_block_tokens(self):
+        self.token_ids.extend(self._random_gemma_block_tokens(self.block_size))
+
+    @property
+    def gemma_block_committed_len(self) -> int:
+        if not getattr(self, "is_gemma_block", False):
+            return 0
+        total = 0
+        for block in self.dllm_blocks:
+            if block.start < self.padded_prefix_len:
+                continue
+            if block.is_in_cache:
+                total += int(getattr(block, "valid_commit_len", block.block_size))
+        return total
+
+    def _gemma_block_next_commit_len(self) -> int:
+        committed = int(getattr(self, "gemma_block_committed_len", 0))
+        remaining_new = max(0, int(self.max_new_tokens) - committed)
+        remaining_model = max(0, int(self.max_model_len) - int(self.prefix_len) - committed)
+        return min(int(self.block_size), remaining_new, remaining_model)
+
     @property
     def eos_token_generated(self) -> bool:
         if self.ignore_eos:
             return False
+        if getattr(self, "is_gemma_block", False):
+            generated_seq = self.full_response
+            return self.eos_token_id in generated_seq
         # Only inspect generated segment; prompt tokens may also contain chat delimiters
         # such as <|im_end|>, which must not trigger immediate completion.
         generated_seq = self.token_ids[self.prefix_len :]
@@ -117,6 +243,8 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def num_prefix_blocks(self) -> int:
+        if getattr(self, "is_gemma_block", False):
+            return self.padded_prefix_len // self.block_size
         return self.prefix_len // self.block_size
 
     @property
@@ -129,10 +257,14 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def max_new_tokens_reached(self) -> bool:
+        if getattr(self, "is_gemma_block", False):
+            return self.gemma_block_committed_len >= self.max_new_tokens
         return len(self.token_ids) - self.prefix_len >= self.max_new_tokens
 
     @property
     def max_model_len_reached(self) -> bool:
+        if getattr(self, "is_gemma_block", False) and hasattr(self, "prefix_len"):
+            return self.prefix_len + self.gemma_block_committed_len >= self.max_model_len
         return len(self.token_ids) >= self.max_model_len
 
     @property
@@ -172,6 +304,9 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def running_sequence(self) -> list[int]:
+        if getattr(self, "is_gemma_block", False) and self.is_prefilling:
+            context_len = min(self.contiguous_in_cache_prefix_len, self.prefix_len)
+            return self.token_ids[context_len : self.prefix_len]
         if self.is_prefilling:
             return self.token_ids[self.contiguous_in_cache_prefix_len : self.running_len]
         elif self.is_decoding or self.is_completed:
@@ -179,6 +314,9 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def running_position_ids(self) -> list[int]:
+        if getattr(self, "is_gemma_block", False) and self.is_prefilling:
+            context_len = min(self.contiguous_in_cache_prefix_len, self.prefix_len)
+            return list(range(context_len, self.prefix_len))
         if self.is_prefilling:
             return range(self.contiguous_in_cache_prefix_len, self.running_len)
         elif self.is_decoding or self.is_completed:
@@ -186,6 +324,13 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def truncated_response(self) -> list[int]:
+        if getattr(self, "is_gemma_block", False):
+            generated_seq = self.full_response
+            if self.eos_token_id in generated_seq and not self.ignore_eos:
+                generated_seq = generated_seq[: generated_seq.index(self.eos_token_id)]
+            if self.max_new_tokens_reached:
+                generated_seq = generated_seq[: self.max_new_tokens]
+            return generated_seq
         if self.eos_token_generated:
             generated_seq = self.token_ids[self.prefix_len :]
             if self.eos_token_id in generated_seq:
@@ -215,6 +360,18 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def full_response(self) -> list[int]:
+        if getattr(self, "is_gemma_block", False):
+            tokens: list[int] = []
+            for block in self.dllm_blocks:
+                if block.start < self.padded_prefix_len:
+                    continue
+                if not block.is_in_cache:
+                    continue
+                valid_len = int(getattr(block, "valid_commit_len", block.block_size))
+                if valid_len <= 0:
+                    continue
+                tokens.extend(self.token_ids[block.start : block.start + valid_len])
+            return tokens
         return self.token_ids[self.prefix_len :]
 
     @property
@@ -251,6 +408,8 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def running_len(self) -> int:
+        if getattr(self, "is_gemma_block", False) and self.is_prefilling:
+            return self.prefix_len
         if self.is_prefilling:
             return (
                 (self.padded_prefix_len - self.block_size) + self.dllm_block_buffer.num_valid_blocks * self.block_size
@@ -269,6 +428,8 @@ class MultiBlockReqTemplate(DllmReq):
 
     @property
     def valid_len(self) -> int:
+        if getattr(self, "is_gemma_block", False) and self.is_prefilling:
+            return len(self.running_sequence)
         if self.is_prefilling:
             return self.running_len
         elif self.is_decoding:
@@ -442,7 +603,10 @@ class MultiBlockReqTemplate(DllmReq):
             self.dllm_block_buffer.activate_cursor_slot_block()
 
     def push_back_dummy_block(self):
-        self.extend_block_tokens()
+        if getattr(self, "is_gemma_block", False):
+            self.extend_gemma_block_tokens()
+        else:
+            self.extend_block_tokens()
         dllm_block = DllmBlock(
             block_id=len(self.dllm_blocks),
             start=self.dllm_blocks[-1].end,
@@ -456,6 +620,9 @@ class MultiBlockReqTemplate(DllmReq):
         )
 
         dllm_block.post_init_dllm_block(self, self.dllm_block_buffer)
+        if getattr(self, "is_gemma_block", False):
+            dllm_block.commit_ready = False
+            dllm_block.valid_commit_len = self._gemma_block_next_commit_len()
         if (self.max_new_tokens_reached or self.max_model_len_reached) and dllm_block.prev_block.is_in_context:
             dllm_block.make_last_in_context()
         elif dllm_block.prev_block.is_out_of_context or dllm_block.prev_block.is_last_in_context:
@@ -501,6 +668,8 @@ class MultiBlockReqTemplate(DllmReq):
                 block.to_cache()
                 block_id += 1
             elif block.is_to_cache:
+                if getattr(self, "is_gemma_block", False) and block.start >= self.padded_prefix_len:
+                    self.new_tokens += int(getattr(block, "valid_commit_len", block.block_size))
                 block.in_cache()
                 self.dllm_block_buffer.pop_front()
                 self.push_back_dummy_block()

@@ -16,6 +16,7 @@ MODEL_NAME_CHOICES = [
     "llada2_mini",
     "llada2dot1_mini",
     "llada2_mini_dmax",
+    "diffusion_gemma",
 ]
 
 DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
@@ -468,6 +469,12 @@ Examples:
         type=str,
         default=None,
         help="torch.compile mode",
+    )
+    parser.add_argument(
+        "--enable-vllm-layers",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use optional vLLM layer backends for common non-attention modules when available",
     )
     parser.add_argument(
         "--auto-max-nfe-warmup-steps",

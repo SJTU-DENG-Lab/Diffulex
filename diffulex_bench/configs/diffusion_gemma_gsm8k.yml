@@ -1,0 +1,48 @@
+engine:
+  model_path: "/data/ckpts/google/diffusiongemma-26B-A4B-it"
+  tokenizer_path: null
+  model_name: "diffusion_gemma"
+  decoding_strategy: "multi_bd"
+  sampling_mode: "naive"
+  mask_token_id: 4
+
+  tensor_parallel_size: 1
+  data_parallel_size: 1
+  expert_parallel_size: 1
+
+  gpu_memory_utilization: 0.85
+  max_model_len: 768
+  max_num_batched_tokens: 3072
+  max_num_reqs: 4
+  num_pages: 32
+
+  enforce_eager: false
+  enable_prefix_caching: false
+  kv_cache_layout: "unified"
+  page_size: 256
+  block_size: 256
+  buffer_size: 1
+  multi_block_prefix_full: false
+
+  enable_prefill_cudagraph: true
+  enable_full_static_runner: true
+  enable_torch_compile: true
+
+  moe_dispatcher_backend: "standard"
+  moe_gemm_impl: "triton"
+
+eval:
+  dataset_name: "gsm8k_diffusion_gemma"
+  dataset_split: "test"
+  dataset_limit: 10
+
+  temperature: 0.0
+  max_tokens: 256
+  max_nfe: null
+  max_repetition_run: 32
+  ignore_eos: false
+  add_bos_token: false
+
+  output_dir: "benchmark_results/diffusion_gemma_gsm8k"
+  save_results: true
+  use_tqdm: true
