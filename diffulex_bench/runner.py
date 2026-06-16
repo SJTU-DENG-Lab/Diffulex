@@ -7,8 +7,8 @@ import time
 from typing import List, Dict, Any, Optional
 
 from diffulex import Diffulex, SamplingParams
-from transformers import AutoTokenizer
 from diffulex.logger import get_logger
+from diffulex.utils.tokenizer import auto_tokenizer_from_pretrained
 
 
 class BenchmarkRunner:
@@ -46,7 +46,7 @@ class BenchmarkRunner:
 
         # Load tokenizer
         self.logger.info("Loading tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path, trust_remote_code=True)
+        self.tokenizer = auto_tokenizer_from_pretrained(self.tokenizer_path, trust_remote_code=True)
         self.logger.success("Tokenizer loaded successfully")
 
     def _wait_for_ready(self, timeout: float = 300.0, check_interval: float = 0.5):

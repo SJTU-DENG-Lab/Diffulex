@@ -9,7 +9,6 @@ from dataclasses import fields
 from time import perf_counter
 
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer
 
 from diffulex.config import Config
 from diffulex.distributed.parallel_state import get_world_size
@@ -21,6 +20,7 @@ from diffulex.mixin.async_serving.engine import DiffulexAsyncEngineMixin
 from diffulex.profiling import TorchProfileSession, record_function
 from diffulex.sampling_params import SamplingParams
 from diffulex.utils.output import GenerationOutputs
+from diffulex.utils.tokenizer import auto_tokenizer_from_pretrained
 
 logger = get_logger(__name__)
 
@@ -75,7 +75,7 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         self._install_signal_handlers()
 
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+            self.tokenizer = auto_tokenizer_from_pretrained(config.model, use_fast=True, trust_remote_code=True)
             config.tokenizer_vocab_size = len(self.tokenizer)
             config.eos = self.tokenizer.eos_token_id
 

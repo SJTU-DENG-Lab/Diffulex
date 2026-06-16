@@ -1,3 +1,31 @@
+"""Profiled backup of the pre-grouped chunked prefill attention kernel.
+
+This file intentionally snapshots the current implementation before the
+grouped-paged-attention rewrite. It is not imported by diffulex_kernel.
+
+Profiling context, 2026-06-15:
+- Case: causal prefill, q_len=256, ctx_len=4096, QH=16, KVH=2, D=512,
+  page_size=block_size=256, bf16, RTX 3090.
+- Nsight Compute is installed but performance counters are unavailable to this
+  user (ERR_NVGPUCTRPERM), so the direct counter profile needs admin/root or
+  NVreg_RestrictProfilingToAdminUsers=0.
+- Nsight Systems showed the current kernel launch shape:
+  grid=(1, 16, 32), block=(128, 1, 1), avg ~3.90 ms for fixed launch.
+- vLLM's unified attention on the same paged causal shape launched:
+  grid=(129, 2, 1), block=(128, 1, 1), avg ~1.91 ms.
+- The structural issue is the decomposition below: this kernel launches by
+  Q head (`head_id = tl.program_id(1)`), then maps each Q head to a KV head.
+  For GQA, the same KV head is scanned once per Q head in its group. For
+  QH=16, KVH=2, NUM_GROUPS=8, KV page-table lookup, K/V loads, masks, and
+  online softmax loops are repeated roughly 8 times per KV head group.
+- vLLM launches by KV head and flattens `(query token, q_head_within_kv_group)`
+  into the row dimension inside one CTA. That makes one KV tile serve all
+  Q heads in the group.
+
+The grouped rewrite should live in chunked_prefill_grouped_triton.py and keep
+this file as a readable fallback/reference while the optimized path matures.
+"""
+
 import torch
 import triton
 import triton.language as tl

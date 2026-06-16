@@ -24,6 +24,13 @@ def clear_vllm_layer_caches() -> None:
     get_vllm_gelu_and_mul_cls.cache_clear()
     get_vllm_rmsnorm_cls.cache_clear()
     get_vllm_rope_fn.cache_clear()
+    try:
+        from diffulex.layer import rotary_embedding
+
+        rotary_embedding._get_rope_cached.cache_clear()
+        rotary_embedding.get_gemma4_proportional_rope.cache_clear()
+    except Exception:
+        pass
 
 
 @lru_cache(1)

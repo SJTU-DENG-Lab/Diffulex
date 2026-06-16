@@ -181,6 +181,22 @@ class GenerationOutputs:
         return self._decode_batch_tokens / self._decode_batch_time if self._decode_batch_time > 0 else 0
 
     @property
+    def prefill_time(self) -> float:
+        return self._prefill_batch_time
+
+    @property
+    def prefill_tokens(self) -> int:
+        return self._prefill_batch_tokens
+
+    @property
+    def decode_time(self) -> float:
+        return self._decode_batch_time
+
+    @property
+    def decode_tokens(self) -> int:
+        return self._decode_batch_tokens
+
+    @property
     def avg_e2e_tps(self) -> float:
         """Mean of per-sample TPS (tokens/total_time), matching dInfer's np.mean(tpss)."""
         per_sample = []

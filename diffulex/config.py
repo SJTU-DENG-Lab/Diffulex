@@ -22,18 +22,7 @@ DIFFUSION_GEMMA_MODEL_NAMES = {"diffusion_gemma"}
 
  
 def _register_diffusion_gemma_hf_config() -> None:
-    config_path = os.path.join(
-        os.path.dirname(__file__),
-        "model",
-        "config",
-        "diffusion_gemma",
-        "configuration_diffusion_gemma.py",
-    )
-    spec = importlib.util.spec_from_file_location("_diffulex_diffusion_gemma_config", config_path)
-    if spec is None or spec.loader is None:
-        return
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    importlib.import_module("diffulex.model.config.diffusion_gemma.configuration_diffusion_gemma")
 
 
 @dataclass
@@ -91,6 +80,7 @@ class Config:
     expert_parallel_size: int = 1
     master_addr: str = "localhost"
     master_port: int = 2333
+    distributed_backend: str = "nccl"
     distributed_timeout_seconds: int = 600
     shm_name: str = "diffulex_shm"
     device_start: int = 0
@@ -98,7 +88,7 @@ class Config:
 
     # CUDA Graph
     enforce_eager: bool = False
-    attn_impl: str = "triton"  # "triton" or "naive"
+    attn_impl: str = "triton"  # "triton", "triton_grouped", or "naive"
     enable_prefill_cudagraph: bool = True
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
@@ -305,9 +295,9 @@ class Config:
                 "kv_cache_layout must be one of {'unified', 'distinct'}, "
                 f"got: {self.kv_cache_layout}"
             )
-        if self.attn_impl not in {"triton", "naive"}:
+        if self.attn_impl not in {"triton", "triton_grouped", "naive"}:
             raise ValueError(
-                "attn_impl must be one of {'triton', 'naive'}, "
+                "attn_impl must be one of {'triton', 'triton_grouped', 'naive'}, "
                 f"got: {self.attn_impl}"
             )
         if self.moe_dispatcher_backend not in {"standard", "naive", "deepep"}:

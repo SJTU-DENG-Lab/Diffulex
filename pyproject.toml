@@ -59,6 +59,8 @@ max-line-length = 120  # Align with formatter
 [tool.pytest.ini_options]
 markers = [
     "diffulex_dry_run: Diffulex engine dry-run tests (GPU, spawns TP workers; run with --forked)",
+    "vllm_layer_perf: optional vLLM layer operator microbenchmarks",
+    "vllm_attention_perf: optional vLLM attention operator microbenchmarks",
 ]
 
 [tool.setuptools.packages.find]

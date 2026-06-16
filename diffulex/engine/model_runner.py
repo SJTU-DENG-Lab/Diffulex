@@ -56,7 +56,7 @@ class ModelRunnerBase(
             rank=rank,
             init_method=init_method,
             device_id=device_id,
-            backend="nccl",
+            backend=config.distributed_backend,
             timeout_seconds=config.distributed_timeout_seconds,
         )
         parallel_state = init_parallel_state(

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from functools import lru_cache
+import inspect
 from typing import Any
 
 from diffulex.layer.vllm_backend import get_vllm_rope_fn
@@ -204,18 +205,25 @@ class VllmRotaryEmbeddingAdapter(nn.Module):
         vllm_get_rope = get_vllm_rope_fn()
         if vllm_get_rope is None:
             raise RuntimeError("vLLM RoPE is unavailable.")
-        rope_parameters = {
-            "rope_type": rope_type,
-            "rope_theta": base,
-            "rope_dim": rotary_dim,
+        kwargs = {
+            "head_size": head_size,
+            "max_position": max_position_embeddings,
+            "is_neox_style": True,
+            "dtype": torch.get_default_dtype(),
         }
-        self.rotary_emb = vllm_get_rope(
-            head_size=head_size,
-            max_position=max_position_embeddings,
-            is_neox_style=True,
-            rope_parameters=rope_parameters,
-            dtype=torch.get_default_dtype(),
-        )
+        signature = inspect.signature(vllm_get_rope)
+        if "rope_parameters" in signature.parameters:
+            kwargs["rope_parameters"] = {
+                "rope_type": rope_type,
+                "rope_theta": base,
+                "rope_dim": rotary_dim,
+            }
+        else:
+            kwargs["rotary_dim"] = rotary_dim
+            kwargs["base"] = base
+            if rope_type not in ("default", None):
+                kwargs["rope_scaling"] = {"rope_type": rope_type}
+        self.rotary_emb = vllm_get_rope(**kwargs)
 
     def forward(
         self,
@@ -223,7 +231,10 @@ class VllmRotaryEmbeddingAdapter(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        query, key = self.rotary_emb(positions, query, key)
+        if query.is_cuda and hasattr(self.rotary_emb, "forward_cuda"):
+            query, key = self.rotary_emb.forward_cuda(positions, query, key)
+        else:
+            query, key = self.rotary_emb(positions, query, key)
         if key is None:
             raise RuntimeError("Diffulex RoPE expects key output, got None.")
         return query, key

@@ -3,6 +3,7 @@ from abc import ABC
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from types import SimpleNamespace
 
 from diffulex.attention import fetch_attn_metadata
 from diffulex.logger import get_logger
@@ -53,15 +54,12 @@ def _load_vllm_modular_moe():
     try:
         from vllm.model_executor.layers.fused_moe.activation import MoEActivation
         from vllm.model_executor.layers.fused_moe.config import (
-            FUSED_MOE_UNQUANTIZED_CONFIG,
             FusedMoEConfig,
             FusedMoEParallelConfig,
             RoutingMethodType,
         )
-        from vllm.model_executor.layers.fused_moe.fused_moe import TritonExperts
-        from vllm.model_executor.layers.fused_moe.modular_kernel import FusedMoEKernel
-        from vllm.model_executor.layers.fused_moe.prepare_finalize import (
-            make_moe_prepare_and_finalize_no_dp_ep,
+        from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+            UnquantizedFusedMoEMethod,
         )
         from vllm.v1.worker.workspace import (
             init_workspace_manager,
@@ -69,19 +67,32 @@ def _load_vllm_modular_moe():
         )
 
         return {
-            "FUSED_MOE_UNQUANTIZED_CONFIG": FUSED_MOE_UNQUANTIZED_CONFIG,
             "FusedMoEConfig": FusedMoEConfig,
-            "FusedMoEKernel": FusedMoEKernel,
             "FusedMoEParallelConfig": FusedMoEParallelConfig,
             "MoEActivation": MoEActivation,
             "RoutingMethodType": RoutingMethodType,
-            "TritonExperts": TritonExperts,
+            "UnquantizedFusedMoEMethod": UnquantizedFusedMoEMethod,
             "init_workspace_manager": init_workspace_manager,
             "is_workspace_manager_initialized": is_workspace_manager_initialized,
-            "make_moe_prepare_and_finalize_no_dp_ep": make_moe_prepare_and_finalize_no_dp_ep,
         }
     except Exception as exc:
         _VLLM_MODULAR_LOAD_ERR = exc
+        return None
+
+
+class _VllmModularMoELayerAdapter(nn.Module):
+    """Small RoutedExperts-shaped adapter for vLLM modular MoE kernels."""
+
+    def __init__(self, w13: torch.Tensor, w2: torch.Tensor, *, activation, global_num_experts: int) -> None:
+        super().__init__()
+        self.w13_weight = nn.Parameter(w13.detach().clone(), requires_grad=False)
+        self.w2_weight = nn.Parameter(w2.detach().clone(), requires_grad=False)
+        self.activation = activation
+        self.global_num_experts = int(global_num_experts)
+        self.apply_router_weight_on_input = False
+        self.expert_map = None
+
+    def _expert_routing_tables(self):
         return None
 
 
@@ -129,6 +140,8 @@ class FusedMoE(nn.Module, ABC):
         self.moe_gemm_impl = str(moe_gemm_impl)
         self.num_shared_experts = num_shared_experts
         self._vllm_modular_kernel = None
+        self._vllm_modular_method = None
+        self._vllm_modular_layer = None
         self._vllm_modular_logged = False
 
         self.router = build_topk_router(
@@ -224,7 +237,7 @@ class FusedMoE(nn.Module, ABC):
         except TypeError:
             return self._phase_from_prefill_flags(int(status_table) == 0)
 
-    def _build_vllm_modular_kernel(self, hidden_states: torch.Tensor, w13: torch.Tensor):
+    def _build_vllm_modular_kernel(self, hidden_states: torch.Tensor, w13: torch.Tensor, w2: torch.Tensor):
         api = _load_vllm_modular_moe()
         if api is None:
             raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
@@ -253,9 +266,26 @@ class FusedMoE(nn.Module, ABC):
             in_dtype=hidden_states.dtype,
             max_num_tokens=max(1, int(hidden_states.shape[0])),
         )
-        quant_config = api["FUSED_MOE_UNQUANTIZED_CONFIG"]
-        prepare_finalize = api["make_moe_prepare_and_finalize_no_dp_ep"](use_monolithic=False)
-        fused_experts = api["TritonExperts"](moe_config=moe_config, quant_config=quant_config)
+
+        from diffulex.distributed.parallel_state import fetch_parallel_state
+        from diffulex.vllm_compat import vllm_current_config
+
+        state = fetch_parallel_state()
+        vllm_config = SimpleNamespace(
+            tensor_parallel_size=int(state.tp_size),
+            data_parallel_size=int(state.dp_size),
+            expert_parallel_size=int(state.ep_size),
+            distributed_timeout_seconds=600,
+        )
+        with vllm_current_config(vllm_config):
+            method = api["UnquantizedFusedMoEMethod"](moe_config)
+        layer = _VllmModularMoELayerAdapter(
+            w13,
+            w2,
+            activation=api["MoEActivation"].SILU,
+            global_num_experts=int(w13.shape[0]),
+        )
+        method.process_weights_after_loading(layer)
         if not self._vllm_modular_logged:
             logger.info(
                 "Initialized vLLM modular MoE backend: hidden=%s intermediate=%s local_experts=%s "
@@ -268,13 +298,9 @@ class FusedMoE(nn.Module, ABC):
                 int(hidden_states.shape[0]),
             )
             self._vllm_modular_logged = True
-        return api["FusedMoEKernel"](
-            prepare_finalize,
-            fused_experts,
-            shared_experts=None,
-            moe_parallel_config=parallel_config,
-            inplace=False,
-        )
+        self._vllm_modular_method = method
+        self._vllm_modular_layer = layer
+        return method.moe_kernel
 
     def _vllm_modular_expert_gemm(
         self,
@@ -289,22 +315,18 @@ class FusedMoE(nn.Module, ABC):
         if api is None:
             raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
         if self._vllm_modular_kernel is None:
-            self._vllm_modular_kernel = self._build_vllm_modular_kernel(hidden_states, w13)
+            self._vllm_modular_kernel = self._build_vllm_modular_kernel(hidden_states, w13, w2)
 
         local_topk_ids = topk_ids.to(torch.int64) - int(local_expert_start)
         valid = (local_topk_ids >= 0) & (local_topk_ids < w13.shape[0])
         safe_topk_ids = torch.where(valid, local_topk_ids, torch.zeros_like(local_topk_ids))
         safe_topk_weights = torch.where(valid, topk_weights, torch.zeros_like(topk_weights))
-        return self._vllm_modular_kernel.apply(
-            hidden_states=hidden_states,
-            w1=w13,
-            w2=w2,
+        return self._vllm_modular_method.forward_native(
+            layer=self._vllm_modular_layer,
+            x=hidden_states,
             topk_weights=safe_topk_weights,
             topk_ids=safe_topk_ids,
-            activation=api["MoEActivation"].SILU,
-            global_num_experts=int(w13.shape[0]),
-            expert_map=None,
-            apply_router_weight_on_input=False,
+            shared_experts=None,
             shared_experts_input=None,
         )
 

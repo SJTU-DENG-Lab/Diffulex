@@ -131,10 +131,10 @@ class TorchProfileSession:
     def _export(self) -> None:
         assert self.prof is not None
         prefix = self._prefix()
-        trace_path = prefix.with_suffix(".trace.json")
-        summary_txt = prefix.with_suffix(".summary.txt")
-        summary_csv = prefix.with_suffix(".summary.csv")
-        summary_json = prefix.with_suffix(".summary.json")
+        trace_path = prefix.parent / f"{prefix.name}.trace.json"
+        summary_txt = prefix.parent / f"{prefix.name}.summary.txt"
+        summary_csv = prefix.parent / f"{prefix.name}.summary.csv"
+        summary_json = prefix.parent / f"{prefix.name}.summary.json"
         sort_by = "self_cuda_time_total" if torch.cuda.is_available() else "self_cpu_time_total"
         events = self.prof.key_averages()
         rows = [self._event_to_row(event) for event in events]

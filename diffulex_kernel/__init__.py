@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from diffulex_kernel.python.chunked_prefill_triton import (  # noqa: F401
         chunked_prefill_attn_unified as dllm_chunked_prefill,
     )
+    from diffulex_kernel.python.chunked_prefill_grouped_triton import (  # noqa: F401
+        chunked_prefill_attn_grouped_unified as chunked_prefill_attn_grouped_unified,
+    )
     from diffulex_kernel.python.kv_cache_kernels import (  # noqa: F401
         load_kv_cache as load_kv_cache,
         store_kv_cache_distinct_layout as store_kv_cache_distinct_layout,
@@ -25,6 +28,12 @@ def __getattr__(name: str):
             chunked_prefill_attn_unified,
         )
         return chunked_prefill_attn_unified
+
+    if name == "chunked_prefill_attn_grouped_unified":
+        from diffulex_kernel.python.chunked_prefill_grouped_triton import (
+            chunked_prefill_attn_grouped_unified,
+        )
+        return chunked_prefill_attn_grouped_unified
 
     if name == "store_kv_cache_unified_layout":
         from diffulex_kernel.python.kv_cache_kernels import store_kv_cache_unified_layout
@@ -64,6 +73,7 @@ def __getattr__(name: str):
 __all__ = [
     "dllm_chunked_prefill",
     "chunked_prefill_attn_unified",
+    "chunked_prefill_attn_grouped_unified",
     "store_kv_cache_unified_layout",
     "store_kv_cache_distinct_layout",
     "load_kv_cache",

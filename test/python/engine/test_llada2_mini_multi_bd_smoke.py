@@ -43,6 +43,7 @@ def main() -> None:
     distributed_timeout_seconds = _env_int("DIFFULEX_DISTRIBUTED_TIMEOUT_SECONDS", 3600)
     gpu_memory_utilization = _env_float("DIFFULEX_GPU_MEMORY_UTILIZATION", 0.35)
     moe_dispatcher_backend = os.environ.get("DIFFULEX_MOE_DISPATCHER_BACKEND", "standard")
+    distributed_backend = os.environ.get("DIFFULEX_DISTRIBUTED_BACKEND", "nccl")
     deepep_mode = os.environ.get("DIFFULEX_DEEPEP_MODE", "auto")
     deepep_num_max_dispatch_tokens_per_rank = _env_int("DIFFULEX_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", 256)
     sampling_mode = os.environ.get("DIFFULEX_SAMPLING_MODE", "naive")
@@ -67,6 +68,7 @@ def main() -> None:
             "distributed_timeout_seconds": distributed_timeout_seconds,
             "gpu_memory_utilization": gpu_memory_utilization,
             "moe_dispatcher_backend": moe_dispatcher_backend,
+            "distributed_backend": distributed_backend,
             "deepep_mode": deepep_mode,
             "deepep_num_max_dispatch_tokens_per_rank": deepep_num_max_dispatch_tokens_per_rank,
             "sampling_mode": sampling_mode,
@@ -98,6 +100,7 @@ def main() -> None:
         master_port=master_port,
         distributed_timeout_seconds=distributed_timeout_seconds,
         moe_dispatcher_backend=moe_dispatcher_backend,
+        distributed_backend=distributed_backend,
         deepep_mode=deepep_mode,
         deepep_num_max_dispatch_tokens_per_rank=deepep_num_max_dispatch_tokens_per_rank,
         enforce_eager=bool(_env_int("DIFFULEX_ENFORCE_EAGER", 1)),

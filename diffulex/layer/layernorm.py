@@ -10,6 +10,45 @@ def _use_reference_rmsnorm() -> bool:
     return os.getenv("DIFFULEX_REFERENCE_RMSNORM", "0") == "1"
 
 
+def _vllm_rms_norm_direct(
+    x: torch.Tensor,
+    weight: torch.Tensor | None,
+    eps: float,
+) -> torch.Tensor | None:
+    if weight is None or not x.is_cuda or not x.is_contiguous():
+        return None
+    try:
+        from vllm import _custom_ops as ops
+    except Exception:
+        return None
+
+    orig_shape = x.shape
+    x_2d = x.view(-1, x.shape[-1])
+    out = torch.empty_like(x_2d)
+    ops.rms_norm(out, x_2d, weight, eps)
+    return out.view(orig_shape)
+
+
+def _vllm_fused_add_rms_norm_direct(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor | None,
+    eps: float,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if weight is None or not x.is_cuda or not residual.is_cuda or not x.is_contiguous() or not residual.is_contiguous():
+        return None
+    try:
+        from vllm import _custom_ops as ops
+    except Exception:
+        return None
+
+    orig_shape = x.shape
+    x_out = x.view(-1, x.shape[-1])
+    residual_out = residual.view(-1, residual.shape[-1])
+    ops.fused_add_rms_norm(x_out, residual_out, weight, eps)
+    return x_out.view(orig_shape), residual_out.view(orig_shape)
+
+
 class RMSNorm(nn.Module):
     def __init__(
         self,
@@ -22,6 +61,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.has_weight = bool(has_weight)
         vllm_cls = get_vllm_rmsnorm_cls()
+        self._vllm_direct_enabled = vllm_cls is not None
         if vllm_cls is not None:
             try:
                 impl = vllm_cls(hidden_size, eps=eps, has_weight=self.has_weight)
@@ -104,6 +144,13 @@ class RMSNorm(nn.Module):
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         vllm_impl = getattr(self, "_vllm_impl", None)
+        if self._vllm_direct_enabled and not _use_reference_rmsnorm():
+            if residual is None:
+                out = _vllm_rms_norm_direct(x, self.weight, self.eps)
+            else:
+                out = _vllm_fused_add_rms_norm_direct(x, residual, self.weight, self.eps)
+            if out is not None:
+                return out
         if vllm_impl is not None and not _use_reference_rmsnorm():
             return vllm_impl(x, residual)
         if _use_reference_rmsnorm():

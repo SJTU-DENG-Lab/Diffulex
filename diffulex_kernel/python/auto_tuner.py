@@ -1,7 +1,6 @@
 import itertools
 
 
-
 def build_chunked_prefill_configs():
     """Autotune configs for chunked prefill unified kernel.
 
@@ -18,8 +17,8 @@ def build_chunked_prefill_configs():
     ],
     so configs are selected based on those runtime parameters.
     """
-    BLOCK_M_LIST = [64, 128]
-    BLOCK_N_LIST = [64, 128]
+    BLOCK_M_LIST = [8, 16, 32, 64, 128]
+    BLOCK_N_LIST = [16, 32, 64, 128]
     NUM_STAGES_LIST = [1, 2, 3]
     NUM_WARPS_LIST = [4, 8]
 

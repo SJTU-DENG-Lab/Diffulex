@@ -8,11 +8,12 @@ from diffulex_kernel import (
     store_kv_cache_distinct_layout,
     store_kv_cache_unified_layout,
     chunked_prefill_attn_unified,
+    chunked_prefill_attn_grouped_unified,
 )
 from diffulex.attention.metadata import AttnMetaDataBase
 
 
-ATTN_IMPLS = {"naive", "triton"}
+ATTN_IMPLS = {"naive", "triton", "triton_grouped"}
 
 
 def reference_torch_attention(
@@ -64,6 +65,33 @@ def triton_attention(
             store_kv_cache = store_kv_cache_unified_layout if is_unified_layout else store_kv_cache_distinct_layout
             store_kv_cache(k, v, k_cache, v_cache, attn_metadata.slot_mapping, attn_metadata)
     return chunked_prefill_attn_unified(q, k, v, k_cache, v_cache, attn_metadata, softmax_scale=softmax_scale)
+
+
+@torch.compiler.disable
+def triton_grouped_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    softmax_scale: float,
+) -> torch.Tensor:
+    from diffulex.attention import fetch_attn_metadata
+
+    attn_metadata: AttnMetaDataBase = fetch_attn_metadata()
+    if attn_metadata.kv_cache_layout != "unified":
+        raise ValueError("attn_impl='triton_grouped' currently requires kv_cache_layout='unified'.")
+    if k_cache.numel() and v_cache.numel() and attn_metadata.need_kv_cache_store:
+        store_kv_cache_unified_layout(k, v, k_cache, v_cache, attn_metadata.slot_mapping, attn_metadata)
+    return chunked_prefill_attn_grouped_unified(
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        attn_metadata,
+        softmax_scale=softmax_scale,
+    )
 
 
 class Attention(nn.Module):
@@ -143,10 +171,14 @@ class Attention(nn.Module):
             )
             return rearrange(o, "s nh hd -> s (nh hd)").contiguous()
 
-        if self.attn_impl != "triton":
+        if self.attn_impl not in {"triton", "triton_grouped"}:
             raise ValueError(f"Unsupported attn_impl: {self.attn_impl}")
 
         k_cache, v_cache = self.k_cache, self.v_cache
+
+        if self.attn_impl == "triton_grouped":
+            o = triton_grouped_attention(q, k, v, k_cache, v_cache, self.scale)
+            return rearrange(o, "s nh hd -> s (nh hd)").contiguous()
 
         o = triton_attention(q, k, v, k_cache, v_cache, self.scale)
 
