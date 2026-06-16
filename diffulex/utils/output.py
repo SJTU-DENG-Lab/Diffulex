@@ -107,6 +107,10 @@ class GenerationOutputs:
         self._prefill_batch_tokens = 0
         self._decode_batch_time = 0.0
         self._decode_batch_tokens = 0
+        self._req_decode_steps = [0 for _ in range(num_prompts)]
+        self._req_generated_tokens = [0 for _ in range(num_prompts)]
+        self._req_tpf_sum = 0.0
+        self._req_tpf_count = 0
 
     @property
     def batch_step_count(self) -> int:
@@ -118,13 +122,7 @@ class GenerationOutputs:
     
     @property
     def tpf(self) -> float:
-        per_req_tpf = []
-        for trajectory in self.trajectories:
-            if not trajectory.trajectory:
-                continue
-            num_generated_tokens = sum(step.num_generated_tokens for step in trajectory.trajectory)
-            per_req_tpf.append(num_generated_tokens / len(trajectory.trajectory))
-        return self._mean(per_req_tpf)
+        return self._req_tpf_sum / self._req_tpf_count if self._req_tpf_count > 0 else 0.0
 
     @property
     def ttft(self) -> float:
@@ -255,6 +253,16 @@ class GenerationOutputs:
             prompt_idx = (req_id_to_prompt_id or {}).get(req.req_id, req.req_id)
             if prompt_idx >= len(self.trajectories):
                 continue
+            if not req.is_prefilling:
+                old_steps = self._req_decode_steps[prompt_idx]
+                old_tokens = self._req_generated_tokens[prompt_idx]
+                old_tpf = old_tokens / old_steps if old_steps > 0 else 0.0
+                if old_steps == 0:
+                    self._req_tpf_count += 1
+                self._req_decode_steps[prompt_idx] = old_steps + 1
+                self._req_generated_tokens[prompt_idx] = old_tokens + req.new_tokens
+                new_tpf = self._req_generated_tokens[prompt_idx] / self._req_decode_steps[prompt_idx]
+                self._req_tpf_sum += new_tpf - old_tpf
             cur_trajectory = self.trajectories[prompt_idx]
             step_id = len(cur_trajectory.trajectory)
 
@@ -308,11 +316,10 @@ class GenerationOutputs:
 
     def fast_postfix(self) -> dict:
         """Lightweight postfix using pre-accumulated counters — O(1) per call."""
-        steps = max(self._batch_step_count, 1)
         elapsed = max(self._batch_total_time, 0.001)
         decode_elapsed = max(self._decode_batch_time, 0.001)
         return dict(
-            tpf=f"{self._batch_generated_tokens / steps:.2f}tok/step",
+            tpf=f"{self.tpf:.2f}tok/step",
             dtps=f"{self._decode_batch_tokens / decode_elapsed:.2f}tok/s",
             e2eps=f"{self._batch_generated_tokens / elapsed:.2f}tok/s",
         )

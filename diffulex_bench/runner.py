@@ -157,6 +157,15 @@ class BenchmarkRunner:
         total_time = sum(o.get("generation_time", 0) for o in outputs)
         avg_nfe = sum(o.get("nfe", o.get("num_nfes", o.get("n_diff_steps", 0))) for o in outputs) / len(outputs) if outputs else 0
         total_nfe = sum(o.get("nfe", o.get("num_nfes", o.get("n_diff_steps", 0))) for o in outputs)
+        per_sample_tpf = []
+        for output in outputs:
+            nfe = output.get("nfe", output.get("num_nfes", output.get("n_diff_steps", 0)))
+            if nfe > 0:
+                per_sample_tpf.append(len(output["token_ids"]) / nfe)
+        mean_tpf = outputs[0].get("tpf", 0.0) if outputs else 0.0
+        if not mean_tpf and per_sample_tpf:
+            mean_tpf = sum(per_sample_tpf) / len(per_sample_tpf)
+        aggregate_tpf = total_tokens / total_nfe if total_nfe > 0 else 0
 
         return {
             "outputs": outputs,
@@ -166,7 +175,8 @@ class BenchmarkRunner:
             "total_time": total_time,
             "avg_tokens_per_sample": total_tokens / len(outputs) if outputs else 0,
             "avg_nfe": avg_nfe,
-            "tpf": total_tokens / total_nfe if total_nfe > 0 else 0,
+            "tpf": mean_tpf,
+            "aggregate_tpf": aggregate_tpf,
             "e2e_total_time_s": outputs[0].get("e2e_total_time_s", 0.0) if outputs else 0.0,
             "ttft_s": outputs[0].get("ttft_s", 0.0) if outputs else 0.0,
             "tpot_s": outputs[0].get("tpot_s", 0.0) if outputs else 0.0,

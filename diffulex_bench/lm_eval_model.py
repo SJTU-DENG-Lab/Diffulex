@@ -158,6 +158,8 @@ class DiffulexLM(LM):
         self.all_generation_times = []
         self.all_nfe = []
         self.all_tokens = []
+        self.tpf_weighted_sum = 0.0
+        self.tpf_weight = 0
         self.last_ttft = 0.0
         self.last_tpot = 0.0
         self.last_e2e_total_time = 0.0
@@ -322,6 +324,8 @@ class DiffulexLM(LM):
             self.last_prefill_throughput = float(outputs[0].get("prefill_throughput_tok_s", 0.0) or 0.0)
             self.last_decode_throughput = float(outputs[0].get("decode_throughput_tok_s", 0.0) or 0.0)
             self.last_tpf = float(outputs[0].get("tpf", 0.0) or 0.0)
+            self.tpf_weighted_sum += self.last_tpf * len(outputs)
+            self.tpf_weight += len(outputs)
             self.last_avg_e2e_tps = float(outputs[0].get("avg_e2e_tps", 0.0) or 0.0)
             self.last_avg_decode_tps = float(outputs[0].get("avg_decode_tps", 0.0) or 0.0)
 
@@ -385,6 +389,8 @@ class DiffulexLM(LM):
     def _save_statistics(self):
         """Save statistics to file"""
         os.makedirs(self.save_dir, exist_ok=True)
+        mean_tpf = self.tpf_weighted_sum / self.tpf_weight if self.tpf_weight > 0 else 0.0
+        aggregate_tpf = self.total_generated_tokens / self.total_nfe if self.total_nfe > 0 else 0.0
 
         stats = {
             "total_samples": self.total_samples,
@@ -400,7 +406,8 @@ class DiffulexLM(LM):
             "tpot_s": self.last_tpot,
             "prefill_throughput_tok_s": self.last_prefill_throughput,
             "decode_throughput_tok_s": self.last_decode_throughput,
-            "tpf": self.total_generated_tokens / self.total_nfe if self.total_nfe > 0 else 0,
+            "tpf": mean_tpf,
+            "aggregate_tpf": aggregate_tpf,
             "last_batch_tpf": self.last_tpf,
             "avg_e2e_tps": self.last_avg_e2e_tps,
             "avg_decode_tps": self.last_avg_decode_tps,

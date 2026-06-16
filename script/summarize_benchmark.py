@@ -78,7 +78,7 @@ def main():
         if stats_path.exists():
             with open(stats_path) as f:
                 stats = json.load(f)
-            tpf_val = stats.get("last_batch_tpf")
+            tpf_val = stats.get("tpf", stats.get("last_batch_tpf"))
             if tpf_val is not None:
                 tpf = f"{tpf_val:.2f}"
                 tpfs.append(tpf_val)

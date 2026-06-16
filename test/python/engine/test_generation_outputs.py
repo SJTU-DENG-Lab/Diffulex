@@ -77,6 +77,8 @@ def test_generation_outputs_decode_throughput_uses_batch_time() -> None:
     assert outputs.total_time == 1.0
     assert outputs.postfix()["tpf"] == "1.00tok/step"
     assert outputs.postfix()["dtps"] == "2.00tok/s"
+    assert outputs.fast_postfix()["tpf"] == "1.00tok/step"
+    assert outputs.fast_postfix()["dtps"] == "2.00tok/s"
 
 
 def test_generation_outputs_prefill_throughput_uses_batch_time() -> None:
@@ -202,11 +204,14 @@ def test_generation_outputs_latency_metrics_are_per_request_means() -> None:
     )
     outputs.record_step([req0_decode, req1_decode], step_time=1.0)
 
-    assert outputs.tpf == 1.5
+    assert outputs.tpf == 3.0
     assert outputs.ttft == 1.5
     assert outputs.throughput == 4.0
+    assert outputs.postfix()["tpf"] == "3.00tok/step"
     assert outputs.postfix()["ttft"] == "1.50s"
     assert outputs.postfix()["dtps"] == "6.00tok/s"
+    assert outputs.fast_postfix()["tpf"] == "3.00tok/step"
+    assert outputs.fast_postfix()["dtps"] == "6.00tok/s"
 
 
 def test_generation_outputs_benchmark_format_uses_nfe() -> None:
