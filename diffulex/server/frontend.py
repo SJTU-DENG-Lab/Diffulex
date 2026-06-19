@@ -12,6 +12,8 @@ from diffulex.server.protocol import (
     ServingError,
     ServingEvent,
     ServingGenerate,
+    ServingProfileStart,
+    ServingProfileStop,
     ServingReply,
     ServingShutdown,
     serving_command_to_dict,
@@ -170,3 +172,9 @@ class FrontendManager:
 
     async def abort_request(self, rid: str) -> None:
         await self.send_one(ServingAbort(rid=rid))
+
+    async def start_profile(self, profile_prefix: str | None = None) -> None:
+        await self.send_one(ServingProfileStart(profile_prefix=profile_prefix))
+
+    async def stop_profile(self) -> None:
+        await self.send_one(ServingProfileStop())

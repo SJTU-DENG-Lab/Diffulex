@@ -6,7 +6,6 @@ set -euo pipefail
 # Grid: batch ∈ {1,128}, bufsize ∈ {1,2} × {math, code}
 # ============================================================
 
-export DIFFULEX_DMAX_SAMPLER_FAST=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

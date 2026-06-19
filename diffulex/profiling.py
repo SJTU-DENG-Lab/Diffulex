@@ -2,62 +2,138 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import time
 from contextlib import nullcontext
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
+from diffulex.logger import get_logger
 
-def profile_enabled() -> bool:
-    return bool(os.getenv("DIFFULEX_PROFILE_DIR"))
+logger = get_logger(__name__)
+
+ProfilerKind = Literal["torch"]
+
+_PROFILE_SCOPE_REFCOUNT = 0
+
+
+@dataclass
+class ProfilerConfig:
+    profiler: ProfilerKind | None = None
+    torch_profiler_dir: str = ""
+    record_shapes: bool = False
+    profile_memory: bool = False
+    with_stack: bool = False
+    with_modules: bool = False
+    use_cuda: bool = True
+    delay_iterations: int = 0
+    max_iterations: int = 0
+    run_id: str | None = None
+
+    @classmethod
+    def from_value(cls, value: "ProfilerConfig | dict[str, Any] | None") -> "ProfilerConfig":
+        if value is None:
+            return cls()
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, dict):
+            return cls(**value)
+        raise TypeError(f"Unsupported profiler_config type: {type(value)!r}")
+
+    def __post_init__(self) -> None:
+        if self.profiler not in (None, "torch"):
+            raise ValueError(f"profiler must be one of {{None, 'torch'}}, got: {self.profiler}")
+        if self.profiler == "torch" and not self.torch_profiler_dir:
+            raise ValueError("torch_profiler_dir must be set when profiler='torch'.")
+        if self.delay_iterations < 0:
+            raise ValueError(f"delay_iterations must be non-negative, got: {self.delay_iterations}")
+        if self.max_iterations < 0:
+            raise ValueError(f"max_iterations must be non-negative, got: {self.max_iterations}")
+        if self.torch_profiler_dir:
+            self.torch_profiler_dir = str(Path(self.torch_profiler_dir).expanduser().resolve())
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _enable_profile_scopes() -> None:
+    global _PROFILE_SCOPE_REFCOUNT
+    _PROFILE_SCOPE_REFCOUNT += 1
+
+
+def _disable_profile_scopes() -> None:
+    global _PROFILE_SCOPE_REFCOUNT
+    _PROFILE_SCOPE_REFCOUNT = max(0, _PROFILE_SCOPE_REFCOUNT - 1)
+
+
+def profile_scopes_enabled() -> bool:
+    return _PROFILE_SCOPE_REFCOUNT > 0
 
 
 def record_function(name: str):
-    if not profile_enabled():
+    if not profile_scopes_enabled():
         return nullcontext()
     return torch.profiler.record_function(name)
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return int(raw)
+profile_scope = record_function
 
 
 class TorchProfileSession:
-    def __init__(self, component: str, *, rank: int | None = None):
-        self.enabled = profile_enabled()
+    def __init__(
+        self,
+        component: str,
+        *,
+        rank: int | None = None,
+        config: ProfilerConfig | dict[str, Any] | None = None,
+    ):
+        self.config = ProfilerConfig.from_value(config)
+        self.enabled = self.config.profiler == "torch"
         self.component = component
         self.rank = rank
         self.prof: torch.profiler.profile | None = None
-        self.started = False
+        self.active = False
+        self.running = False
         self.stopped = False
         self.steps = 0
-        self.active_steps = _env_int("DIFFULEX_PROFILE_ACTIVE_STEPS", 200)
+        self.profiled_steps = 0
 
-    def start(self) -> None:
-        if not self.enabled or self.started or self.stopped:
+    @property
+    def active_steps(self) -> int:
+        return self.config.max_iterations
+
+    def start(self, profile_prefix: str | None = None) -> None:
+        if not self.enabled:
+            raise RuntimeError(
+                "Torch profiling is not enabled. Set profiler_config={'profiler': 'torch', "
+                "'torch_profiler_dir': '/path/to/traces'}."
+            )
+        if self.active:
+            logger.debug("Ignoring duplicate profile start for %s.", self.component)
+            return
+        self.active = True
+        self.stopped = False
+        self.steps = 0
+        self.profiled_steps = 0
+        if profile_prefix:
+            self.config.run_id = profile_prefix
+        if self.config.delay_iterations == 0:
+            self._start_profiler()
+
+    def _start_profiler(self) -> None:
+        if self.running:
             return
         activities = [torch.profiler.ProfilerActivity.CPU]
-        if torch.cuda.is_available():
+        if self.config.use_cuda and torch.cuda.is_available():
             activities.append(torch.profiler.ProfilerActivity.CUDA)
         kwargs = dict(
             activities=activities,
-            record_shapes=_env_bool("DIFFULEX_PROFILE_RECORD_SHAPES", False),
-            profile_memory=_env_bool("DIFFULEX_PROFILE_MEMORY", False),
-            with_stack=_env_bool("DIFFULEX_PROFILE_WITH_STACK", False),
-            with_modules=_env_bool("DIFFULEX_PROFILE_WITH_MODULES", False),
+            record_shapes=self.config.record_shapes,
+            profile_memory=self.config.profile_memory,
+            with_stack=self.config.with_stack,
+            with_modules=self.config.with_modules,
             acc_events=True,
         )
         try:
@@ -66,37 +142,50 @@ class TorchProfileSession:
             kwargs.pop("acc_events", None)
             self.prof = torch.profiler.profile(**kwargs)
         self.prof.start()
-        self.started = True
+        self.running = True
+        _enable_profile_scopes()
 
     def step(self) -> None:
-        if not self.enabled or self.stopped:
+        if not self.enabled or not self.active or self.stopped:
             return
-        self.start()
         self.steps += 1
-        if self.prof is not None and not self.stopped:
-            self.prof.step()
-        if self.active_steps > 0 and self.steps >= self.active_steps:
+        if not self.running and self.steps >= self.config.delay_iterations:
+            self._start_profiler()
+        if not self.running or self.prof is None:
+            return
+        self.prof.step()
+        self.profiled_steps += 1
+        if self.config.max_iterations > 0 and self.profiled_steps >= self.config.max_iterations:
             self.stop()
 
     def stop(self) -> None:
-        if not self.enabled or not self.started or self.stopped:
+        if not self.enabled or not self.active or self.stopped:
+            return
+        self.active = False
+        self.stopped = True
+        if not self.running:
             return
         assert self.prof is not None
-        self.stopped = True
         try:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             self.prof.stop()
             self._export()
         except Exception as exc:
-            prefix = self._prefix()
-            prefix.with_suffix(".error.txt").write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            logger.warning("Failed to stop/export profiler for %s: %s", self.component, exc)
+            self._prefix().with_suffix(".error.txt").write_text(
+                f"{type(exc).__name__}: {exc}\n",
+                encoding="utf-8",
+            )
+        finally:
+            self.running = False
+            _disable_profile_scopes()
 
     def _prefix(self) -> Path:
-        root = Path(os.environ["DIFFULEX_PROFILE_DIR"]).expanduser().resolve()
+        root = Path(self.config.torch_profiler_dir)
         root.mkdir(parents=True, exist_ok=True)
         rank_part = f".rank{self.rank}" if self.rank is not None else ""
-        stamp = os.getenv("DIFFULEX_PROFILE_RUN_ID") or time.strftime("%Y%m%d_%H%M%S")
+        stamp = self.config.run_id or time.strftime("%Y%m%d_%H%M%S")
         return root / f"{stamp}.{self.component}{rank_part}"
 
     @staticmethod

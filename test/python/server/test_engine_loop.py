@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 
 from diffulex.sampling_params import SamplingParams
-from diffulex.server.protocol import PromptInput
-from diffulex.mixin.async_engine.engine.serving_worker import (
-    DiffulexServingWorkerMixin,
+from diffulex.mixin.async_serving.engine import DiffulexAsyncEngineMixin
+from diffulex.server.protocol import (
+    PromptInput,
     ServingBufferSnapshot,
     ServingDelta,
     ServingGenerate,
@@ -45,7 +45,7 @@ class _Req:
         return [self._token_id]
 
 
-class _Engine(DiffulexServingWorkerMixin):
+class _Engine(DiffulexAsyncEngineMixin):
     def __init__(self):
         self.tokenizer = _Tokenizer()
         self.added = []
@@ -115,7 +115,7 @@ class _StreamingReq:
         return self.token_ids[:4]
 
 
-class _StreamingEngine(DiffulexServingWorkerMixin):
+class _StreamingEngine(DiffulexAsyncEngineMixin):
     def __init__(self):
         self.tokenizer = _Tokenizer()
         self.pending = []

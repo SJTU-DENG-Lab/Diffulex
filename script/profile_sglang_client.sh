@@ -11,7 +11,13 @@ SAMPLE_LIMIT="${SAMPLE_LIMIT:-10}"
 CUDA_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 SGLANG_BASE_URL="${SGLANG_BASE_URL:-http://127.0.0.1:29998}"
 RUN_SGLANG_SERVER_PROFILE="${RUN_SGLANG_SERVER_PROFILE:-1}"
-SGLANG_PROFILE_STEPS="${SGLANG_PROFILE_STEPS:-64}"
+SGLANG_PROFILE_STEPS="${SGLANG_PROFILE_STEPS:-5}"
+SGLANG_PROFILE_BY_STAGE="${SGLANG_PROFILE_BY_STAGE:-1}"
+SGLANG_PROFILE_MERGE="${SGLANG_PROFILE_MERGE:-0}"
+SGLANG_PROFILE_CPU="${SGLANG_PROFILE_CPU:-1}"
+SGLANG_PROFILE_GPU="${SGLANG_PROFILE_GPU:-1}"
+SGLANG_PROFILE_PREFIX="${SGLANG_PROFILE_PREFIX:-sglang_server}"
+SUMMARIZE_PROFILES="${SUMMARIZE_PROFILES:-1}"
 
 MODEL_PATH="${MODEL_PATH:-/root/data/ckpts/inclusionAI/LLaDA2.0-mini}"
 TOKENIZER_PATH="${TOKENIZER_PATH:-${MODEL_PATH}}"
@@ -44,7 +50,7 @@ fi
 SGLANG_PROFILER_PID=""
 if [[ "${RUN_SGLANG_SERVER_PROFILE}" == "1" ]]; then
   echo "[sglang-server] starting server-side torch profiler for ${SGLANG_PROFILE_STEPS} forward steps"
-  .venv/bin/python - "${SGLANG_BASE_URL}" "${PROFILE_ROOT}/sglang_server" "${SGLANG_PROFILE_STEPS}" <<'PY' &
+  .venv/bin/python - "${SGLANG_BASE_URL}" "${PROFILE_ROOT}/sglang_server" "${SGLANG_PROFILE_STEPS}" "${SGLANG_PROFILE_BY_STAGE}" "${SGLANG_PROFILE_MERGE}" "${SGLANG_PROFILE_CPU}" "${SGLANG_PROFILE_GPU}" "${SGLANG_PROFILE_PREFIX}" <<'PY' &
 import json
 import sys
 import time
@@ -52,7 +58,7 @@ from pathlib import Path
 
 import requests
 
-url, output_root, num_steps = sys.argv[1], sys.argv[2], sys.argv[3]
+url, output_root, num_steps, by_stage, merge, cpu, gpu, prefix = sys.argv[1:9]
 output_dir = Path(output_root).expanduser().resolve() / str(time.time())
 output_dir.mkdir(parents=True, exist_ok=True)
 try:
@@ -61,13 +67,18 @@ try:
         (output_dir / "server_args.json").write_text(json.dumps(server_info.json(), indent=2), encoding="utf-8")
 except requests.RequestException:
     pass
+activities = []
+if cpu == "1":
+    activities.append("CPU")
+if gpu == "1":
+    activities.append("GPU")
 payload = {
     "output_dir": str(output_dir),
     "num_steps": str(num_steps),
-    "activities": ["CPU", "GPU"],
-    "profile_by_stage": True,
-    "merge_profiles": True,
-    "profile_prefix": "sglang_server",
+    "activities": activities,
+    "profile_by_stage": by_stage == "1",
+    "merge_profiles": merge == "1",
+    "profile_prefix": prefix,
 }
 print(f"Dump sglang server profiling traces to {output_dir}", flush=True)
 response = requests.post(f"{url}/start_profile", json=payload, timeout=None)
@@ -119,5 +130,7 @@ if [[ -n "${SGLANG_PROFILER_PID}" ]]; then
   wait "${SGLANG_PROFILER_PID}"
 fi
 
-.venv/bin/python script/summarize_torch_profiles.py "${PROFILE_ROOT}" --top-n "${PROFILE_TOP_N:-60}"
+if [[ "${SUMMARIZE_PROFILES}" == "1" ]]; then
+  .venv/bin/python script/summarize_torch_profiles.py "${PROFILE_ROOT}" --top-n "${PROFILE_TOP_N:-60}"
+fi
 echo "[done] sglang profile root: ${PROFILE_ROOT}"

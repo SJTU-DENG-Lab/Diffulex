@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .config import D2FStrategyConfig
 from .engine.kv_cache_manager import D2fKVCacheManager
 from .engine.model_runner import D2fModelRunner
 from .engine.scheduler import D2fScheduler
@@ -12,4 +13,5 @@ __all__ = [
     "D2fModelRunner",
     "D2fScheduler",
     "D2fReq",
+    "D2FStrategyConfig",
 ]

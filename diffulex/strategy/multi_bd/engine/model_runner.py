@@ -2,13 +2,9 @@ from __future__ import annotations
 
 from multiprocessing.synchronize import Event
 
-import torch
-
 from diffulex.config import Config
-from diffulex.engine.request import DllmReq
 from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
-from diffulex.engine.model_runner import AutoModelRunner
-from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
+from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
 from diffulex.strategy.multi_bd.attention.metadata import (
     fetch_multi_bd_attn_metadata,
     set_multi_bd_attn_metadata,
@@ -17,7 +13,7 @@ from diffulex.strategy.multi_bd.attention.metadata import (
 
 
 @AutoModelRunner.register("multi_bd", is_default=True)
-class MultiBDModelRunner(MultiBlockModelRunnerTemplate):
+class MultiBDModelRunner(ModelRunnerBase):
     """Reference implementation of Multi-Block Diffusion decoding strategy."""
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
@@ -27,24 +23,5 @@ class MultiBDModelRunner(MultiBlockModelRunnerTemplate):
         )
         self.mask_token_id = config.mask_token_id
         self.is_prefix_full = config.multi_block_prefix_full
-        self.mask_prefix_hole = bool(getattr(config, "is_diffusion_gemma", False))
-        self.prefix_causal = bool(getattr(config, "is_diffusion_gemma", False))
 
         super().__init__(config, rank, event)
-
-    def prepare_prefill(self, reqs: list[DllmReq]):
-        self.prepare_chunked_prefill_multi_block(reqs)
-
-    def prepare_decode(self, reqs: list[DllmReq]):
-        self.prepare_decode_multi_block(reqs)
-
-    @torch.inference_mode()
-    def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor):
-        self.run_model_multi_block(input_ids, positions)
-
-    def run(self, reqs: list[DllmReq]) -> list[int]:
-        return self.run_multi_block(reqs)
-
-    @torch.inference_mode()
-    def capture_cudagraph(self):
-        self.capture_cudagraph_multi_block()

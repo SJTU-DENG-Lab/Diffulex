@@ -1,11 +1,25 @@
 import os
 import json
-import importlib
 
 from dataclasses import dataclass, field
-from transformers import AutoConfig
+from typing import Any
+
+from diffulex.config_types import (
+    CacheConfig,
+    DecodingConfig,
+    DecodingThresholds,
+    KernelConfig,
+    ModelLoadConfig,
+    ParallelConfig,
+    RuntimeConfig,
+    SchedulerConfig,
+    TokenMergeConfig,
+)
 from diffulex.distributed.parallel_state import get_world_size
+from diffulex.engine.strategy_config_registry import StrategyConfigRegistry
 from diffulex.logger import get_logger
+from diffulex.hf_config_registry import HFConfigRegistry
+from diffulex.profiling import ProfilerConfig
 
 logger = get_logger(__name__)
 SUPPORTED_PAGE_BLOCK_SIZES = (4, 8, 16, 32)
@@ -17,22 +31,47 @@ EDIT_SAMPLING_MODEL_NAMES = {
     "llada2dot1_mini",
     "llada2_mini_dmax",
 }
-DMAX_MODEL_NAMES = EDIT_SAMPLING_MODEL_NAMES
 DIFFUSION_GEMMA_MODEL_NAMES = {"diffusion_gemma"}
 
  
-def _register_diffusion_gemma_hf_config() -> None:
-    importlib.import_module("diffulex.model.config.diffusion_gemma.configuration_diffusion_gemma")
+def _token_content(token) -> str | None:
+    if isinstance(token, dict):
+        return token.get("content")
+    if isinstance(token, str):
+        return token
+    return None
 
 
-@dataclass
-class DecodingThresholds:
-    add_block_threshold: float  # whether add a new block
-    semi_complete_threshold: float  # whether unleash the decoding of the next block
-    accept_threshold: float  # whether the token should be decoded (M2T)
-    edit_threshold: float = 0.0  # whether a filled token should be edited (T2T)
-    remask_threshold: float = 0.4  # whether a filled token should be remasked
-    token_stability_threshold: float = 0.0  # whether decoded tokens are stable enough to add a new block
+def _load_tokenizer_mask_token_id(model: str) -> int | None:
+    special_tokens_path = os.path.join(model, "special_tokens_map.json")
+    tokenizer_config_path = os.path.join(model, "tokenizer_config.json")
+    added_tokens_path = os.path.join(model, "added_tokens.json")
+    try:
+        with open(special_tokens_path, "r", encoding="utf-8") as f:
+            mask_token = _token_content(json.load(f).get("mask_token"))
+    except Exception:
+        mask_token = None
+    if not mask_token:
+        return None
+
+    try:
+        with open(added_tokens_path, "r", encoding="utf-8") as f:
+            token_to_id = json.load(f)
+        token_id = token_to_id.get(mask_token)
+        if token_id is not None:
+            return int(token_id)
+    except Exception:
+        pass
+
+    try:
+        with open(tokenizer_config_path, "r", encoding="utf-8") as f:
+            added_decoder = json.load(f).get("added_tokens_decoder", {})
+        for token_id, token_info in added_decoder.items():
+            if _token_content(token_info) == mask_token:
+                return int(token_id)
+    except Exception:
+        return None
+    return None
 
 
 @dataclass
@@ -40,10 +79,10 @@ class Config:
     model: str
     lora_path: str = ""
     model_name: str = "dream"
-    decoding_strategy: str = "d2f"  # "d2f", "multi_bd"
+    decoding_strategy: str = "d2f"  # "d2f", "multi_bd", "dmax", or "diffusion_gemma"
 
     # Sampling Harness
-    hf_config: AutoConfig | None = None
+    hf_config: Any | None = None
     tokenizer_vocab_size: int | None = None
     eos: int = -1
     mask_token_id: int = 151666
@@ -54,6 +93,8 @@ class Config:
     token_merge_top_k: int = 1
     token_merge_renormalize: bool = True
     token_merge_weight: float = 1.0
+    dmax_sampler_fast_path: bool = True
+    dmax_force_prefill_active: bool = False
     sampling_mode: str = "naive"  # "naive" or "edit"
     max_post_edit_steps: int = 16  # max refinement steps after all masks filled (JointThreshold)
     penalty_lambda: float = 0.0  # repetition penalty coefficient (JointThreshold)
@@ -63,6 +104,7 @@ class Config:
     max_num_reqs: int = 128
     max_model_len: int = 2048
     gpu_memory_utilization: float = 0.9
+    skip_warmup: bool = False
     decoding_thresholds: DecodingThresholds | dict | None = None
     # TODO: Should be deprecated in the future
     add_block_threshold: float | None = None
@@ -119,6 +161,9 @@ class Config:
     diffusion_gemma_confidence_threshold: float = 0.1
     diffusion_gemma_entropy_bound: float = 1.0
 
+    # Profiling
+    profiler_config: ProfilerConfig | dict | None = None
+
     def _validate_sampling_mode(self) -> None:
         if self.sampling_mode == "edit" and self.model_name not in EDIT_SAMPLING_MODEL_NAMES:
             allowed = ", ".join(sorted(EDIT_SAMPLING_MODEL_NAMES))
@@ -131,12 +176,6 @@ class Config:
             raise ValueError("model_name='llada2dot1_mini' requires sampling_mode='edit'.")
 
         if self.decoding_strategy == "dmax":
-            allowed = ", ".join(sorted(DMAX_MODEL_NAMES))
-            if self.model_name not in DMAX_MODEL_NAMES:
-                raise ValueError(
-                    f"decoding_strategy='dmax' is only supported for model_name in {{{allowed}}}, "
-                    f"got: {self.model_name}"
-                )
             if self.sampling_mode != "edit":
                 raise ValueError("decoding_strategy='dmax' requires sampling_mode='edit'.")
 
@@ -144,92 +183,15 @@ class Config:
     def is_diffusion_gemma(self) -> bool:
         return self.model_name in DIFFUSION_GEMMA_MODEL_NAMES
 
-    def _load_diffusion_gemma_generation_config(self) -> None:
-        path = os.path.join(self.model, "generation_config.json")
-        if not os.path.exists(path):
-            return
-
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                gen_config = json.load(f)
-        except Exception as exc:
-            logger.warning("Failed to load DiffusionGemma generation_config.json: %s", exc)
-            return
-
-        defaults = {
-            "diffusion_gemma_max_denoising_steps": 48,
-            "diffusion_gemma_stability_threshold": 2,
-            "diffusion_gemma_t_min": 0.0,
-            "diffusion_gemma_t_max": 1.0,
-            "diffusion_gemma_confidence_threshold": 0.1,
-            "diffusion_gemma_entropy_bound": 1.0,
-        }
-        mapping = {
-            "max_denoising_steps": "diffusion_gemma_max_denoising_steps",
-            "stability_threshold": "diffusion_gemma_stability_threshold",
-            "t_min": "diffusion_gemma_t_min",
-            "t_max": "diffusion_gemma_t_max",
-            "confidence_threshold": "diffusion_gemma_confidence_threshold",
-        }
-        for src, dst in mapping.items():
-            if src in gen_config and getattr(self, dst) == defaults[dst]:
-                setattr(self, dst, gen_config[src])
-
-        sampler_config = gen_config.get("sampler_config") or {}
-        entropy_bound = sampler_config.get("entropy_bound")
-        if (
-            entropy_bound is not None
-            and self.diffusion_gemma_entropy_bound == defaults["diffusion_gemma_entropy_bound"]
-        ):
-            self.diffusion_gemma_entropy_bound = float(entropy_bound)
-
     def __post_init__(self):
         if not os.path.isdir(self.model):
             raise ValueError(f"model must be an existing directory, got: {self.model}")
+        self.profiler_config = ProfilerConfig.from_value(self.profiler_config)
 
         if self.is_diffusion_gemma:
-            if self.decoding_strategy != "multi_bd":
-                logger.warning(
-                    "Forcing decoding_strategy='multi_bd' for model_name='diffusion_gemma'."
-                )
-                self.decoding_strategy = "multi_bd"
-            if self.block_size != GEMMA_BLOCK_SIZE:
-                logger.warning(
-                    "Forcing block_size=%s for model_name='diffusion_gemma' "
-                    "(got %s).",
-                    GEMMA_BLOCK_SIZE,
-                    self.block_size,
-                )
-                self.block_size = GEMMA_BLOCK_SIZE
-            if self.page_size != GEMMA_BLOCK_SIZE:
-                logger.warning(
-                    "Forcing page_size=%s for model_name='diffusion_gemma' "
-                    "(got %s).",
-                    GEMMA_BLOCK_SIZE,
-                    self.page_size,
-                )
-                self.page_size = GEMMA_BLOCK_SIZE
-            if self.buffer_size != 1:
-                logger.warning(
-                    "Forcing buffer_size=1 for model_name='diffusion_gemma' "
-                    "(got %s).",
-                    self.buffer_size,
-                )
-                self.buffer_size = 1
+            self.decoding_strategy = "diffusion_gemma"
 
-        if self.decoding_strategy == "d2f":
-            if not self.multi_block_prefix_full:
-                logger.warning("Forcing multi_block_prefix_full=True for decoding_strategy=d2f.")
-            if self.enable_prefix_caching:
-                logger.warning("Disabling prefix caching for decoding_strategy=d2f.")
-            self.multi_block_prefix_full = True
-            self.enable_prefix_caching = False
-        elif self.decoding_strategy in ("multi_bd", "dmax"):
-            if self.multi_block_prefix_full:
-                logger.warning(f"Forcing multi_block_prefix_full=False for decoding_strategy={self.decoding_strategy}.")
-            self.multi_block_prefix_full = False
-            if self.enable_prefix_caching:
-                logger.info(f"Enabling prefix caching for decoding_strategy={self.decoding_strategy}.")
+        self.strategy = StrategyConfigRegistry.normalize(self)
 
         supported_page_block_sizes = (
             SUPPORTED_PAGE_BLOCK_SIZES + (GEMMA_BLOCK_SIZE,)
@@ -358,17 +320,17 @@ class Config:
             if not os.path.exists(self.lora_path):
                 logger.warning(f"LoRA path {self.lora_path} does not exist")
 
-        if self.is_diffusion_gemma:
-            _register_diffusion_gemma_hf_config()
-        self.hf_config = AutoConfig.from_pretrained(self.model, trust_remote_code=True)
-        hf_canvas_length = getattr(self.hf_config, "canvas_length", None)
-        if self.is_diffusion_gemma:
-            if hf_canvas_length is not None and int(hf_canvas_length) != self.block_size:
-                raise ValueError(
-                    "DiffusionGemma hf_config.canvas_length must match block_size, "
-                    f"got canvas_length={hf_canvas_length}, block_size={self.block_size}."
-                )
-            self._load_diffusion_gemma_generation_config()
+        loaded_hf_config = self.hf_config is None
+        if loaded_hf_config:
+            self.hf_config = HFConfigRegistry.load(self.model)
+        default_mask_token_id = Config.__dataclass_fields__["mask_token_id"].default
+        hf_mask_token_id = getattr(self.hf_config, "mask_token_id", None)
+        if self.mask_token_id == default_mask_token_id and hf_mask_token_id is not None:
+            self.mask_token_id = int(hf_mask_token_id)
+        elif self.mask_token_id == default_mask_token_id:
+            tokenizer_mask_token_id = _load_tokenizer_mask_token_id(self.model)
+            if tokenizer_mask_token_id is not None:
+                self.mask_token_id = int(tokenizer_mask_token_id)
         for name in (
             "attn_impl",
             "moe_dispatcher_backend",
@@ -384,26 +346,8 @@ class Config:
             text_config = getattr(self.hf_config, "text_config", None)
             if text_config is not None:
                 setattr(text_config, name, getattr(self, name))
+        HFConfigRegistry.postprocess(self.hf_config, self, None if loaded_hf_config else {})
         text_config = getattr(self.hf_config, "text_config", None)
-        if self.is_diffusion_gemma and text_config is not None:
-            for name in (
-                "vocab_size",
-                "hidden_size",
-                "intermediate_size",
-                "num_hidden_layers",
-                "num_attention_heads",
-                "num_key_value_heads",
-                "head_dim",
-                "global_head_dim",
-                "max_position_embeddings",
-                "rms_norm_eps",
-            ):
-                if getattr(self.hf_config, name, None) is None and getattr(text_config, name, None) is not None:
-                    setattr(self.hf_config, name, getattr(text_config, name))
-            head_dim = getattr(text_config, "head_dim", None)
-            global_head_dim = getattr(text_config, "global_head_dim", None)
-            if head_dim is not None and global_head_dim is not None:
-                self.hf_config.head_dim = max(int(head_dim), int(global_head_dim))
         cfg_max_model_len = getattr(
             self.hf_config,
             "max_position_embeddings",
@@ -529,6 +473,91 @@ class Config:
             )
         self.accept_threshold = self.decoding_thresholds.accept_threshold
         self.remask_threshold = self.decoding_thresholds.remask_threshold
+        self._build_runtime_config()
+
+    def _build_runtime_config(self) -> None:
+        self.model_config = ModelLoadConfig(
+            model=self.model,
+            model_name=self.model_name,
+            hf_config=self.hf_config,
+            tokenizer_vocab_size=self.tokenizer_vocab_size,
+            eos=self.eos,
+            mask_token_id=self.mask_token_id,
+            use_lora=self.use_lora,
+            lora_path=self.lora_path,
+            pre_merge_lora=self.pre_merge_lora,
+        )
+        self.decoding_config = DecodingConfig(
+            strategy=self.decoding_strategy,
+            sampling_mode=self.sampling_mode,
+            block_size=self.block_size,
+            buffer_size=self.buffer_size,
+            multi_block_prefix_full=self.multi_block_prefix_full,
+            thresholds=self.decoding_thresholds,
+            max_post_edit_steps=self.max_post_edit_steps,
+            penalty_lambda=self.penalty_lambda,
+        )
+        self.scheduler_config = SchedulerConfig(
+            max_num_batched_tokens=self.max_num_batched_tokens,
+            max_num_reqs=self.max_num_reqs,
+            max_model_len=self.max_model_len,
+            gpu_memory_utilization=self.gpu_memory_utilization,
+            auto_max_nfe_warmup_steps=self.auto_max_nfe_warmup_steps,
+            auto_max_nfe_tpf_floor=self.auto_max_nfe_tpf_floor,
+        )
+        self.parallel_config = ParallelConfig(
+            data_parallel_size=self.data_parallel_size,
+            tensor_parallel_size=self.tensor_parallel_size,
+            expert_parallel_size=self.expert_parallel_size,
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            distributed_backend=self.distributed_backend,
+            distributed_timeout_seconds=self.distributed_timeout_seconds,
+            shm_name=self.shm_name,
+            device_start=self.device_start,
+            device_ids=list(self.device_ids),
+        )
+        self.kernel_config = KernelConfig(
+            enforce_eager=self.enforce_eager,
+            attn_impl=self.attn_impl,
+            enable_prefill_cudagraph=self.enable_prefill_cudagraph,
+            enable_full_static_runner=self.enable_full_static_runner,
+            prefill_cudagraph_max_len=self.prefill_cudagraph_max_len,
+            enable_torch_compile=self.enable_torch_compile,
+            enable_cudagraph_torch_compile=self.enable_cudagraph_torch_compile,
+            torch_compile_mode=self.torch_compile_mode,
+            enable_vllm_layers=self.enable_vllm_layers,
+            moe_dispatcher_backend=self.moe_dispatcher_backend,
+            moe_gemm_impl=self.moe_gemm_impl,
+            deepep_mode=self.deepep_mode,
+            deepep_num_max_dispatch_tokens_per_rank=self.deepep_num_max_dispatch_tokens_per_rank,
+        )
+        self.cache_config = CacheConfig(
+            page_size=self.page_size,
+            enable_prefix_caching=self.enable_prefix_caching,
+            num_pages=self.num_pages,
+            k_cache_hdim_split_factor_x=self.k_cache_hdim_split_factor_x,
+            kv_cache_layout=self.kv_cache_layout,
+        )
+        self.token_merge_config = TokenMergeConfig(
+            mode=self.token_merge_mode,
+            top_k=self.token_merge_top_k,
+            renormalize=self.token_merge_renormalize,
+            weight=self.token_merge_weight,
+            dmax_sampler_fast_path=self.dmax_sampler_fast_path,
+            dmax_force_prefill_active=self.dmax_force_prefill_active,
+        )
+        self.runtime = RuntimeConfig(
+            model=self.model_config,
+            decoding=self.decoding_config,
+            scheduler=self.scheduler_config,
+            parallel=self.parallel_config,
+            kernel=self.kernel_config,
+            cache=self.cache_config,
+            token_merge=self.token_merge_config,
+            profiler=self.profiler_config,
+            strategy=self.strategy,
+        )
 
     @property
     def kv_cache_page_size(self) -> int:

@@ -179,7 +179,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
         true_local_ids_map: dict[str, dict[str, list[int]]] = {}
         accepted_ids_map: dict[str, dict[str, list[int]]] = {}
         sampled_tokens_map: dict[str, dict[str, list[int]]] = {}
-        edit_writes_map: dict[str, dict[str, dict[int, int]]] = {}
+        block_writes_map: dict[str, dict[str, dict[int, int]]] = {}
         block_state_map: dict[str, dict[str, dict]] = {}
         confidence_map: dict[str, dict[str, list[float]]] = {}
 
@@ -188,7 +188,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
             true_local_ids_sub: dict[str, list[int]] = {}
             accepted_ids_sub: dict[str, list[int]] = {}
             sampled_tokens_sub: dict[str, list[int]] = {}
-            edit_writes_sub: dict[str, dict[int, int]] = {}
+            block_writes_sub: dict[str, dict[int, int]] = {}
             block_state_sub: dict[str, dict] = {}
             confidence_sub: dict[str, list[float]] = {}
 
@@ -240,7 +240,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                     true_local_ids_sub[block_id_str] = []
                     accepted_ids_sub[block_id_str] = []
                     sampled_tokens_sub[block_id_str] = block_tokens
-                    edit_writes_sub[block_id_str] = {
+                    block_writes_sub[block_id_str] = {
                         rel_idx: int(token) for rel_idx, token in enumerate(block_tokens)
                     }
                     confidence_sub[block_id_str] = []
@@ -283,7 +283,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                     true_local_ids_sub[block_id_str] = []
                     accepted_ids_sub[block_id_str] = []
                     sampled_tokens_sub[block_id_str] = block_tokens
-                    edit_writes_sub[block_id_str] = {
+                    block_writes_sub[block_id_str] = {
                         rel_idx: int(token) for rel_idx, token in enumerate(block_tokens)
                     }
                     state["step"] = next_step
@@ -298,7 +298,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                     true_local_ids_sub[block_id_str] = []
                     accepted_ids_sub[block_id_str] = []
                     sampled_tokens_sub[block_id_str] = block_tokens
-                    edit_writes_sub[block_id_str] = {
+                    block_writes_sub[block_id_str] = {
                         rel_idx: int(token) for rel_idx, token in enumerate(block_tokens)
                     }
                     state["step"] = next_step
@@ -328,7 +328,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
             true_local_ids_map[req_id_str] = true_local_ids_sub
             accepted_ids_map[req_id_str] = accepted_ids_sub
             sampled_tokens_map[req_id_str] = sampled_tokens_sub
-            edit_writes_map[req_id_str] = edit_writes_sub
+            block_writes_map[req_id_str] = block_writes_sub
             block_state_map[req_id_str] = block_state_sub
             confidence_map[req_id_str] = confidence_sub
 
@@ -337,6 +337,6 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
             accepted_ids_map=accepted_ids_map,
             sampled_tokens_map=sampled_tokens_map,
             confidence_map=confidence_map,
-            edit_writes_map=edit_writes_map,
+            block_writes_map=block_writes_map,
             block_state_map=block_state_map,
         )

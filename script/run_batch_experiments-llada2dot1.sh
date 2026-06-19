@@ -10,7 +10,6 @@ set -euo pipefail
 #
 #   DRY_RUN=1 ./script/run_batch_experiments-llada2dot1.sh
 
-export DIFFULEX_DMAX_SAMPLER_FAST=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

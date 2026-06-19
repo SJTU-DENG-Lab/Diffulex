@@ -1,4 +1,4 @@
-from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
+from diffulex.engine.model_runner import MultiBlockModelRunnerTemplate
 
 
 def test_graph_seq_batch_sizes_stay_within_capacity_and_include_tail() -> None:

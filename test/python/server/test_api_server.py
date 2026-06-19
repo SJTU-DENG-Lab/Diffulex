@@ -13,6 +13,8 @@ class _Frontend:
         self.started = False
         self.stopped = False
         self.commands = []
+        self.profile_starts = []
+        self.profile_stops = 0
         self._next_id = 0
 
     async def start(self):
@@ -67,6 +69,12 @@ class _Frontend:
             full_token_ids=[1, 2],
         )
 
+    async def start_profile(self, profile_prefix=None):
+        self.profile_starts.append(profile_prefix)
+
+    async def stop_profile(self):
+        self.profile_stops += 1
+
 
 def test_generate_route_and_shutdown():
     frontend = _Frontend()
@@ -80,7 +88,7 @@ def test_generate_route_and_shutdown():
     assert isinstance(frontend.commands[0].input, PromptInput)
     assert frontend.commands[0].input.prompt == "hello"
     assert frontend.commands[0].sampling_params.max_tokens == 7
-    assert frontend.commands[0].sampling_params.max_nfe == 512
+    assert frontend.commands[0].sampling_params.max_nfe is None
 
 
 def test_models_and_chat_routes():
@@ -101,6 +109,18 @@ def test_models_and_chat_routes():
         assert isinstance(frontend.commands[-1].input, ChatInput)
         assert frontend.commands[-1].input.messages == [{"role": "user", "content": "hi"}]
         assert frontend.commands[-1].sampling_params.max_tokens == 512
+
+
+def test_profile_routes_forward_to_frontend():
+    frontend = _Frontend()
+    with TestClient(create_app(frontend)) as client:
+        start = client.post("/start_profile", json={"profile_prefix": "demo"})
+        stop = client.post("/stop_profile")
+
+    assert start.status_code == 200
+    assert stop.status_code == 200
+    assert frontend.profile_starts == ["demo"]
+    assert frontend.profile_stops == 1
 
 
 def test_streaming_chat_block_append_uses_openai_chunks():

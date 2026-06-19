@@ -7,7 +7,6 @@ set -euo pipefail
 # Style: matches run_throughput_dmax.sh pattern
 # ============================================================
 
-export DIFFULEX_DMAX_SAMPLER_FAST=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

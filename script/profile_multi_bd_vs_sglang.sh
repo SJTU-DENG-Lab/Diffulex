@@ -14,7 +14,12 @@ SGLANG_BASE_URL="${SGLANG_BASE_URL:-http://127.0.0.1:29998}"
 RUN_DIFFULEX="${RUN_DIFFULEX:-1}"
 RUN_SGLANG_CLIENT="${RUN_SGLANG_CLIENT:-1}"
 RUN_SGLANG_SERVER_PROFILE="${RUN_SGLANG_SERVER_PROFILE:-1}"
-SGLANG_PROFILE_STEPS="${SGLANG_PROFILE_STEPS:-64}"
+SGLANG_PROFILE_STEPS="${SGLANG_PROFILE_STEPS:-5}"
+SGLANG_PROFILE_BY_STAGE="${SGLANG_PROFILE_BY_STAGE:-1}"
+SGLANG_PROFILE_MERGE="${SGLANG_PROFILE_MERGE:-0}"
+SGLANG_PROFILE_CPU="${SGLANG_PROFILE_CPU:-1}"
+SGLANG_PROFILE_GPU="${SGLANG_PROFILE_GPU:-1}"
+SGLANG_PROFILE_PREFIX="${SGLANG_PROFILE_PREFIX:-sglang_server}"
 SGLANG_REQUIRE_SERVER="${SGLANG_REQUIRE_SERVER:-0}"
 
 DEFAULT_MODEL="/root/data/ckpts/inclusionAI/LLaDA2.0-mini"
@@ -27,8 +32,11 @@ if [[ -z "${MODEL_PATH:-}" ]]; then
   fi
 fi
 TOKENIZER_PATH="${TOKENIZER_PATH:-${MODEL_PATH}}"
+MASTER_PORT="${MASTER_PORT:-$(.venv/bin/python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 
 mkdir -p "${PROFILE_ROOT}" logs
+
+export VLLM_TUNED_CONFIG_FOLDER="${VLLM_TUNED_CONFIG_FOLDER:-${REPO_ROOT}/diffulex_bench/vllm_tuned_configs}"
 
 check_sglang_server() {
   .venv/bin/python - "$SGLANG_BASE_URL" <<'PY'
@@ -49,13 +57,22 @@ PY
 
 if [[ "${RUN_DIFFULEX}" == "1" ]]; then
   echo "[diffulex] profiling ${SAMPLE_LIMIT} samples, dataset=${DATASET}, model=${MODEL_PATH}"
+  DIFFULEX_ENABLE_CUDAGRAPH="${DIFFULEX_ENABLE_CUDAGRAPH:-1}"
+  DIFFULEX_ENABLE_TORCH_COMPILE="${DIFFULEX_ENABLE_TORCH_COMPILE:-1}"
   DIFFULEX_RUNTIME_ARGS=(
-    --enable-prefill-cudagraph
     --prefill-cudagraph-max-len "${PREFILL_CUDAGRAPH_MAX_LEN:-0}"
-    --enable-full-static-runner
-    --enable-torch-compile
     --no-enable-cudagraph-torch-compile
   )
+  if [[ "${DIFFULEX_ENABLE_CUDAGRAPH}" == "1" ]]; then
+    DIFFULEX_RUNTIME_ARGS+=(--enable-prefill-cudagraph --enable-full-static-runner)
+  else
+    DIFFULEX_RUNTIME_ARGS+=(--no-enable-prefill-cudagraph --no-enable-full-static-runner)
+  fi
+  if [[ "${DIFFULEX_ENABLE_TORCH_COMPILE}" == "1" ]]; then
+    DIFFULEX_RUNTIME_ARGS+=(--enable-torch-compile)
+  else
+    DIFFULEX_RUNTIME_ARGS+=(--no-enable-torch-compile)
+  fi
   if [[ "${DIFFULEX_PROFILE_EAGER:-0}" == "1" ]]; then
     DIFFULEX_RUNTIME_ARGS=(
       --no-enable-prefill-cudagraph
@@ -63,7 +80,6 @@ if [[ "${RUN_DIFFULEX}" == "1" ]]; then
       --no-enable-torch-compile
     )
   fi
-  DIFFULEX_DMAX_SAMPLER_FAST=1 \
   DIFFULEX_PROFILE_DIR="${PROFILE_ROOT}/diffulex" \
   DIFFULEX_PROFILE_RUN_ID="diffulex_multi_bd_buf1" \
   DIFFULEX_PROFILE_ACTIVE_STEPS="${DIFFULEX_PROFILE_ACTIVE_STEPS:-256}" \
@@ -74,7 +90,7 @@ if [[ "${RUN_DIFFULEX}" == "1" ]]; then
   .venv/bin/python -m diffulex_bench.main \
     --log-file "${PROFILE_ROOT}/diffulex_multi_bd.log" \
     --log-level INFO \
-    --config diffulex_bench/configs/llada2_mini_dmax_gsm8k.yml \
+    --config "${DIFFULEX_CONFIG_PATH:-diffulex_bench/configs/llada2_mini_gsm8k.yml}" \
     --model-path "${MODEL_PATH}" \
     --tokenizer-path "${TOKENIZER_PATH}" \
     --model-name llada2_mini \
@@ -91,8 +107,13 @@ if [[ "${RUN_DIFFULEX}" == "1" ]]; then
     --max-num-reqs 1 \
     --block-size "${BLOCK_SIZE:-32}" \
     --buffer-size 1 \
-    --attn-impl "${ATTN_IMPL:-triton}" \
+    --attn-impl "${ATTN_IMPL:-triton_grouped}" \
     --moe-gemm-impl "${MOE_GEMM_IMPL:-vllm_modular}" \
+    --moe-dispatcher-backend "${MOE_DISPATCHER_BACKEND:-standard}" \
+    --enable-vllm-layers \
+    --kv-cache-layout "${KV_CACHE_LAYOUT:-unified}" \
+    --engine-arg "distributed_backend=${DISTRIBUTED_BACKEND:-nccl}" \
+    --engine-arg "master_port=${MASTER_PORT}" \
     "${DIFFULEX_RUNTIME_ARGS[@]}" \
     --output-dir "${PROFILE_ROOT}/diffulex_results" \
     --no-use-run-subdirectory \
@@ -115,7 +136,7 @@ if [[ "${RUN_SGLANG_CLIENT}" == "1" ]]; then
   SGLANG_PROFILER_PID=""
   if [[ "${RUN_SGLANG_SERVER_PROFILE}" == "1" ]]; then
     echo "[sglang-server] starting server-side torch profiler for ${SGLANG_PROFILE_STEPS} forward steps"
-    .venv/bin/python - "${SGLANG_BASE_URL}" "${PROFILE_ROOT}/sglang_server" "${SGLANG_PROFILE_STEPS}" <<'PY' &
+    .venv/bin/python - "${SGLANG_BASE_URL}" "${PROFILE_ROOT}/sglang_server" "${SGLANG_PROFILE_STEPS}" "${SGLANG_PROFILE_BY_STAGE}" "${SGLANG_PROFILE_MERGE}" "${SGLANG_PROFILE_CPU}" "${SGLANG_PROFILE_GPU}" "${SGLANG_PROFILE_PREFIX}" <<'PY' &
 import json
 import sys
 import time
@@ -123,7 +144,7 @@ from pathlib import Path
 
 import requests
 
-url, output_root, num_steps = sys.argv[1], sys.argv[2], sys.argv[3]
+url, output_root, num_steps, by_stage, merge, cpu, gpu, prefix = sys.argv[1:9]
 output_dir = Path(output_root).expanduser().resolve() / str(time.time())
 output_dir.mkdir(parents=True, exist_ok=True)
 try:
@@ -132,13 +153,18 @@ try:
         (output_dir / "server_args.json").write_text(json.dumps(server_info.json(), indent=2), encoding="utf-8")
 except requests.RequestException:
     pass
+activities = []
+if cpu == "1":
+    activities.append("CPU")
+if gpu == "1":
+    activities.append("GPU")
 payload = {
     "output_dir": str(output_dir),
     "num_steps": str(num_steps),
-    "activities": ["CPU", "GPU"],
-    "profile_by_stage": True,
-    "merge_profiles": True,
-    "profile_prefix": "sglang_server",
+    "activities": activities,
+    "profile_by_stage": by_stage == "1",
+    "merge_profiles": merge == "1",
+    "profile_prefix": prefix,
 }
 print(f"Dump sglang server profiling traces to {output_dir}", flush=True)
 response = requests.post(f"{url}/start_profile", json=payload, timeout=None)

@@ -62,9 +62,16 @@ class ServerArgs:
     use_lora: bool = False
     lora_path: str = ""
     pre_merge_lora: bool = False
+    profiler: str | None = None
+    torch_profiler_dir: str = ""
+    profiler_record_shapes: bool = False
+    profiler_memory: bool = False
+    profiler_with_stack: bool = False
+    profiler_delay_iterations: int = 0
+    profiler_max_iterations: int = 0
 
     def engine_kwargs(self) -> dict:
-        return {
+        kwargs = {
             "model_name": self.model_name,
             "decoding_strategy": self.decoding_strategy,
             "sampling_mode": self.sampling_mode,
@@ -112,6 +119,17 @@ class ServerArgs:
             "lora_path": self.lora_path,
             "pre_merge_lora": self.pre_merge_lora,
         }
+        if self.profiler is not None:
+            kwargs["profiler_config"] = {
+                "profiler": self.profiler,
+                "torch_profiler_dir": self.torch_profiler_dir,
+                "record_shapes": self.profiler_record_shapes,
+                "profile_memory": self.profiler_memory,
+                "with_stack": self.profiler_with_stack,
+                "delay_iterations": self.profiler_delay_iterations,
+                "max_iterations": self.profiler_max_iterations,
+            }
+        return kwargs
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -165,6 +183,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--lora-path", default="")
     parser.add_argument("--pre-merge-lora", action="store_true")
+    parser.add_argument("--profiler", default=None, choices=["torch"], help="Enable a profiler backend")
+    parser.add_argument("--torch-profiler-dir", default="", help="Directory for torch profiler traces")
+    parser.add_argument("--profiler-record-shapes", action="store_true")
+    parser.add_argument("--profiler-memory", action="store_true")
+    parser.add_argument("--profiler-with-stack", action="store_true")
+    parser.add_argument("--profiler-delay-iterations", type=int, default=0)
+    parser.add_argument("--profiler-max-iterations", type=int, default=0)
     return parser
 
 
@@ -217,4 +242,11 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         use_lora=ns.use_lora,
         lora_path=ns.lora_path,
         pre_merge_lora=ns.pre_merge_lora,
+        profiler=ns.profiler,
+        torch_profiler_dir=ns.torch_profiler_dir,
+        profiler_record_shapes=ns.profiler_record_shapes,
+        profiler_memory=ns.profiler_memory,
+        profiler_with_stack=ns.profiler_with_stack,
+        profiler_delay_iterations=ns.profiler_delay_iterations,
+        profiler_max_iterations=ns.profiler_max_iterations,
     )

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from transformers import AutoConfig, PretrainedConfig
+from transformers import PretrainedConfig
+
+from diffulex.hf_config_registry import HFConfigRegistry
 
 
 class DiffusionGemmaTextConfig(PretrainedConfig):
@@ -36,10 +38,45 @@ class DiffusionGemmaConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
 
-try:
-    AutoConfig.register(DiffusionGemmaConfig.model_type, DiffusionGemmaConfig)
-except ValueError:
-    pass
+@HFConfigRegistry.register_model_type(DiffusionGemmaConfig.model_type)
+def load_diffusion_gemma_config(model: str, config_dict: dict):
+    del config_dict
+    return DiffusionGemmaConfig.from_pretrained(model)
+
+
+@HFConfigRegistry.register_postprocessor(DiffusionGemmaConfig.model_type)
+def postprocess_diffusion_gemma_config(hf_config, engine_config, config_dict: dict) -> None:
+    del config_dict
+    text_config = getattr(hf_config, "text_config", None)
+    if text_config is None:
+        return
+
+    canvas_length = getattr(hf_config, "canvas_length", None)
+    if canvas_length is not None and int(canvas_length) != int(engine_config.block_size):
+        raise ValueError(
+            "DiffusionGemma hf_config.canvas_length must match block_size, "
+            f"got canvas_length={canvas_length}, block_size={engine_config.block_size}."
+        )
+
+    for name in (
+        "vocab_size",
+        "hidden_size",
+        "intermediate_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "global_head_dim",
+        "max_position_embeddings",
+        "rms_norm_eps",
+    ):
+        if getattr(hf_config, name, None) is None and getattr(text_config, name, None) is not None:
+            setattr(hf_config, name, getattr(text_config, name))
+
+    head_dim = getattr(text_config, "head_dim", None)
+    global_head_dim = getattr(text_config, "global_head_dim", None)
+    if head_dim is not None and global_head_dim is not None:
+        hf_config.head_dim = max(int(head_dim), int(global_head_dim))
 
 
 __all__ = ["DiffusionGemmaConfig", "DiffusionGemmaTextConfig"]

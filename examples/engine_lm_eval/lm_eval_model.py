@@ -272,16 +272,16 @@ class EngineOpenAILM(LM):
         del disable_tqdm
         outputs = []
         for req in requests_list:
-            self.profile_session.start()
+            if self.profile_session.enabled and not self.profile_session.active:
+                self.profile_session.start()
             with record_function(f"{self.engine_name}.client.generate_one"):
                 prompt = self._format_prompt(req.arguments[0])
                 gen_kwargs = req.arguments[1] if len(req.arguments) > 1 else {}
                 until_terms = _normalize_until_terms(gen_kwargs.get("until") if isinstance(gen_kwargs, dict) else None)
-                max_new_tokens = (
-                    int(gen_kwargs.get("max_gen_toks", self.max_new_tokens))
-                    if isinstance(gen_kwargs, dict)
-                    else self.max_new_tokens
-                )
+                if isinstance(gen_kwargs, dict) and "max_gen_toks" in gen_kwargs:
+                    max_new_tokens = min(int(gen_kwargs["max_gen_toks"]), self.max_new_tokens)
+                else:
+                    max_new_tokens = self.max_new_tokens
                 outputs.append(self._completion_request(prompt, until_terms, max_new_tokens))
             self.profile_session.step()
 
@@ -345,7 +345,7 @@ class EngineOpenAILM(LM):
         self.total_samples += len(outputs)
         if self.save_dir:
             self._save_statistics()
-        if self.profile_session.steps >= self.profile_session.active_steps > 0:
+        if self.profile_session.enabled and self.profile_session.steps >= self.profile_session.active_steps > 0:
             self.profile_session.stop()
         return results
 

@@ -204,6 +204,7 @@ def test_first_block_does_not_force_decode_topk_without_prev_block() -> None:
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
             accept_threshold=0.9,
+            token_stability_threshold=0.9,
         ),
         prev_block=None,
     )
@@ -220,6 +221,7 @@ def test_request_last_block_finished_is_false_without_prev_block() -> None:
             add_block_threshold=0.1,
             semi_complete_threshold=0.9,
             accept_threshold=0.9,
+            token_stability_threshold=0.9,
         ),
         eos=-1,
         max_model_len=2048,

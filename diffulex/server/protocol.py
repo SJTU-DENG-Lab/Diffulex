@@ -50,7 +50,17 @@ class ServingShutdown:
     pass
 
 
-ServingCommand = ServingGenerate | ServingAbort | ServingShutdown
+@dataclass
+class ServingProfileStart:
+    profile_prefix: str | None = None
+
+
+@dataclass
+class ServingProfileStop:
+    pass
+
+
+ServingCommand = ServingGenerate | ServingAbort | ServingShutdown | ServingProfileStart | ServingProfileStop
 
 
 @dataclass
@@ -191,6 +201,10 @@ def serving_command_to_dict(command: ServingCommand) -> dict[str, Any]:
         return {"type": "abort", "rid": command.rid}
     if isinstance(command, ServingShutdown):
         return {"type": "shutdown"}
+    if isinstance(command, ServingProfileStart):
+        return {"type": "profile_start", "profile_prefix": command.profile_prefix}
+    if isinstance(command, ServingProfileStop):
+        return {"type": "profile_stop"}
     raise TypeError(f"Unsupported serving command: {type(command)!r}")
 
 
@@ -210,6 +224,10 @@ def serving_command_from_dict(payload: dict[str, Any]) -> ServingCommand:
         return ServingAbort(rid=payload["rid"])
     if type_name == "shutdown":
         return ServingShutdown()
+    if type_name == "profile_start":
+        return ServingProfileStart(profile_prefix=payload.get("profile_prefix"))
+    if type_name == "profile_stop":
+        return ServingProfileStop()
     raise ValueError(f"Unsupported serving command type: {type_name!r}")
 
 

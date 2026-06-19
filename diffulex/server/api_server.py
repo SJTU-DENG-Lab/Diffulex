@@ -53,6 +53,10 @@ class ChatCompletionRequest(BaseModel):
     user: str | None = None
 
 
+class ProfileRequest(BaseModel):
+    profile_prefix: str | None = None
+
+
 def sampling_params_from_request(
     payload: GenerateRequest | ChatCompletionRequest,
 ) -> SamplingParams:
@@ -140,6 +144,23 @@ def create_app(frontend: FrontendManager) -> FastAPI:
                 }
             ],
         }
+
+    @app.post("/start_profile")
+    async def start_profile(payload: ProfileRequest | None = None) -> dict[str, Any]:
+        start = getattr(frontend, "start_profile", None)
+        if start is None:
+            raise HTTPException(status_code=503, detail="Profiling is not supported by this frontend")
+        profile_prefix = payload.profile_prefix if payload is not None else None
+        await maybe_await(start(profile_prefix))
+        return {"status": "ok"}
+
+    @app.post("/stop_profile")
+    async def stop_profile() -> dict[str, Any]:
+        stop = getattr(frontend, "stop_profile", None)
+        if stop is None:
+            raise HTTPException(status_code=503, detail="Profiling is not supported by this frontend")
+        await maybe_await(stop())
+        return {"status": "ok"}
 
     @app.post("/v1/chat/completions", response_model=None)
     async def chat_completions(

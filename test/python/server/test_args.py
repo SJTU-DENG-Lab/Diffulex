@@ -23,6 +23,13 @@ def test_server_args_forward_recent_engine_config_fields():
             "naive",
             "--moe-gemm-impl",
             "vllm",
+            "--profiler",
+            "torch",
+            "--torch-profiler-dir",
+            "/tmp/diffulex-profile",
+            "--profiler-record-shapes",
+            "--profiler-max-iterations",
+            "3",
         ]
     )
 
@@ -37,3 +44,12 @@ def test_server_args_forward_recent_engine_config_fields():
     assert kwargs["auto_max_nfe_tpf_floor"] == 1.5
     assert kwargs["attn_impl"] == "naive"
     assert kwargs["moe_gemm_impl"] == "vllm"
+    assert kwargs["profiler_config"] == {
+        "profiler": "torch",
+        "torch_profiler_dir": "/tmp/diffulex-profile",
+        "record_shapes": True,
+        "profile_memory": False,
+        "with_stack": False,
+        "delay_iterations": 0,
+        "max_iterations": 3,
+    }

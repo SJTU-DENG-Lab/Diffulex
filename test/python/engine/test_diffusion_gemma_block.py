@@ -12,8 +12,8 @@ from diffulex.engine.status import DllmReqStatus
 from diffulex.model.diffusion_gemma import DiffusionGemmaForDiffusionLM
 from diffulex.sampler.diffusion_gemma import DiffusionGemmaSampler
 from diffulex.sampling_params import SamplingParams
-from diffulex.strategy.multi_bd.engine.request import MultiBDReq
-from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
+from diffulex.strategy.diffusion_gemma.engine.model_runner import DiffusionGemmaModelRunner
+from diffulex.strategy.diffusion_gemma.engine.request import DiffusionGemmaReq
 from diffulex.utils.loader import apply_resolved_weight, resolve_weight_spec
 
 
@@ -21,14 +21,7 @@ from diffulex.utils.loader import apply_resolved_weight, resolve_weight_spec
 def config_no_model_load(monkeypatch, tmp_path):
     model_dir = tmp_path / "fake_model"
     model_dir.mkdir()
-    monkeypatch.setattr(
-        "diffulex.config.AutoConfig.from_pretrained",
-        lambda *args, **kwargs: type(
-            "FakeHFConfig",
-            (),
-            {"max_position_embeddings": 4096},
-        )(),
-    )
+    del monkeypatch
     return model_dir
 
 
@@ -89,7 +82,7 @@ def test_diffusion_gemma_forces_gemma_block_runtime(tmp_path):
         max_num_batched_tokens=256,
     )
 
-    assert cfg.decoding_strategy == "multi_bd"
+    assert cfg.decoding_strategy == "diffusion_gemma"
     assert cfg.block_size == 256
     assert cfg.page_size == 256
     assert cfg.buffer_size == 1
@@ -126,7 +119,7 @@ def test_gemma_block_prefill_uses_real_prefix_only(tmp_path):
         max_num_batched_tokens=256,
     )
 
-    req = MultiBDReq([11, 12, 13], SamplingParams(max_tokens=5))
+    req = DiffusionGemmaReq([11, 12, 13], SamplingParams(max_tokens=5))
     req.page_size = cfg.page_size
     req.init_multi_block(cfg)
     req.page_table = [7, 8]
@@ -137,9 +130,8 @@ def test_gemma_block_prefill_uses_real_prefix_only(tmp_path):
         page_size=cfg.page_size,
         _cached_prefix_len=lambda request: request.contiguous_in_cache_prefix_len,
     )
-    prepared = MultiBlockModelRunnerTemplate._prepare_gemma_block_prefill_req(runner, req)
+    prepared = DiffusionGemmaModelRunner._prepare_prefill_req(runner, req)
 
-    assert req.is_gemma_block
     assert req.prefix_len == 3
     assert req.padded_prefix_len == 256
     assert req.dllm_block_buffer.first_running_block.start == 256
@@ -147,6 +139,28 @@ def test_gemma_block_prefill_uses_real_prefix_only(tmp_path):
     assert prepared["positions"] == [0, 1, 2]
     assert prepared["slot_mapping"] == [7 * 256, 7 * 256 + 1, 7 * 256 + 2]
     assert prepared["valid_slice"] == 3
+
+
+def test_diffusion_gemma_rewrite_hook_defers_token_count_to_commit(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    _write_diffusion_gemma_config(model_dir)
+    cfg = Config(
+        str(model_dir),
+        model_name="diffusion_gemma",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+        max_num_batched_tokens=256,
+    )
+    req = DiffusionGemmaReq([11, 12, 13], SamplingParams(max_tokens=5))
+    req.page_size = cfg.page_size
+    req.init_multi_block(cfg)
+    block = req.dllm_block_buffer.active_blocks[0]
+
+    req.on_block_token_rewrite(block, rel_idx=0, old_token=block.mask_token_id, new_token=7)
+
+    assert req.new_tokens == 0
 
 
 def test_diffusion_gemma_model_constructs_k_eq_v_attention():
@@ -303,7 +317,7 @@ def test_diffusion_gemma_runner_sets_self_conditioning_context(tmp_path):
         device_ids=[0],
         max_num_batched_tokens=256,
     )
-    req = MultiBDReq([11, 12, 13], SamplingParams(max_tokens=5))
+    req = DiffusionGemmaReq([11, 12, 13], SamplingParams(max_tokens=5))
     req.page_size = cfg.page_size
     req.init_multi_block(cfg)
     req.make_pending()
@@ -323,7 +337,7 @@ def test_diffusion_gemma_runner_sets_self_conditioning_context(tmp_path):
         ),
     )
 
-    MultiBlockModelRunnerTemplate._set_diffusion_gemma_self_conditioning_context(runner, [req])
+    DiffusionGemmaModelRunner._before_multi_block_model_forward(runner, [req])
 
     assert captured["context"][0]["start"] == 0
     assert captured["context"][0]["end"] == active.block_size

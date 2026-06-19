@@ -1,20 +1,16 @@
-import os
-
 from diffulex.config import Config
 from diffulex.engine.request import AutoReq
 from diffulex.engine.status import DllmReqStatus
 from diffulex.sampling_params import SamplingParams
 from diffulex.attention.metadata import is_warming_up
-from diffulex.strategy_template.token_merging_multi_block.engine.request import (
-    TokenMergingMultiBlockReqTemplate,
+from diffulex.strategy.templates.token_merge.engine.request import (
+    TokenMergeReqTemplate,
 )
-
-DMAX_FORCE_PREFILL_ACTIVE = os.environ.get("DIFFULEX_DMAX_FORCE_PREFILL_ACTIVE", "0") == "1"
 
 
 @AutoReq.register("dmax")
-class DMaxReq(TokenMergingMultiBlockReqTemplate):
-    """Req for DMax-style block diffusion with token merging."""
+class DMaxReq(TokenMergeReqTemplate):
+    """Req for DMax-style block diffusion with token merge."""
 
     def __init__(
         self,
@@ -25,12 +21,13 @@ class DMaxReq(TokenMergingMultiBlockReqTemplate):
         super().__init__(token_ids, sampling_params)
         if config is None:
             raise ValueError("DMaxReq requires config to initialize token-merge state.")
+        self.dmax_force_prefill_active = bool(getattr(config, "dmax_force_prefill_active", False))
         if is_warming_up():
-            # Used for warming up token merging
-            self.init_token_merging_multi_block(config)
+            # Used for warming up token merge
+            self.init_token_merge(config)
 
     def lazy_activate(self):
-        if not DMAX_FORCE_PREFILL_ACTIVE:
+        if not self.dmax_force_prefill_active:
             return super().lazy_activate()
 
         self.log_status()

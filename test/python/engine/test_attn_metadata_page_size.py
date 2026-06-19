@@ -1,12 +1,16 @@
 import pytest
+import torch
 
 from types import SimpleNamespace
 
-from diffulex.strategy_template.multi_block.attention.metadata import MultiBlockAttnMetaDataTemplate
-from diffulex.strategy_template.multi_block.engine.model_runner import MultiBlockModelRunnerTemplate
+from diffulex.attention.metadata import AttnMetaDataBase
+from diffulex.engine.model_runner import MultiBlockModelRunnerTemplate
+from diffulex.mixin.multi_block.attention_metadata import MultiBlockAttnMetaDataMixin
+
+MultiBlockAttnMetaDataTemplate = MultiBlockAttnMetaDataMixin
 
 
-class _Runner(MultiBlockModelRunnerTemplate):
+class AttnMetadataRunnerForTest(MultiBlockModelRunnerTemplate):
     def __init__(self):
         self.page_size = 32
         self.block_size = 32
@@ -69,7 +73,7 @@ class _Req:
 
 @pytest.mark.skipif(not __import__("torch").cuda.is_available(), reason="CUDA required")
 def test_prepare_chunked_prefill_passes_runtime_page_size_to_attn_metadata() -> None:
-    runner = _Runner()
+    runner = AttnMetadataRunnerForTest()
     req = _Req()
 
     runner.prepare_chunked_prefill_multi_block([req])
@@ -93,3 +97,21 @@ def test_multi_block_metadata_rejects_block_larger_than_page() -> None:
 
     with pytest.raises(ValueError, match="block_size 8 must be <= page_size 4"):
         metadata.init_multi_block()
+
+
+def test_kv_cache_store_uses_static_metadata_decision() -> None:
+    slot_mapping = torch.full((4,), -1, dtype=torch.int32)
+
+    metadata = AttnMetaDataBase(
+        slot_mapping=slot_mapping,
+        need_kv_cache_store_static=False,
+        enforce_eager=True,
+    )
+    assert metadata.need_kv_cache_store is False
+
+    metadata = AttnMetaDataBase(
+        slot_mapping=slot_mapping,
+        need_kv_cache_store_static=True,
+        enforce_eager=True,
+    )
+    assert metadata.need_kv_cache_store is True

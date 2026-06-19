@@ -29,7 +29,7 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
 # token cap aligned with the config and control 24GB memory pressure primarily
 # through max_num_reqs.
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-4096}"
-MAX_NUM_REQS="${MAX_NUM_REQS:-1}"
+MAX_NUM_REQS="${MAX_NUM_REQS:-32}"
 
 ATTN_IMPL="${ATTN_IMPL:-triton_grouped}"
 MOE_GEMM_IMPL="${MOE_GEMM_IMPL:-vllm_modular}"
@@ -47,7 +47,7 @@ MASTER_PORT="${MASTER_PORT:-$("${PYTHON_BIN}" -c 'import socket; s=socket.socket
 # Optional eval overrides. Leave unset to use CONFIG_PATH.
 MAX_TOKENS="${MAX_TOKENS:-}"
 MAX_NFE="${MAX_NFE:-}"
-DATASET_LIMIT="${DATASET_LIMIT:-10}"
+DATASET_LIMIT="${DATASET_LIMIT:-}"
 
 OUTPUT_BASE="${OUTPUT_BASE:-benchmark_results/llada2_modular}"
 RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)}"
@@ -58,13 +58,22 @@ FORCE_RERUN="${FORCE_RERUN:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 CARTESIAN_MODE="${CARTESIAN_MODE:-cross}"
 
-# NCCL plugin probing is unstable on this machine; keep the known-good settings
-# local to this benchmark script.
+# Keep the CUDA/NCCL runtime resolved from the venv. The system CUDA path can
+# otherwise win for some libraries and mix with torch's cu13 wheels.
+VENV_SITE="$("${PYTHON_BIN}" -c 'import site; print(site.getsitepackages()[0])')"
+export LD_LIBRARY_PATH="${VENV_SITE}/nvidia/cu13/lib:${VENV_SITE}/nvidia/nccl/lib:${VENV_SITE}/nvidia/nvshmem/lib:${VENV_SITE}/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
+
+# NCCL 2.28/cu13 segfaults on this RTX 3090 PCIe box with the default cuMem/NVLS
+# path. These settings are validated by a 4-rank torch.distributed all_reduce.
 export NCCL_NET_PLUGIN="${NCCL_NET_PLUGIN:-none}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
+export NCCL_NET="${NCCL_NET:-Socket}"
+export NCCL_CUMEM_ENABLE="${NCCL_CUMEM_ENABLE:-0}"
+export NCCL_NVLS_ENABLE="${NCCL_NVLS_ENABLE:-0}"
 export NCCL_SHM_DISABLE="${NCCL_SHM_DISABLE:-0}"
-export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
+export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 export NCCL_IGNORE_DISABLED_P2P="${NCCL_IGNORE_DISABLED_P2P:-1}"
+export VLLM_TUNED_CONFIG_FOLDER="${VLLM_TUNED_CONFIG_FOLDER:-${PROJECT_ROOT}/diffulex_bench/vllm_tuned_configs}"
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-ERROR}"
 export HF_ALLOW_CODE_EVAL="${HF_ALLOW_CODE_EVAL:-1}"
 

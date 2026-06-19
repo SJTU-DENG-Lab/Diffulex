@@ -13,7 +13,7 @@ class SampleOutputBase:
     mask_token_rel_ids_map: dict[str, dict[str, list[int]]] | None = None
     confidence_map: dict[str, dict[str, list[float]]] | None = None
     initial_confidence_map: dict[str, dict[str, list[float]]] | None = None
-    edit_writes_map: dict[str, dict[str, dict[int, int]]] | None = None
+    block_writes_map: dict[str, dict[str, dict[int, int]]] | None = None
     block_state_map: dict[str, dict[str, dict]] | None = None
 
     def __post_init__(self):
@@ -24,15 +24,15 @@ class SampleOutputBase:
         self.mask_token_rel_ids_map = edict(self.mask_token_rel_ids_map or {})
         self.confidence_map = edict(self.confidence_map or {})
         self.initial_confidence_map = edict(self.initial_confidence_map or {})
-        edit_writes_map = self.edit_writes_map or {}
+        block_writes_map = self.block_writes_map or {}
         block_state_map = self.block_state_map or {}
         for req_id_str in req_ids:
-            edit_writes_map.setdefault(req_id_str, {})
+            block_writes_map.setdefault(req_id_str, {})
             block_state_map.setdefault(req_id_str, {})
         # Keep token-position write maps as plain dicts: their innermost keys
         # are relative token indices (ints), and EasyDict recursively rejects
         # non-string attribute names.
-        self.edit_writes_map = edit_writes_map
+        self.block_writes_map = block_writes_map
         self.block_state_map = edict(block_state_map)
 
 
@@ -43,7 +43,7 @@ def merge_sample_outputs(outputs: list[SampleOutputBase | None]) -> SampleOutput
     mask_token_rel_ids_map: dict[str, dict[str, list[int]]] = {}
     confidence_map: dict[str, dict[str, list[float]]] = {}
     initial_confidence_map: dict[str, dict[str, list[float]]] = {}
-    edit_writes_map: dict[str, dict[str, dict[int, int]]] = {}
+    block_writes_map: dict[str, dict[str, dict[int, int]]] = {}
     block_state_map: dict[str, dict[str, dict]] = {}
 
     for output in outputs:
@@ -55,7 +55,7 @@ def merge_sample_outputs(outputs: list[SampleOutputBase | None]) -> SampleOutput
         mask_token_rel_ids_map.update(dict(output.mask_token_rel_ids_map))
         confidence_map.update(dict(output.confidence_map))
         initial_confidence_map.update(dict(output.initial_confidence_map))
-        edit_writes_map.update(dict(output.edit_writes_map))
+        block_writes_map.update(dict(output.block_writes_map))
         block_state_map.update(dict(output.block_state_map))
 
     return SampleOutputBase(
@@ -65,6 +65,6 @@ def merge_sample_outputs(outputs: list[SampleOutputBase | None]) -> SampleOutput
         mask_token_rel_ids_map=mask_token_rel_ids_map,
         confidence_map=confidence_map,
         initial_confidence_map=initial_confidence_map,
-        edit_writes_map=edit_writes_map,
+        block_writes_map=block_writes_map,
         block_state_map=block_state_map,
     )

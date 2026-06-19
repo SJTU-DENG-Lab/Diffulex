@@ -203,8 +203,11 @@ class DiffusionGemmaAttention(nn.Module):
             if self.use_k_eq_v
             else config.num_key_value_heads
         )
-        assert self.total_num_kv_heads % tp_size == 0
-        self.num_kv_heads = self.total_num_kv_heads // tp_size
+        self.replicate_kv_heads = self.total_num_kv_heads < tp_size
+        if self.replicate_kv_heads:
+            self.num_kv_heads = self.total_num_kv_heads
+        else:
+            self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
         self.head_dim = int(
             getattr(config, "global_head_dim", getattr(config, "head_dim", config.hidden_size // self.total_num_heads))
             if self.is_full_attention
@@ -214,9 +217,10 @@ class DiffusionGemmaAttention(nn.Module):
         self.kv_size = self.num_kv_heads * self.head_dim
 
         bias = bool(getattr(config, "attention_bias", False))
+        kv_linear_cls = ReplicatedLinear if self.replicate_kv_heads else ColumnParallelLinear
         self.q_proj = ColumnParallelLinear(config.hidden_size, self.total_num_heads * self.head_dim, bias=bias)
-        self.k_proj = ColumnParallelLinear(config.hidden_size, self.total_num_kv_heads * self.head_dim, bias=bias)
-        self.v_proj = None if self.use_k_eq_v else ColumnParallelLinear(
+        self.k_proj = kv_linear_cls(config.hidden_size, self.total_num_kv_heads * self.head_dim, bias=bias)
+        self.v_proj = None if self.use_k_eq_v else kv_linear_cls(
             config.hidden_size,
             self.total_num_kv_heads * self.head_dim,
             bias=bias,

@@ -196,7 +196,7 @@ def test_llada2_token_merge_hook_uses_attention_metadata(monkeypatch):
         )
 
     metadata = DMaxAttnMetaData()
-    metadata.init_token_merging(
+    metadata.init_token_merge(
         merge_mask=torch.tensor([True, False]),
         topk_ids=torch.tensor([[2, 3], [0, 0]]),
         topk_probs=torch.tensor([[0.25, 0.50], [0.0, 0.0]]),
@@ -207,7 +207,7 @@ def test_llada2_token_merge_hook_uses_attention_metadata(monkeypatch):
     set_fetch_fn_for_attn_metadata(lambda: metadata)
 
     hidden = model.word_embeddings(torch.tensor([0, 1]))
-    merged = model._maybe_apply_token_merging(hidden)
+    merged = model._maybe_apply_token_merge(hidden)
 
     expected_first = 0.25 * model.word_embeddings.weight[2] + 0.50 * model.word_embeddings.weight[3]
     expected_first = expected_first + 0.25 * model.word_embeddings.weight[4]
@@ -225,7 +225,7 @@ def test_llada2_token_merge_hook_supports_iter_smooth_mode(monkeypatch):
         model.word_embeddings.weight.copy_(torch.eye(8, 4))
 
     metadata = DMaxAttnMetaData()
-    metadata.init_token_merging(
+    metadata.init_token_merge(
         merge_mask=torch.tensor([True, False]),
         topk_ids=torch.tensor([[2], [0]]),
         topk_probs=torch.tensor([[0.5], [0.0]]),
@@ -238,7 +238,7 @@ def test_llada2_token_merge_hook_supports_iter_smooth_mode(monkeypatch):
     set_fetch_fn_for_attn_metadata(lambda: metadata)
 
     hidden = model.word_embeddings(torch.tensor([0, 1]))
-    merged = model._maybe_apply_token_merging(hidden)
+    merged = model._maybe_apply_token_merge(hidden)
 
     assert torch.allclose(merged[0], hidden[0] + 0.25 * 0.5 * model.word_embeddings.weight[2])
     assert torch.allclose(merged[1], hidden[1])
@@ -267,7 +267,7 @@ def test_llada2_dmax_topk_token_merge_applies_renormalize(monkeypatch):
         )
 
     metadata = DMaxAttnMetaData()
-    metadata.init_token_merging(
+    metadata.init_token_merge(
         merge_mask=torch.tensor([True]),
         topk_ids=torch.tensor([[2, 3]]),
         topk_probs=torch.tensor([[0.25, 0.50]]),
@@ -279,7 +279,7 @@ def test_llada2_dmax_topk_token_merge_applies_renormalize(monkeypatch):
     set_fetch_fn_for_attn_metadata(lambda: metadata)
 
     hidden = model.word_embeddings(torch.tensor([0]))
-    merged = model._maybe_apply_token_merging(hidden)
+    merged = model._maybe_apply_token_merge(hidden)
 
     blended = (
         0.25 * model.word_embeddings.weight[2]

@@ -214,6 +214,7 @@ class DreamModel(nn.Module):
 
 
 @AutoModelForDiffusionLM.register("dream")
+@AutoModelForDiffusionLM.register("diffucoder")
 class DreamForDiffusionLM(nn.Module):
     """Dream model for diffusion language modeling with LM head."""
 

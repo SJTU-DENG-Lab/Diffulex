@@ -1,11 +1,12 @@
 from abc import ABC
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from types import SimpleNamespace
 
 from diffulex.attention import fetch_attn_metadata
+from diffulex.distributed.parallel_state import fetch_parallel_state
 from diffulex.logger import get_logger
 from diffulex.moe.config import (
     get_moe_intermediate_size,
@@ -17,6 +18,7 @@ from diffulex.moe.topk import build_topk_router
 from diffulex_kernel import fused_moe
 from diffulex.layer.activation import SiluAndMul
 from diffulex.layer.linear import ColumnParallelLinear, RowParallelLinear
+from diffulex.vllm_compat import vllm_current_config
 
 _VLLM_FUSED_MOE = None
 _VLLM_FUSED_MOE_LOAD_ERR: Exception | None = None
@@ -83,17 +85,60 @@ def _load_vllm_modular_moe():
 class _VllmModularMoELayerAdapter(nn.Module):
     """Small RoutedExperts-shaped adapter for vLLM modular MoE kernels."""
 
-    def __init__(self, w13: torch.Tensor, w2: torch.Tensor, *, activation, global_num_experts: int) -> None:
+    def __init__(
+        self,
+        w13: torch.Tensor,
+        w2: torch.Tensor,
+        *,
+        activation,
+        global_num_experts: int,
+        expert_map: torch.Tensor | None,
+    ) -> None:
         super().__init__()
         self.w13_weight = nn.Parameter(w13.detach().clone(), requires_grad=False)
         self.w2_weight = nn.Parameter(w2.detach().clone(), requires_grad=False)
         self.activation = activation
         self.global_num_experts = int(global_num_experts)
         self.apply_router_weight_on_input = False
-        self.expert_map = None
+        self.expert_map = expert_map
 
     def _expert_routing_tables(self):
         return None
+
+
+def _make_vllm_runtime_config() -> SimpleNamespace:
+    state = fetch_parallel_state()
+    return SimpleNamespace(
+        tensor_parallel_size=int(state.tp_size),
+        data_parallel_size=int(state.dp_size),
+        expert_parallel_size=int(state.ep_size),
+        distributed_timeout_seconds=600,
+    )
+
+
+def _build_vllm_expert_map(
+    *,
+    num_global_experts: int,
+    num_local_experts: int,
+    local_expert_start: int,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if int(num_local_experts) == int(num_global_experts) and int(local_expert_start) == 0:
+        return None
+
+    expert_map = torch.full(
+        (int(num_global_experts),),
+        -1,
+        dtype=torch.int32,
+        device=device,
+    )
+    local_end = int(local_expert_start) + int(num_local_experts)
+    expert_map[int(local_expert_start):local_end] = torch.arange(
+        int(num_local_experts),
+        dtype=torch.int32,
+        device=device,
+    )
+    return expert_map
 
 
 class SharedExpertMLP(nn.Module):
@@ -110,6 +155,7 @@ class SharedExpertMLP(nn.Module):
         return self.down_proj(
             self.act_fn(torch.cat((self.gate_proj(hidden_states), self.up_proj(hidden_states)), dim=-1))
         )
+
 
 class FusedMoE(nn.Module, ABC):
 
@@ -130,7 +176,7 @@ class FusedMoE(nn.Module, ABC):
 
         if hidden_act != "silu":
             raise NotImplementedError("only silu is supported currently")
-        
+
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.num_experts = num_experts
@@ -190,11 +236,7 @@ class FusedMoE(nn.Module, ABC):
             return "prefill" if is_prefill else "decode"
 
         if torch.is_tensor(is_prefill):
-            if is_prefill.numel() == 0:
-                return "unknown"
-            flags = is_prefill.to(dtype=torch.bool)
-            all_prefill = bool(flags.all().item())
-            any_prefill = bool(flags.any().item())
+            return "unknown"
         else:
             try:
                 flags = [bool(flag) for flag in is_prefill]
@@ -221,6 +263,15 @@ class FusedMoE(nn.Module, ABC):
         if attn_metadata is None:
             return "unknown"
 
+        has_prefill = getattr(attn_metadata, "has_prefill_static", None)
+        all_prefill = getattr(attn_metadata, "all_prefill_static", None)
+        if has_prefill is not None and all_prefill is not None:
+            if bool(all_prefill):
+                return "prefill"
+            if not bool(has_prefill):
+                return "decode"
+            return "mixed"
+
         phase = self._phase_from_prefill_flags(attn_metadata.is_prefill)
         if phase != "unknown":
             return phase
@@ -237,7 +288,13 @@ class FusedMoE(nn.Module, ABC):
         except TypeError:
             return self._phase_from_prefill_flags(int(status_table) == 0)
 
-    def _build_vllm_modular_kernel(self, hidden_states: torch.Tensor, w13: torch.Tensor, w2: torch.Tensor):
+    def _build_vllm_modular_kernel(
+        self,
+        hidden_states: torch.Tensor,
+        w13: torch.Tensor,
+        w2: torch.Tensor,
+        local_expert_start: int,
+    ):
         api = _load_vllm_modular_moe()
         if api is None:
             raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
@@ -249,12 +306,12 @@ class FusedMoE(nn.Module, ABC):
 
         parallel_config = api["FusedMoEParallelConfig"].make_no_parallel()
         moe_config = api["FusedMoEConfig"](
-            num_experts=int(w13.shape[0]),
+            num_experts=int(self.num_experts),
             experts_per_token=int(self.top_k),
             hidden_dim=int(self.hidden_size),
             intermediate_size_per_partition=int(self.intermediate_size),
             num_local_experts=int(w13.shape[0]),
-            num_logical_experts=int(w13.shape[0]),
+            num_logical_experts=int(self.num_experts),
             activation=api["MoEActivation"].SILU,
             device=hidden_states.device,
             routing_method=(
@@ -267,40 +324,49 @@ class FusedMoE(nn.Module, ABC):
             max_num_tokens=max(1, int(hidden_states.shape[0])),
         )
 
-        from diffulex.distributed.parallel_state import fetch_parallel_state
-        from diffulex.vllm_compat import vllm_current_config
-
-        state = fetch_parallel_state()
-        vllm_config = SimpleNamespace(
-            tensor_parallel_size=int(state.tp_size),
-            data_parallel_size=int(state.dp_size),
-            expert_parallel_size=int(state.ep_size),
-            distributed_timeout_seconds=600,
-        )
-        with vllm_current_config(vllm_config):
+        with vllm_current_config(_make_vllm_runtime_config()):
             method = api["UnquantizedFusedMoEMethod"](moe_config)
+
+        expert_map = _build_vllm_expert_map(
+            num_global_experts=int(self.num_experts),
+            num_local_experts=int(w13.shape[0]),
+            local_expert_start=int(local_expert_start),
+            device=hidden_states.device,
+        )
         layer = _VllmModularMoELayerAdapter(
             w13,
             w2,
             activation=api["MoEActivation"].SILU,
-            global_num_experts=int(w13.shape[0]),
+            global_num_experts=int(self.num_experts),
+            expert_map=expert_map,
         )
         method.process_weights_after_loading(layer)
-        if not self._vllm_modular_logged:
-            logger.info(
-                "Initialized vLLM modular MoE backend: hidden=%s intermediate=%s local_experts=%s "
-                "top_k=%s dtype=%s tokens=%s",
-                self.hidden_size,
-                self.intermediate_size,
-                int(w13.shape[0]),
-                self.top_k,
-                hidden_states.dtype,
-                int(hidden_states.shape[0]),
-            )
-            self._vllm_modular_logged = True
+        self._log_vllm_modular_init(hidden_states, w13, expert_map)
         self._vllm_modular_method = method
         self._vllm_modular_layer = layer
         return method.moe_kernel
+
+    def _log_vllm_modular_init(
+        self,
+        hidden_states: torch.Tensor,
+        w13: torch.Tensor,
+        expert_map: torch.Tensor | None,
+    ) -> None:
+        if self._vllm_modular_logged:
+            return
+        logger.info(
+            "Initialized vLLM modular MoE backend: hidden=%s intermediate=%s local_experts=%s "
+            "global_experts=%s top_k=%s dtype=%s tokens=%s expert_map=%s",
+            self.hidden_size,
+            self.intermediate_size,
+            int(w13.shape[0]),
+            self.num_experts,
+            self.top_k,
+            hidden_states.dtype,
+            int(hidden_states.shape[0]),
+            expert_map is not None,
+        )
+        self._vllm_modular_logged = True
 
     def _vllm_modular_expert_gemm(
         self,
@@ -315,17 +381,19 @@ class FusedMoE(nn.Module, ABC):
         if api is None:
             raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
         if self._vllm_modular_kernel is None:
-            self._vllm_modular_kernel = self._build_vllm_modular_kernel(hidden_states, w13, w2)
-
-        local_topk_ids = topk_ids.to(torch.int64) - int(local_expert_start)
-        valid = (local_topk_ids >= 0) & (local_topk_ids < w13.shape[0])
-        safe_topk_ids = torch.where(valid, local_topk_ids, torch.zeros_like(local_topk_ids))
-        safe_topk_weights = torch.where(valid, topk_weights, torch.zeros_like(topk_weights))
+            self._vllm_modular_kernel = self._build_vllm_modular_kernel(
+                hidden_states,
+                w13,
+                w2,
+                local_expert_start,
+            )
+        if self._vllm_modular_method is None or self._vllm_modular_layer is None:
+            raise RuntimeError("vLLM modular MoE backend was not initialized correctly.")
         return self._vllm_modular_method.forward_native(
             layer=self._vllm_modular_layer,
             x=hidden_states,
-            topk_weights=safe_topk_weights,
-            topk_ids=safe_topk_ids,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids.to(torch.int64),
             shared_experts=None,
             shared_experts_input=None,
         )
@@ -340,7 +408,7 @@ class FusedMoE(nn.Module, ABC):
         topk_ids: torch.Tensor,
         topk_weights: torch.Tensor,
         local_expert_start: int = 0,
-        hidden_act: str = "silu"
+        hidden_act: str = "silu",
     ) -> torch.Tensor:
         if impl == "triton":
             out = fused_moe(

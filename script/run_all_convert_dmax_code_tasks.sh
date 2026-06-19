@@ -69,8 +69,6 @@ for model_path in "${MODEL_DIRS[@]}"; do
     echo "[run] output_dir=${output_dir}"
     echo "[run] log_file=${log_file}"
     echo "================================================================"
-
-    DIFFULEX_DMAX_SAMPLER_FAST=1 \
     CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
     HF_ALLOW_CODE_EVAL=1 \
     "${PYTHON_BIN}" -m diffulex_bench.main \

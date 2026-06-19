@@ -2,7 +2,7 @@ engine:
   model_path: "/data/ckpts/google/diffusiongemma-26B-A4B-it"
   tokenizer_path: null
   model_name: "diffusion_gemma"
-  decoding_strategy: "multi_bd"
+  decoding_strategy: "diffusion_gemma"
   sampling_mode: "naive"
   mask_token_id: 4
 

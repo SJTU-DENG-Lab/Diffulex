@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from diffulex.strategy_template.multi_block.engine.request import MultiBlockReqTemplate
+from diffulex.engine.request import MultiBlockReqTemplate
 
 
 def test_multiblock_request_eos_detection_honors_ignore_eos():

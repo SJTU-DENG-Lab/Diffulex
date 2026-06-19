@@ -4,7 +4,7 @@ import os
 import torch
 import torch.nn.functional as F
 
-from diffulex.mixin import EditSamplerMixin, TokenMergeSamplerMixin
+from diffulex.mixin import BlockRewriteSamplerMixin, TokenMergeSamplerMixin
 from diffulex.sampler.auto_sampler import AutoSampler
 from diffulex.sampler.base import DllmSamplerNoShiftBase
 
@@ -37,7 +37,7 @@ class LLaDA2Sampler(LLaDA2AcceptedIdsMixin, DllmSamplerNoShiftBase):
         super().__init__()
 
 
-class LLaDA2dot1Sampler(EditSamplerMixin, LLaDA2Sampler):
+class LLaDA2dot1Sampler(BlockRewriteSamplerMixin, LLaDA2Sampler):
     def __init__(self, config=None):
         super().__init__(config=config)
         self.edit_threshold = float(getattr(config, "edit_threshold", 0.0))
@@ -107,7 +107,7 @@ class LLaDA2dot1Sampler(EditSamplerMixin, LLaDA2Sampler):
             **kwargs,
         )
 
-    def _build_edit_writes_map(
+    def _build_block_writes_map(
         self,
         reqs,
         split_logits,
@@ -117,12 +117,12 @@ class LLaDA2dot1Sampler(EditSamplerMixin, LLaDA2Sampler):
         **kwargs,
     ) -> dict[str, dict[str, dict[int, int]]]:
         del sample_output, kwargs
-        edit_writes_map: dict[str, dict[str, dict[int, int]]] = {}
+        block_writes_map: dict[str, dict[str, dict[int, int]]] = {}
         self._reset_block_state_map()
 
         for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
             req_id_str = str(req.req_id)
-            req_edit_writes: dict[str, dict[int, int]] = {}
+            req_block_writes: dict[str, dict[int, int]] = {}
             req_block_states: dict[str, dict] = {}
 
             for block_id, block in enumerate(req.dllm_blocks):
@@ -246,12 +246,12 @@ class LLaDA2dot1Sampler(EditSamplerMixin, LLaDA2Sampler):
                 }
 
                 if block_writes:
-                    req_edit_writes[str(block.block_id)] = block_writes
+                    req_block_writes[str(block.block_id)] = block_writes
 
-            edit_writes_map[req_id_str] = req_edit_writes
+            block_writes_map[req_id_str] = req_block_writes
             self._last_block_state_map[req_id_str] = req_block_states
 
-        return edit_writes_map
+        return block_writes_map
 
     def _postprocess_sample_output(
         self,
@@ -283,7 +283,7 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
             and float(getattr(config, "token_merge_weight", 1.0)) > 0.0
         )
         self._last_block_state_map: dict[str, dict[str, dict]] = {}
-        self._fast_prob_path = os.getenv("DIFFULEX_DMAX_SAMPLER_FAST", "1") != "0"
+        self._fast_prob_path = bool(getattr(config, "dmax_sampler_fast_path", True))
         del config
 
     def _compute_accepted_ids(
@@ -309,7 +309,7 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         **kwargs,
     ):
         # DMax derives writes/token-merge state from full block logits in
-        # _build_edit_writes_map. Running the generic mask-token sampler first
+        # _build_block_writes_map. Running the generic mask-token sampler first
         # duplicates argmax/softmax work and its accepted-id output is unused.
         del top_p, top_k, margin_confidence, neg_entropy
         attn_metadata = self.fetch_attn_metadata()
@@ -474,7 +474,7 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
     def _reset_block_state_map(self) -> None:
         self._last_block_state_map = {}
 
-    def _build_edit_writes_map(
+    def _build_block_writes_map(
         self,
         reqs,
         split_logits,
@@ -484,12 +484,12 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         **kwargs,
     ) -> dict[str, dict[str, dict[int, int]]]:
         del sample_output, kwargs
-        edit_writes_map: dict[str, dict[str, dict[int, int]]] = {}
+        block_writes_map: dict[str, dict[str, dict[int, int]]] = {}
         self._reset_token_merge_map()
         self._reset_block_state_map()
         for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
             req_id_str = str(req.req_id)
-            req_edit_writes: dict[str, dict[int, int]] = {}
+            req_block_writes: dict[str, dict[int, int]] = {}
             req_token_merge: dict[int, dict | None] = {}
             req_block_states: dict[str, dict] = {}
             for block_id, block in enumerate(req.dllm_blocks):
@@ -515,13 +515,13 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
                 )
                 req_block_states[str(block_id)] = block_state
                 if block_writes:
-                    req_edit_writes[str(block_id)] = block_writes
+                    req_block_writes[str(block_id)] = block_writes
                 for rel_idx, descriptor in token_merge_entries.items():
                     req_token_merge[int(block.start + rel_idx)] = descriptor
-            edit_writes_map[req_id_str] = req_edit_writes
+            block_writes_map[req_id_str] = req_block_writes
             self._set_token_merge_entries(req_id_str, req_token_merge)
             self._last_block_state_map[req_id_str] = req_block_states
-        return edit_writes_map
+        return block_writes_map
 
     def _postprocess_sample_output(
         self,

@@ -70,7 +70,7 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             self.ps.append(process)
             self.events.append(event)
         self._exited = False
-        self.profile_session = TorchProfileSession("engine")
+        self.profile_session = TorchProfileSession("engine", config=config.profiler_config)
         atexit.register(self.exit)
         self._install_signal_handlers()
 
@@ -167,6 +167,16 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             self._join_or_stop_process(p)
         time.sleep(0)
 
+    def start_profile(self, profile_prefix: str | None = None) -> None:
+        self.profile_session.start(profile_prefix)
+        if hasattr(self, "model_runner") and self.model_runner is not None:
+            self.model_runner.call("start_profile", profile_prefix)
+
+    def stop_profile(self) -> None:
+        if hasattr(self, "model_runner") and self.model_runner is not None:
+            self.model_runner.call("stop_profile")
+        self.profile_session.stop()
+
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
             with record_function("diffulex.engine.tokenizer_encode"):
@@ -180,7 +190,6 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         return req.req_id
 
     def step(self):
-        self.profile_session.start()
         with record_function("diffulex.engine.scheduler_schedule"):
             reqs, is_prefill = self.scheduler.schedule()
         with record_function("diffulex.engine.prepare_reqs_for_execution"):

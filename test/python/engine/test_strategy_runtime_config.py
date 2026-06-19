@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -24,6 +25,10 @@ def test_runtime_forces_d2f_prefix_settings():
 
     assert cfg.multi_block_prefix_full is True
     assert cfg.enable_prefix_caching is False
+    assert type(cfg.strategy).__name__ == "D2FStrategyConfig"
+    assert cfg.runtime.decoding.strategy == "d2f"
+    assert cfg.runtime.decoding.multi_block_prefix_full is True
+    assert cfg.runtime.cache.enable_prefix_caching is False
 
 
 def test_runtime_forces_multi_bd_prefix_full_off():
@@ -38,6 +43,10 @@ def test_runtime_forces_multi_bd_prefix_full_off():
 
     assert cfg.multi_block_prefix_full is False
     assert cfg.enable_prefix_caching is True
+    assert type(cfg.strategy).__name__ == "MultiBDStrategyConfig"
+    assert cfg.runtime.decoding.strategy == "multi_bd"
+    assert cfg.runtime.decoding.multi_block_prefix_full is False
+    assert cfg.runtime.cache.enable_prefix_caching is True
 
 
 def test_config_file_dataset_not_overridden_by_cli_defaults(tmp_path):
@@ -361,12 +370,32 @@ def test_config_rejects_unknown_attn_impl(config_no_model_load):
 def config_no_model_load(monkeypatch, tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()
-    monkeypatch.setattr("diffulex.config.AutoConfig.from_pretrained", lambda *args, **kwargs: type(
+    monkeypatch.setattr("diffulex.hf_config_registry.AutoConfig.from_pretrained", lambda *args, **kwargs: type(
         "FakeHFConfig",
         (),
         {"max_position_embeddings": 4096},
     )())
     return model_dir
+
+
+def test_config_preserves_explicit_hf_config(monkeypatch, tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    monkeypatch.setattr(
+        "diffulex.hf_config_registry.AutoConfig.from_pretrained",
+        lambda *args, **kwargs: pytest.fail("explicit hf_config should not trigger AutoConfig loading"),
+    )
+    hf_config = SimpleNamespace(max_position_embeddings=1024)
+    cfg = Config(
+        str(model_dir),
+        hf_config=hf_config,
+        model_name="sdar",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.hf_config is hf_config
 
 
 @pytest.mark.parametrize(

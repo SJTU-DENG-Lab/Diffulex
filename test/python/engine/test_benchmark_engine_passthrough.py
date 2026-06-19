@@ -71,6 +71,9 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
                 "token_merge_top_k": 3,
                 "token_merge_renormalize": False,
                 "token_merge_weight": 0.75,
+                "dmax_sampler_fast_path": False,
+                "dmax_force_prefill_active": True,
+                "skip_warmup": True,
                 "decoding_thresholds": {
                     "add_block_threshold": 0.2,
                     "semi_complete_threshold": 0.8,
@@ -104,6 +107,9 @@ def test_model_args_round_trip_extra_engine_fields(monkeypatch) -> None:
     assert forwarded["token_merge_top_k"] == 3
     assert forwarded["token_merge_renormalize"] is False
     assert forwarded["token_merge_weight"] == 0.75
+    assert forwarded["dmax_sampler_fast_path"] is False
+    assert forwarded["dmax_force_prefill_active"] is True
+    assert forwarded["skip_warmup"] is True
     assert forwarded["block_size"] == 4
     assert forwarded["decoding_thresholds"]["accept_threshold"] == 0.95
     assert lm.max_new_tokens == 123

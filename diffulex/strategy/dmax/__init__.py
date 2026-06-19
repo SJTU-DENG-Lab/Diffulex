@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .config import DMaxStrategyConfig
 from .engine.kv_cache_manager import DMaxKVCacheManager
 from .engine.model_runner import DMaxModelRunner
 from .engine.scheduler import DMaxScheduler
@@ -12,4 +13,5 @@ __all__ = [
     "DMaxModelRunner",
     "DMaxScheduler",
     "DMaxReq",
+    "DMaxStrategyConfig",
 ]

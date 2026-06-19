@@ -139,7 +139,7 @@ See [lm-evaluation-harness tasks](https://github.com/EleutherAI/lm-evaluation-ha
 
 - `d2f`: Discrete Diffusion Forcing
 - `multi_bd`: Multi-Block Diffusion
-- `dmax`: DMax token-merging diffusion decoding
+- `dmax`: DMax token-merge diffusion decoding
 
 ### Example: Dream with D2F
 

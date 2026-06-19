@@ -1,17 +1,17 @@
 __all__ = [
-    "EditSamplerMixin",
-    "EditSchedulerMixin",
+    "BlockRewriteSamplerMixin",
+    "BlockRewriteSchedulerMixin",
     "TokenMergeSamplerMixin",
 ]
 
 
 def __getattr__(name):
-    if name in {"EditSamplerMixin", "EditSchedulerMixin"}:
-        from .edit import EditSamplerMixin, EditSchedulerMixin
+    if name in {"BlockRewriteSamplerMixin", "BlockRewriteSchedulerMixin"}:
+        from .block_rewrite import BlockRewriteSamplerMixin, BlockRewriteSchedulerMixin
 
         return {
-            "EditSamplerMixin": EditSamplerMixin,
-            "EditSchedulerMixin": EditSchedulerMixin,
+            "BlockRewriteSamplerMixin": BlockRewriteSamplerMixin,
+            "BlockRewriteSchedulerMixin": BlockRewriteSchedulerMixin,
         }[name]
     if name == "TokenMergeSamplerMixin":
         from .token_merge import TokenMergeSamplerMixin

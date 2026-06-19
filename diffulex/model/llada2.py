@@ -363,13 +363,13 @@ class LLaDA2Model(nn.Module):
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = self.word_embeddings(input_ids)
-        hidden_states = self._maybe_apply_token_merging(hidden_states)
+        hidden_states = self._maybe_apply_token_merge(hidden_states)
         for layer in self.layers:
             hidden_states = layer(positions, hidden_states, mask)
         hidden_states = self.norm(hidden_states)
         return hidden_states
 
-    def _maybe_apply_token_merging(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def _maybe_apply_token_merge(self, hidden_states: torch.Tensor) -> torch.Tensor:
         from diffulex.attention import fetch_attn_metadata
 
         attn_metadata = fetch_attn_metadata()
@@ -394,9 +394,6 @@ class LLaDA2Model(nn.Module):
         device = hidden_states.device
         dtype = hidden_states.dtype
         merge_mask = merge_mask.to(device=device, dtype=torch.bool)
-        is_compiling = bool(getattr(torch.compiler, "is_compiling", lambda: False)())
-        if not is_compiling and not torch.cuda.is_current_stream_capturing() and not bool(merge_mask.any().item()):
-            return hidden_states
 
         topk_ids = topk_ids.to(device=device, dtype=torch.int64)
         topk_probs = topk_probs.to(device=device, dtype=torch.float32)
