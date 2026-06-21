@@ -1,5 +1,90 @@
 # Diffulex
 
+Diffulex is a flexible and extensible inference engine for block-style and
+canvas-style diffusion language models. It is the runtime layer for turning new
+dLLM decoding ideas into runnable, measurable systems, rather than a collection
+of one-off benchmark scripts.
+
+Researchers can use Diffulex to prototype a decoding strategy, connect it to
+real scheduling and KV-cache behavior, serve it through the engine, profile its
+systems cost, and compare it under aligned benchmark scripts without rebuilding
+the whole inference stack from scratch.
+
+The engine follows a strategy-oriented design. A decoding paradigm is expressed
+through coordinated runtime components:
+
+- request state;
+- scheduler;
+- KV cache manager;
+- model runner;
+- sampler;
+- attention metadata;
+- benchmark and serving entry points.
+
+This separation makes Diffulex suitable for rapid research iteration and
+agent-assisted engineering. With the existing strategies as references,
+developers can efficiently use coding agents such as Claude Code or Codex to add
+a new decoding algorithm, wire it through the engine stack, and immediately
+evaluate correctness, throughput, and model quality.
+
+## Why Diffulex
+
+MBD-LMs show that block diffusion inference is not a single fixed algorithm.
+The same broad paradigm can cover multiple block-style dLLM inference modes:
+
+| Paradigm / mechanism | What Diffulex is meant to support |
+|---|---|
+| SingleBD | Native one-block-at-a-time block diffusion decoding. |
+| MultiBD | A bounded running-set of active blocks with Block Buffer-style execution. |
+| DualCache | Future cache designs that need separate cache views or cache lifecycles. |
+| TokenMerge | Token-merge decoding paths such as DMax-style parallel decoding. |
+| Edit | Edit/remask refinement paths for compatible diffusion models. |
+| Uniform DLM | Non-block or canvas-style denoising models such as DiffusionGemma. |
+
+Diffulex gives these algorithms a common systems substrate: paged KV cache,
+prefix reuse, block scheduling, static-shape execution, optimized attention,
+optional vLLM-backed layers, MoE paths, benchmark tooling, and HTTP serving.
+
+The intended workflow is:
+
+1. define the decoding state and acceptance rule;
+2. implement the scheduler/cache/runner/sampler hooks by following the closest
+   existing strategy;
+3. run the benchmark or serving entry point;
+4. inspect throughput, per-request statistics, generated outputs, and profiles;
+5. iterate with normal code review or with Claude Code, Codex, and similar
+   coding agents.
+
+## Branches and Use Cases
+
+| Branch | Use case |
+|---|---|
+| `mbd-lms` | Reproduce the MBD-LMs experiments with the aligned configs and scripts below. |
+| `main` | Active engine development, open-source contribution, and new dLLM decoding algorithms. |
+
+If your goal is to reproduce reported MBD-LMs results, stay on this branch. If
+your goal is to build new runtime features or new decoding strategies, start
+from `main`.
+
+## Extending the Engine
+
+The fastest way to add a new algorithm is to start from the closest existing
+strategy:
+
+| New idea | Closest reference |
+|---|---|
+| Single-block BD-LM inference | SingleBD / native block-diffusion configs |
+| Multi-block decoding | `multi_bd` |
+| Token merging or DMax-like decoding | `dmax` / TokenMerge paths |
+| Edit/remask refinement | edit sampling paths |
+| DiffusionGemma-like denoising | `diffusion_gemma` |
+
+Implement the strategy-specific request state, scheduler behavior, cache
+metadata, runner preparation, and sampler logic, then validate it with the
+benchmark scripts. The existing code structure is intentionally regular so that
+Claude Code, Codex, or similar coding agents can help propagate a new strategy
+through the engine consistently.
+
 ## Run Experiments
 
 Experiment configs live in:
