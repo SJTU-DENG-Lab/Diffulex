@@ -118,6 +118,6 @@ diffulex.moe
 diffulex.sampler
 diffulex.server
 diffulex.strategy
-diffulex.strategy_template
+diffulex.strategy.templates
 diffulex.utils
 :::

@@ -1,30 +1,20 @@
 # Diffulex Documentation
 
-The documentation was built upon [Sphinx](https://www.sphinx-doc.org/en/master/).
+The documentation is built with Sphinx and MyST Markdown.
 
-## Dependencies
-
-Run the following command in this directory to install dependencies first:
+From the repository root:
 
 ```bash
-pip3 install -r requirements.txt
+uv pip install -r docs/requirements.txt
+python -m sphinx -W -b html docs docs/_build/html
 ```
 
-## Build the Documentation
+The generated HTML site is written to `docs/_build/html`.
 
-Then you can build the documentation by running:
+To preview it locally:
 
 ```bash
-make html
+python -m http.server --directory docs/_build/html 8000
 ```
 
-## View the Documentation
-
-Run the following command to start a simple HTTP server:
-
-```bash
-cd _build/html
-python3 -m http.server
-```
-
-Then you can view the documentation in your browser at `http://localhost:8000` (the port can be customized by appending `-p PORT_NUMBER` in the python command above).
+Then open `http://localhost:8000`.

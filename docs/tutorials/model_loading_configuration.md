@@ -12,9 +12,10 @@ The public API is intentionally small:
 from diffulex import Diffulex, SamplingParams
 
 llm = Diffulex(
-    model="/path/to/model",
-    model_name="llada",
-    decoding_strategy="d2f",
+    model="/path/to/LLaDA2.0-mini",
+    model_name="llada2_mini",
+    decoding_strategy="multi_bd",
+    sampling_mode="naive",
     tensor_parallel_size=1,
     data_parallel_size=1,
 )
@@ -39,7 +40,7 @@ Important model-specific behavior happens here:
 | `decoding_strategy="d2f"` | Forces `multi_block_prefix_full=True` and disables prefix caching. |
 | `decoding_strategy="multi_bd"` | Forces `multi_block_prefix_full=False`. |
 | `decoding_strategy="dmax"` | Forces `multi_block_prefix_full=False` and requires an edit-sampling model with `sampling_mode="edit"`. |
-| `model_name="diffusion_gemma"` | Forces `multi_bd`, `block_size=256`, `page_size=256`, and `buffer_size=1`. |
+| `model_name="diffusion_gemma"` | Uses the native `diffusion_gemma` strategy defaults, `block_size=256`, `page_size=256`, and `buffer_size=1`. |
 
 If a validation error is raised, fix the configuration before debugging model
 weights or kernels.

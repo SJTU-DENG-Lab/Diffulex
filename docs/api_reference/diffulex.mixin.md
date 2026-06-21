@@ -60,5 +60,4 @@ This package supports token-merge decoding behavior used by DMax-style paths.
 | `TokenMergeSamplerMixin` | Adds token-merge update behavior to compatible sampler implementations. |
 
 Keep token-merge sampler mechanics here; strategy scheduling and cache behavior
-belong in `diffulex.strategy_template.token_merging_multi_block` or a concrete
-strategy.
+belong in `diffulex.strategy.templates.token_merge` or a concrete strategy.

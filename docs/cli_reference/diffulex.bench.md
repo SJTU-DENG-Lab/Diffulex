@@ -16,11 +16,9 @@ Use a YAML config when you want repeatable settings:
 
 ```bash
 python -m diffulex_bench.main \
-  --config diffulex_bench/configs/example.yml \
-  --model-path /path/to/model \
-  --tokenizer-path /path/to/model \
-  --dataset gsm8k_diffulex \
-  --dataset-limit 100
+  --config diffulex_bench/configs/llada2_mini_gsm8k.yml \
+  --model-path /path/to/LLaDA2.0-mini \
+  --dataset-limit 10
 ```
 
 Command line flags override matching config fields. This makes it practical to
@@ -34,7 +32,7 @@ per run.
 | `--model-path` | Point to the local base-model checkpoint directory. Required unless the YAML already sets `engine.model_path`. | Passes the model weights path into Diffulex. |
 | `--tokenizer-path` | Point to a tokenizer directory, or omit it to fall back to the model path in the benchmark config flow. | Lets lm-eval use a tokenizer stored separately from the weights. |
 | `--model-name` | Use a registered model key: `dream`, `sdar`, `sdar_moe`, `fast_dllm_v2`, `llada`, `llada2`, `llada2_moe`, `llada2_mini`, `llada2dot1_mini`, `llada2_mini_dmax`, or `diffusion_gemma`. The default is `dream`. | Selects the model adapter and sampler defaults. |
-| `--decoding-strategy` | Use `d2f`, `multi_bd`, or `dmax`. The default is `d2f`. | Chooses the strategy-specific request, scheduler, cache, runner, and attention metadata path. |
+| `--decoding-strategy` | Use `d2f`, `multi_bd`, `dmax`, or `diffusion_gemma` where supported by the selected model/config. | Chooses the strategy-specific request, scheduler, cache, runner, and attention metadata path. |
 | `--sampling-mode` | Use `naive`, `edit`, or omit it and let config/model defaults apply. | Selects sampler behavior. `edit` is restricted to compatible LLaDA2-family names. |
 | `--mask-token-id` | Use the tokenizer's mask token ID. The default is `151666`. | Supplies the mask token when tokenizer metadata does not override it. |
 

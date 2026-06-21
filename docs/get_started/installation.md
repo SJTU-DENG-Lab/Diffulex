@@ -1,78 +1,103 @@
 # Installation
 
-Diffulex is currently installed from source. Select the setup path that matches
-your environment.
+Diffulex is installed from source. The supported production path today is
+Linux with NVIDIA CUDA GPUs and local Hugging Face-style checkpoint
+directories.
 
-## Supported Environments
+## Environment Requirements
 
-- Primary runtime target: NVIDIA GPUs.
-- Tested NVIDIA devices include H200, H100, A100, RTX 4090, and RTX 3090.
-- Python 3.11 or newer is required.
-- Model checkpoints are loaded from local directories.
+| Component | Requirement |
+| --- | --- |
+| OS | Linux. Other platforms are not a supported runtime target. |
+| Python | Python 3.11 or newer. |
+| GPU | NVIDIA CUDA GPU visible to PyTorch. H200, H100, A100, RTX 4090, and RTX 3090 have been used in development. |
+| Checkpoints | Local checkpoint directories. Diffulex examples do not download model weights at runtime. |
+| vLLM | Recommended for optimized layer/MoE backends and required by some benchmark presets. |
 
-Diffulex depends on PyTorch, Transformers, vLLM, and CUDA-compatible GPU
-runtime libraries. If PyTorch or vLLM cannot detect your accelerator, fix that
-environment first before debugging Diffulex.
+If PyTorch or vLLM cannot see the GPU, fix that environment first. Diffulex
+will not be able to recover from an invalid CUDA/PyTorch installation.
 
-## Set Up Using Python
+## Create the Environment
 
-Create a dedicated Python environment, then install Diffulex in editable mode.
-
-`````{tabs}
-
-````{tab} NVIDIA CUDA
-
-This is the recommended path for running Diffulex.
+From the repository root:
 
 ```bash
 uv venv --python 3.11 --seed
 source .venv/bin/activate
 uv pip install -e .
-uv pip install vllm==0.19.1 --torch-backend=auto
 ```
 
-`uv` can select a matching PyTorch backend with `--torch-backend=auto`. If your
-cluster requires a specific CUDA wheel, replace `auto` with the matching backend
-for your driver and CUDA stack.
+Install vLLM in the same environment if you plan to use the optimized vLLM
+layer backends, MoE kernels, or the vLLM baseline scripts:
 
 ```bash
-uv pip install vllm==0.19.1 --torch-backend=cu126
+uv pip install vllm
 ```
 
-````
+On clusters with strict CUDA wheel requirements, install the PyTorch/vLLM build
+that matches the driver and CUDA runtime provided by the cluster. Keep all of
+Diffulex, PyTorch, and vLLM in the same Python environment unless you are only
+using the external vLLM baseline launcher.
 
-````{tab} Other Environment
-
-Currently, only CUDA Linux environments are fully supported.
-
-````
-
-`````
-
-## Verify the Install
+## Verify the Environment
 
 Check that the package imports:
 
 ```bash
-python -c "from diffulex import Diffulex, SamplingParams; print('ok')"
+python -c "from diffulex import Diffulex, SamplingParams; print('diffulex ok')"
 ```
 
-Check that PyTorch can see CUDA devices:
+Check CUDA visibility:
 
 ```bash
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
 ```
 
-The import is intentionally lightweight. Model weights are loaded only when a
-`Diffulex` engine is constructed.
+If vLLM-backed paths will be used, check vLLM separately:
+
+```bash
+python -c "import vllm; print('vllm ok')"
+```
+
+## Model Paths
+
+Most configs in this repository use paths from the development cluster, for
+example `/data/ckpts/inclusionAI/LLaDA2.0-mini`. Replace those paths with the
+local checkpoint directory in your environment.
+
+For one-off runs, prefer command-line overrides:
+
+```bash
+MODEL_PATH=/path/to/LLaDA2.0-mini \
+DATASET_LIMIT=10 \
+CUDA_VISIBLE_DEVICES=0 \
+script/run_llada2_mini_gsm8k.sh
+```
+
+For repeated runs, edit or copy the YAML config under `diffulex_bench/configs/`.
+
+## Optional vLLM Baseline Environment
+
+The DiffusionGemma vLLM baseline launcher can use a separate editable vLLM
+environment. By default it looks under `/data/jyj/vllm-env`; override that when
+your vLLM checkout lives elsewhere:
+
+```bash
+VLLM_ENV_DIR=/path/to/vllm-env \
+CUDA_VISIBLE_DEVICES=0 \
+script/run_vllm_diffusion_gemma_gsm8k.sh
+```
+
+The vLLM install used by that script must support
+`DiffusionGemmaForBlockDiffusion`.
 
 ## Build the Documentation
 
-Diffulex documentation is built with Sphinx:
+Install documentation dependencies, then build the Sphinx site:
 
 ```bash
-cd docs
-../.venv/bin/python -m sphinx -b html . _build/html
+uv pip install -r docs/requirements.txt
+python -m sphinx -b html docs docs/_build/html
 ```
 
 The generated site is written to `docs/_build/html`.

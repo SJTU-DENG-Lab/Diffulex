@@ -41,7 +41,7 @@ enough. Examples already in the config:
 
 | Condition | Existing config behavior |
 | --- | --- |
-| DiffusionGemma | Forces `multi_bd`, `block_size=256`, `page_size=256`, and `buffer_size=1`. |
+| DiffusionGemma | Uses the native `diffusion_gemma` strategy defaults, `block_size=256`, `page_size=256`, and `buffer_size=1`. |
 | DMax | Requires edit sampling and a DMax-compatible model name. |
 | D2F | Disables prefix caching and uses full-prefix multi-block behavior. |
 

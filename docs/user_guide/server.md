@@ -1,103 +1,107 @@
----
-orphan: true
----
-
 # Server
 
-Use the HTTP server entry point when a UI, integration test, or external client
-needs to send requests to Diffulex over HTTP.
+Use the HTTP server when an application, UI, or integration test needs to send
+requests to Diffulex over HTTP instead of calling the Python API in-process.
 
-Most serving commands follow this shape:
+The server starts a FastAPI frontend and a synchronous backend worker that owns
+the Diffulex engine. ZMQ addresses are generated automatically for local runs.
 
-```bash
-python -m diffulex.server.launch \
-  --model /path/to/model \
-  --model-name <model_name> \
-  --decoding-strategy <strategy> \
-  --tensor-parallel-size 1 \
-  --data-parallel-size 1 \
-  --max-model-len 2048 \
-  --max-num-batched-tokens 4096 \
-  --max-num-reqs 128 \
-  --gpu-memory-utilization 0.9
-```
-
-The server process accepts the same core engine arguments as the benchmark path.
-It also adds serving-specific flags:
-
-| Flag | How to set it | What it does |
-| --- | --- | --- |
-| `--host`, `--port` | Use the interface and TCP port where the HTTP frontend should listen. | Exposes the server endpoint to local or remote clients. |
-| `--log-level` | Use a server log level such as `info` or `debug`. | Controls server log verbosity. |
-| `--device-ids` | Provide PyTorch logical CUDA IDs when only selected GPUs should be used. | Narrows the devices available to the backend. |
-| `--zmq-command-addr`, `--zmq-event-addr` | Leave unset for most local runs, or provide explicit ZMQ addresses for custom process wiring. | Controls the internal frontend/backend transport addresses. |
-
-## Supported Models
-
-### Fast-dLLM-v2
+## Start a LLaDA2-Mini Server
 
 ```bash
-python -m diffulex.server.launch \
-  --model /YOUR-CKPT-PATH/Efficient-Large-Model/Fast_dLLM_v2_7B \
-  --model-name fast_dllm_v2 \
+export MODEL_PATH=/path/to/LLaDA2.0-mini
+
+CUDA_VISIBLE_DEVICES=0 python -m diffulex.server.launch \
+  --model "$MODEL_PATH" \
+  --model-name llada2_mini \
   --decoding-strategy multi_bd \
   --sampling-mode naive \
-  --tensor-parallel-size 2 \
-  --data-parallel-size 1 \
-  --max-model-len 1024 \
-  --max-num-batched-tokens 1024 \
-  --max-num-reqs 24 \
-  --gpu-memory-utilization 0.4 \
-  --block-size 32 \
-  --buffer-size 1 \
-  --accept-threshold 0.95 \
-  --semi-complete-threshold 0.9 \
-  --add-block-threshold 0.1 \
-  --enforce-eager
-```
-
-### D2F-LLaDA
-
-```bash
-python -m diffulex.server.launch \
-  --model /YOUR-CKPT-PATH/GSAI-ML/LLaDA-8B-Instruct \
-  --model-name llada \
-  --decoding-strategy d2f \
-  --tensor-parallel-size 2 \
-  --data-parallel-size 1 \
-  --use-lora \
-  --lora-path /YOUR-CKPT-PATH/SJTU-DENG-Lab/D2F_LLaDA_Instruct_8B_Lora \
-  --pre-merge-lora \
-  --max-model-len 2048 \
-  --max-num-batched-tokens 2048 \
-  --max-num-reqs 32 \
-  --accept-threshold 0.95 \
-  --semi-complete-threshold 0.9 \
-  --add-block-threshold 0.1 \
-  --enforce-eager
-```
-
-### SDAR
-
-```bash
-python -m diffulex.server.launch \
-  --model /YOUR-CKPT-PATH/JetLM/SDAR-1.7B-Chat-b32 \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --model-name sdar \
-  --decoding-strategy multi_bd \
   --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --device-ids 1 \
-  --block-size 32 \
-  --buffer-size 4 \
-  --page-size 32 \
+  --max-model-len 4096 \
   --max-num-batched-tokens 4096 \
-  --max-num-reqs 128 \
-  --max-model-len 2048 \
-  --gpu-memory-utilization 0.5 \
-  --kv-cache-layout unified \
-  --add-block-threshold 0.1 \
-  --semi-complete-threshold 0.9 \
-  --accept-threshold 0.95
+  --max-num-reqs 1 \
+  --block-size 32 \
+  --buffer-size 1 \
+  --page-size 32 \
+  --gpu-memory-utilization 0.45 \
+  --attn-impl triton \
+  --host 127.0.0.1 \
+  --port 8000
 ```
+
+The server CLI currently exposes `--attn-impl triton` and `--attn-impl naive`.
+Use benchmark or Python configs when you specifically need `triton_grouped`.
+
+## Generate Endpoint
+
+Non-streaming request:
+
+```bash
+curl -s http://127.0.0.1:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Solve: 12 + 30.","temperature":0.0,"max_tokens":64,"max_nfe":256}' \
+  | python -m json.tool
+```
+
+The response contains:
+
+| Field | Meaning |
+| --- | --- |
+| `text` | Generated completion text. |
+| `token_ids` | Generated token IDs. |
+| `nfe` | Number of forward evaluations used by the request. |
+| `finish_reason` | Stop reason when available. |
+| `full_text` | Prompt plus generated text when available. |
+
+Streaming request:
+
+```bash
+curl -N http://127.0.0.1:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Solve: 12 + 30.","temperature":0.0,"max_tokens":64,"stream":true,"stream_mode":"denoise"}'
+```
+
+`stream_mode="denoise"` emits editable buffer snapshots.
+`stream_mode="block_append"` emits stable appended text.
+
+## Chat Endpoint
+
+The server also exposes an OpenAI-style chat path:
+
+```bash
+curl -N http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role": "user", "content": "Solve: 12 + 30."}],
+    "temperature": 0.0,
+    "max_tokens": 64,
+    "stream": true,
+    "stream_mode": "block_append"
+  }'
+```
+
+The Streamlit example uses this chat endpoint:
+
+```bash
+streamlit run examples/streamlit_block_append_chat.py -- --base-url http://127.0.0.1:8000
+```
+
+## Important Server Flags
+
+| Flag | Notes |
+| --- | --- |
+| `--model` | Required local checkpoint path. |
+| `--model-name` | Registered Diffulex model name such as `llada2_mini`, `sdar`, or `diffusion_gemma`. |
+| `--decoding-strategy` | Use a strategy compatible with the model. |
+| `--sampling-mode` | Usually `naive`; use `edit` only for compatible LLaDA2 edit/DMax paths. |
+| `--tensor-parallel-size`, `--data-parallel-size` | Must fit the visible CUDA devices. |
+| `--device-ids` | Logical CUDA IDs after `CUDA_VISIBLE_DEVICES` is applied. |
+| `--max-model-len`, `--max-num-batched-tokens`, `--max-num-reqs` | Capacity controls. Start small. |
+| `--block-size`, `--buffer-size`, `--page-size` | Strategy/model layout controls. DiffusionGemma uses `256/1/256`. |
+| `--disable-full-static-runner`, `--disable-torch-compile`, `--enforce-eager` | Debugging toggles for optimized paths. |
+| `--disable-prefill-cudagraph` | Deprecated no-op retained for compatibility. |
+| `--use-lora`, `--lora-path`, `--pre-merge-lora` | LoRA loading and merge controls. |
+
+Run `python -m diffulex.server.launch --help` for the complete current option
+list.

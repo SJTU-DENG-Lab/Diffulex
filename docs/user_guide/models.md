@@ -1,79 +1,80 @@
 # Models
 
-Diffulex is built for diffusion language model inference. Model support is tied
-to three pieces of configuration: the model family name, the decoding strategy,
-and the sampler behavior.
+Diffulex model support is defined by three choices:
 
-## Supported Models
+- `model_name`: selects the registered model implementation and sampler factory;
+- `decoding_strategy`: selects request state, scheduler, KV cache manager, and
+  model runner;
+- `sampling_mode`: selects standard or edit-style sampler behavior.
 
-Diffulex currently documents support for these model families:
+The config validator normalizes some model/strategy combinations and rejects
+known invalid combinations.
 
-- D2F-LLaDA
-- D2F-Dream
-- Fast-dLLM-v2
-- SDAR
-- SDAR-MoE
+## Supported Model Families
 
-Models in progress include D2F-DiffuCoder, LLaDA2, LLaDA2.1, LLaDA2-DMax, and
-Stable-DiffCoder.
+| Model family | `model_name` values | Typical strategy | Notes |
+| --- | --- | --- | --- |
+| Dream / D2F-Dream | `dream` | `d2f` | D2F-style full-prefix block decoding. |
+| DiffuCoder / D2F-DiffuCoder | `diffucoder` | `d2f` | Uses shifted sampler behavior. |
+| Dream reasoner | `dream_reasoner` | `multi_bd` | Block-causal multi-block path. |
+| Stable-DiffCoder | `stable_diffcoder` | `multi_bd` | Block-causal multi-block path. |
+| LLaDA / D2F-LLaDA | `llada` | `d2f` | Use D2F LoRA-style configs when applicable. |
+| Fast-dLLM-v2 | `fast_dllm_v2` | `multi_bd` | Multi-block diffusion path. |
+| SDAR | `sdar` | `multi_bd` | Dense SDAR path. |
+| SDAR-MoE | `sdar_moe` | `multi_bd` | MoE path; keep expert parallel at `1` unless extending the runtime. |
+| LLaDA2 family | `llada2`, `llada2_mini`, `llada2_moe`, `llada2dot1_mini` | `multi_bd` or `dmax` | LLaDA2-mini GSM8K is the primary maintained benchmark path. |
+| DiffusionGemma | `diffusion_gemma` | `diffusion_gemma` | Native 256-token canvas/block decoder. |
 
-Diffulex does not plan to support full-attention dLLM models, including the
-original LLaDA, Dream, LLaDA1.5, and DiffuCoder variants.
-
-## Model Names
-
-The CLI and config layer use stable `model_name` strings. Benchmark choices are
-listed in `diffulex_bench.arg_parser.MODEL_NAME_CHOICES`, including:
-
-| `model_name` | Typical use |
-| --- | --- |
-| `dream` | Dream-family model paths. |
-| `sdar` | SDAR dense model paths. |
-| `sdar_moe` | SDAR Mixture-of-Experts paths. |
-| `fast_dllm_v2` | Fast-dLLM-v2 paths. |
-| `llada` | LLaDA-family D2F paths. |
-| `llada2` | LLaDA2 edit-sampling paths. |
-| `llada2_moe` | LLaDA2 MoE edit-sampling paths. |
-| `llada2_mini` | LLaDA2 mini paths. |
-| `llada2dot1_mini` | LLaDA2.1 mini paths. |
-| `llada2_mini_dmax` | LLaDA2 mini paths intended for DMax-style decoding. |
-| `diffusion_gemma` | DiffusionGemma paths with larger block and page sizes. |
-
-Use the model name that matches the implementation registered under
-`diffulex/model/`.
+The original full-attention inference implementations from some upstream dLLM
+projects are not the target runtime. Diffulex adds support model by model
+through block-wise adapters, samplers, and strategy registrations.
 
 ## Strategy Compatibility
 
-Not every model is valid with every decoding strategy. The config validator
-enforces the combinations that would otherwise produce invalid runtime state.
+| Strategy | Use it for | Important behavior |
+| --- | --- | --- |
+| `d2f` | D2F-style LLaDA, Dream, and DiffuCoder paths | Forces full-prefix multi-block behavior and disables prefix caching. |
+| `multi_bd` | LLaDA2, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Uses block-causal decoding and supports prefix caching. |
+| `dmax` | Supported LLaDA2 edit-sampling experiments | Requires `sampling_mode="edit"`. |
+| `diffusion_gemma` | DiffusionGemma | Uses DiffusionGemma request, sampler, block/page size, and canvas defaults. |
 
-| Strategy | Use it for |
+## Sampling Modes
+
+| Sampling mode | Use it for |
 | --- | --- |
-| `d2f` | D2F-style LLaDA and Dream paths. |
-| `multi_bd` | Multi-block diffusion models such as Fast-dLLM-v2 and SDAR-family models. |
-| `dmax` | Supported edit-sampling LLaDA2-family models only. |
+| `naive` | Standard confidence-based diffusion sampling. This is the default for most supported models. |
+| `edit` | LLaDA2-family edit/remask sampling. Required by DMax-style decoding. |
 
-`diffusion_gemma` is normalized to `multi_bd` and uses larger block and page
-sizes.
+## Model Path Requirements
 
-## Loading Requirements
+Model and tokenizer paths should point to local directories. During startup,
+Diffulex loads tokenizer metadata, Hugging Face config, and then the registered
+Diffulex model implementation.
 
-Model and tokenizer paths should point to local directories. The engine loads
-Hugging Face config and tokenizer metadata during startup, then builds the
-registered model implementation.
+Before a full benchmark, verify:
 
-Before running a full benchmark, verify that:
-
-| Requirement | What to verify |
+| Requirement | Check |
 | --- | --- |
-| Model path | The model checkpoint directory exists locally. |
-| Tokenizer | The tokenizer can be loaded, either from the model path or a separate tokenizer path. |
-| `model_name` | The selected model name is registered under `diffulex/model/`. |
-| Sampler | The selected sampler is registered when the model needs custom sampling behavior. |
-| Strategy import | The selected strategy is imported by `diffulex.strategy`. |
+| Checkpoint path | The model directory exists and contains the expected config and weights. |
+| Tokenizer | The tokenizer loads from `tokenizer_path` or the model path. |
+| `model_name` | The model name is listed in the table above and registered under `diffulex/model/`. |
+| Strategy | The strategy is compatible with the model family. |
+| Mask token | `mask_token_id` matches the tokenizer for the selected model. |
+| Page/block size | `block_size <= page_size`; DiffusionGemma uses `256/256`. |
 
-## Adding Support
+## Maintained Benchmark Configs
 
-To add a model family, implement and register the model, add a sampler if
-needed, add config validation only where required, and run a small offline
-generation before adding benchmark or server examples.
+Common starting points live under `diffulex_bench/configs/`:
+
+| Config | Purpose |
+| --- | --- |
+| `llada2_mini_gsm8k.yml` | LLaDA2-mini, `multi_bd`, GSM8K. |
+| `llada2_mini_dmax_gsm8k.yml` | LLaDA2-mini DMax/edit sampling. |
+| `diffusion_gemma_gsm8k.yml` | DiffusionGemma native Diffulex benchmark. |
+| `diffucoder_instruct_gsm8k.yml` | DiffuCoder D2F-style benchmark. |
+| `dream_base_gsm8k.yml` | Dream D2F-style benchmark. |
+| `fast_dllm_v2_gsm8k.yml` | Fast-dLLM-v2 multi-block benchmark. |
+| `sdar_chat_gsm8k.yml` | SDAR dense benchmark. |
+| `sdar_moe_chat_gsm8k.yml` | SDAR-MoE benchmark. |
+
+Start with `--dataset-limit` before running a full dataset.

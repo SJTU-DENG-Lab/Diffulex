@@ -10,6 +10,7 @@ KV cache manager, model runner, sampler, and attention metadata registries.
 | `d2f` | Multi-block diffusion | `D2fReq`, `D2fScheduler`, `D2fKVCacheManager`, `D2fModelRunner`, `D2fAttnMetaData` |
 | `dmax` | Token-merging multi-block diffusion | `DMaxReq`, `DMaxScheduler`, `DMaxKVCacheManager`, `DMaxModelRunner`, `DMaxAttnMetaData` |
 | `multi_bd` | Multi-block diffusion | `MultiBDReq`, `MultiBDScheduler`, `MultiBDKVCacheManager`, `MultiBDModelRunner`, `MultiBDAttnMetaData` |
+| `diffusion_gemma` | DiffusionGemma canvas/block decoding | `DiffusionGemmaReq`, `DiffusionGemmaScheduler`, `DiffusionGemmaKVCacheManager`, `DiffusionGemmaModelRunner`, `DiffusionGemmaAttnMetaData` |
 
 The package-level helpers keep the currently selected strategy name:
 
@@ -52,7 +53,7 @@ attention metadata, and graph capture buffers for token merge descriptors.
 | Symbol | How to use it | What it does |
 | --- | --- | --- |
 | `DMaxReq` | Created through `AutoReq.create(..., decoding_strategy="dmax")`. | Inherits `TokenMergingMultiBlockReqTemplate` and initializes token-merge state from `Config`. |
-| `DMaxScheduler` | Created through `AutoScheduler`. | Calls `init_token_merging_multi_block`, schedules multi-block work, and postprocesses token-merging sample output. |
+| `DMaxScheduler` | Created through `AutoScheduler`. | Uses token-merge request state, schedules multi-block work, and postprocesses token-merge sampler output. |
 | `DMaxKVCacheManager` | Created through `AutoKVCacheManager`. | Uses token-merging multi-block cache behavior on top of the multi-block page allocator. |
 | `DMaxModelRunner` | Created through `AutoModelRunner`. | Binds DMax attention metadata, prepares token-merging metadata tensors, and captures token-merging CUDA graphs. |
 | `DMaxAttnMetaData` | Fetched by the attention backend. | Extends `TokenMergingMultiBlockAttnMetaDataTemplate` and resets token-merging fields on construction. |
@@ -68,8 +69,7 @@ when comparing against reference DMax behavior.
 
 `multi_bd` is another multi-block diffusion strategy. It shares most of the
 same template surface as `d2f`, but follows the configurable
-`multi_block_prefix_full` behavior from `Config`. It also enables prefix-hole
-masking and prefix-causal handling for DiffusionGemma-style blocks.
+`multi_block_prefix_full` behavior from `Config`.
 
 | Symbol | How to use it | What it does |
 | --- | --- | --- |
@@ -82,5 +82,19 @@ masking and prefix-causal handling for DiffusionGemma-style blocks.
 | `set_multi_bd_attn_metadata` | Called by the model runner before attention. | Replaces the current MultiBD metadata with request/page/sequence tensors for the next forward pass. |
 | `reset_multi_bd_attn_metadata` | Called after a forward pass or capture. | Restores an empty MultiBD metadata object. |
 
-Use `multi_bd` as the closer reference when a new strategy needs config-driven
-prefix behavior or DiffusionGemma-compatible block handling.
+Use `multi_bd` as the closer reference when a new strategy needs block-causal
+prefix behavior and prefix caching.
+
+## diffulex.strategy.diffusion_gemma
+
+`diffusion_gemma` is the native DiffusionGemma strategy. It uses a
+DiffusionGemma-specific request, sampler, model runner, and attention metadata
+path with 256-token block/page defaults.
+
+| Symbol | How to use it | What it does |
+| --- | --- | --- |
+| `DiffusionGemmaReq` | Created through `AutoReq.create(..., decoding_strategy="diffusion_gemma")`. | Tracks DiffusionGemma canvas state and commit timing. |
+| `DiffusionGemmaScheduler` | Created through `AutoScheduler`. | Uses the DiffusionGemma request lifecycle with standard scheduling hooks. |
+| `DiffusionGemmaKVCacheManager` | Created through `AutoKVCacheManager`. | Uses the DiffusionGemma page/block layout. |
+| `DiffusionGemmaModelRunner` | Created through `AutoModelRunner`. | Prepares DiffusionGemma prefill/decode tensors, self-conditioning context, and model forward calls. |
+| `DiffusionGemmaAttnMetaData` | Fetched by the attention backend. | Stores DiffusionGemma attention metadata for the current forward pass. |

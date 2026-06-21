@@ -24,11 +24,9 @@ while changing paths or dataset limits:
 
 ```bash
 python -m diffulex_bench.main \
-  --config diffulex_bench/configs/example.yml \
-  --model-path /path/to/model \
-  --tokenizer-path /path/to/tokenizer \
-  --dataset gsm8k_diffulex \
-  --dataset-limit 100 \
+  --config diffulex_bench/configs/llada2_mini_gsm8k.yml \
+  --model-path /path/to/LLaDA2.0-mini \
+  --dataset-limit 10 \
   --output-dir outputs/bench
 ```
 

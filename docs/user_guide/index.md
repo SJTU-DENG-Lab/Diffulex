@@ -1,24 +1,19 @@
----
-orphan: true
----
-
 # User Guide
 
-Use these pages as reference material for configuring and operating Diffulex.
-Unlike the tutorials, these pages are organized by concept and are meant to be
-revisited while editing configs or command lines.
+Use these pages as reference material while editing configs, command lines, or
+deployment settings.
 
-- [Configuration](configuration.md)
-- [Models](models.md)
-- [Features](features/index.md)
-- [Troubleshooting](troubleshooting.md)
-
-## Where to Start
+- [Configuration](configuration.md): engine, sampler, benchmark, and runtime
+  parameter reference.
+- [Models](models.md): model family, strategy, and sampling compatibility.
+- [Benchmark](benchmark.md): config-first evaluation workflow.
+- [Server](server.md): HTTP serving commands and request formats.
+- [Streamlit](streamlit.md): local chat frontend for server validation.
+- [Features](features/index.md): focused pages for prefix caching, CUDA Graph,
+  LoRA, parallelism, and kernels.
+- [Troubleshooting](troubleshooting.md): common environment, CUDA, config, and
+  serving failures.
 
 Start with [Configuration](configuration.md) when a command line is unclear.
-Use [Models](models.md) to check model family and strategy compatibility. Use
-[Features](features/index.md) when tuning a specific runtime capability such as
-prefix caching, CUDA Graph, LoRA, or optimized attention.
-
-For failures, go to [Troubleshooting](troubleshooting.md) before changing many
-settings at once.
+Use [Models](models.md) before combining a new `model_name`,
+`decoding_strategy`, and `sampling_mode`.

@@ -7,9 +7,9 @@ blocks can be added or released.
 
 ## When It Applies
 
-Multi-block behavior is used by strategies such as `multi_bd` and by templates
-under `diffulex/strategy_template/multi_block/`. It is also part of strategy
-specializations such as DMax-style token merging.
+Multi-block behavior is used by strategies such as `multi_bd` and by the core
+block-aware templates in `diffulex.engine` and `diffulex.mixin.multi_block`.
+It is also part of strategy specializations such as DMax-style token merging.
 
 For `d2f`, config normalization forces `multi_block_prefix_full=True`. For
 `multi_bd` and `dmax`, config normalization forces `multi_block_prefix_full=False`.

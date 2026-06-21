@@ -15,9 +15,16 @@ server with the model, strategy, and GPU settings you want to test:
 
 ```bash
 python -m diffulex.server.launch \
-  --model /path/to/model \
-  --model-name llada \
-  --decoding-strategy d2f \
+  --model /path/to/LLaDA2.0-mini \
+  --model-name llada2_mini \
+  --decoding-strategy multi_bd \
+  --sampling-mode naive \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 4096 \
+  --max-num-reqs 1 \
+  --block-size 32 \
+  --buffer-size 1 \
+  --page-size 32 \
   --host 0.0.0.0 \
   --port 8000
 ```

@@ -6,7 +6,8 @@ chosen by `decoding_strategy`.
 
 ## Decoding Strategy
 
-Set `decoding_strategy` to one of `d2f`, `multi_bd`, or `dmax`.
+Set `decoding_strategy` to one of `d2f`, `multi_bd`, `dmax`, or
+`diffusion_gemma`.
 
 Benchmark config input also normalizes older aliases `multi_block_diffusion`,
 `block_diffusion`, and `fast_dllm` to `multi_bd`.
@@ -18,6 +19,7 @@ The choice changes more than the sampler name:
 | `d2f` | Forces full-prefix multi-block behavior and disables prefix caching. |
 | `multi_bd` | Uses multi-block behavior with prefix caching enabled when compatible. |
 | `dmax` | Enables DMax-style token merging on supported edit-sampling models. |
+| `diffusion_gemma` | Uses the native DiffusionGemma canvas/block runtime. |
 
 ## Decoding Thresholds
 

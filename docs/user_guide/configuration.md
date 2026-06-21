@@ -21,7 +21,7 @@ the supported page/block sizes for the selected model family.
 | `model` / `model_path` | Point to the local model checkpoint directory. This is required. | Loads the base model. Python config uses `model`; benchmark YAML uses `engine.model_path`. |
 | `tokenizer_path` | Point to a tokenizer directory, or leave it `null` to reuse the model path. | Lets benchmark flows use a tokenizer stored separately from the weights. |
 | `model_name` | Choose one of the registered model keys: `dream`, `sdar`, `sdar_moe`, `fast_dllm_v2`, `llada`, `llada2`, `llada2_moe`, `llada2_mini`, `llada2dot1_mini`, `llada2_mini_dmax`, or `diffusion_gemma`. The default is `dream`. | Selects the model adapter and the sampler defaults that go with it. |
-| `decoding_strategy` | Use `d2f`, `multi_bd`, or `dmax`. The default is `d2f`. | Chooses the request type, scheduler, KV cache manager, model runner, and attention metadata path. |
+| `decoding_strategy` | Use `d2f`, `multi_bd`, `dmax`, or `diffusion_gemma`. The default is `d2f`. | Chooses the request type, scheduler, KV cache manager, model runner, and attention metadata path. |
 | `sampling_mode` | Use `naive` for the standard sampler or `edit` for edit-style decoding. The default is `naive`. | Selects sampler behavior. `edit` is only valid for compatible LLaDA2-family models. |
 | `mask_token_id` | Use the tokenizer's mask token ID. The default is `151666`, and tokenizer metadata can override it. | Tells diffusion samplers which token represents a masked position. |
 | `tensor_parallel_size` | Use `1` to `8` tensor-parallel ranks. Core config defaults to `2`; CLI examples usually start at `1`. | Splits one model replica across multiple GPUs. |
@@ -38,7 +38,7 @@ the supported page/block sizes for the selected model family.
 | `attn_impl` | Use `triton` or `triton_grouped` for optimized runs, and `naive` for debugging. The default is `triton`. | Selects the attention backend. |
 | `enable_prefix_caching` | Leave it `True` for compatible strategies. `d2f` forces it off during normalization. | Reuses compatible prefix KV cache state across requests. |
 | `enforce_eager` | Set `True` while debugging; leave `False` for optimized runs. | Disables graph-style optimized execution paths. |
-| `enable_prefill_cudagraph` | Leave `True` after correctness is validated. | Captures stable prefill work with CUDA Graphs. |
+| `enable_prefill_cudagraph` | Kept for config compatibility; current benchmark CLI marks this path as a no-op. | Historical prefill graph toggle. |
 | `enable_full_static_runner` | Leave `True` for supported optimized multi-block paths. | Enables full-static CUDA graph runner paths. |
 | `prefill_cudagraph_max_len` | Use `0` to follow `max_model_len`, or set a non-negative bucket length explicitly. | Caps the longest prefill bucket considered for graph capture. |
 | `enable_torch_compile` | Leave `True` when the model path supports compile; turn it off for debugging. | Enables `torch.compile` where Diffulex can use it safely. |
@@ -68,9 +68,10 @@ Some settings are normalized based on the selected strategy:
 | `d2f` | Forces `multi_block_prefix_full=True` and disables prefix caching. |
 | `multi_bd` | Forces `multi_block_prefix_full=False`. |
 | `dmax` | Forces `multi_block_prefix_full=False` and requires edit sampling. |
+| `diffusion_gemma` | Uses DiffusionGemma request/sampler/runtime defaults. |
 
-Model-specific defaults may also apply. `diffusion_gemma` forces `multi_bd`,
-uses block and page size `256`, and uses `buffer_size=1`.
+Model-specific defaults may also apply. `diffusion_gemma` uses block and page
+size `256`, uses `buffer_size=1`, and enables DiffusionGemma sampler controls.
 
 ## Sampling Parameters
 
@@ -120,7 +121,7 @@ when the model path and runtime support it.
 | Key | How to set it | What it does |
 | --- | --- | --- |
 | `enforce_eager` | Set `True` while debugging; keep `False` for optimized runs. | Bypasses graph-style execution paths. |
-| `enable_prefill_cudagraph` | Leave `True` once correctness is stable. | Captures stable prefill work with CUDA Graphs. |
+| `enable_prefill_cudagraph` | Keep unset unless testing legacy behavior. The current benchmark flag is a deprecated no-op. | Historical prefill CUDA graph toggle. |
 | `enable_full_static_runner` | Leave `True` for supported multi-block optimized paths. | Enables the full-static runner where available. |
 | `prefill_cudagraph_max_len` | Use `0` to follow `max_model_len`, or set a non-negative bucket limit. | Bounds the longest prefill graph bucket. |
 | `enable_torch_compile` | Leave `True` when the model supports compile; disable it to isolate compile issues. | Enables `torch.compile` where supported. |
@@ -140,7 +141,7 @@ engine:
   model_path: /path/to/model
   tokenizer_path: null
   model_name: dream
-  decoding_strategy: d2f
+  decoding_strategy: multi_bd
   tensor_parallel_size: 1
   data_parallel_size: 1
 eval:

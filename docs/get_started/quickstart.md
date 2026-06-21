@@ -1,170 +1,186 @@
 # Quickstart
 
-This quickstart takes the shortest path through the main Diffulex workflows:
+This page gives the shortest working path for the current codebase:
 
-- Offline batched inference
-- Online serving
-- Benchmarking
-- choosing a decoding strategy
+- install Diffulex;
+- run a small LLaDA2-mini benchmark;
+- run one in-process Python generation;
+- start the HTTP server;
+- optionally run the vLLM DiffusionGemma baseline.
 
-For deeper workflow explanations, see the [Tutorials](../tutorials/index.md).
+For reproducing the MBD LMS experiments, use the `mbd-lms` branch. The current
+main branch contains ongoing runtime and model-specific optimizations.
 
 ## Prerequisites
 
-- Diffulex is [installed](installation.md) in a Python environment.
-- NVIDIA GPUs are available for inference.
-- The model checkpoint and optional LoRA checkpoint are available locally.
+- Diffulex is installed in a Python environment. See [Installation](installation.md).
+- At least one NVIDIA GPU is visible to PyTorch.
+- The model checkpoint exists locally.
 
-The examples below use D2F-LLaDA. Replace the checkpoint paths with paths from
-your own environment.
+The examples below use LLaDA2-mini:
 
-## Installation
+```bash
+export MODEL_PATH=/data/ckpts/inclusionAI/LLaDA2.0-mini
+```
 
-If you have not installed Diffulex yet, use the NVIDIA CUDA path:
+Replace this path with the location of the checkpoint on your machine.
 
-`````{tabs}
+## 1. Install
 
-````{tab} NVIDIA CUDA
+From the repository root:
 
 ```bash
 uv venv --python 3.11 --seed
 source .venv/bin/activate
 uv pip install -e .
-uv pip install vllm==0.19.1 --torch-backend=auto
+uv pip install vllm
 ```
 
-````
+Verify the install:
 
-````{tab} Other Environment
+```bash
+python -c "from diffulex import Diffulex, SamplingParams; print('ok')"
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
+```
 
-Currently, only CUDA Linux environments are fully supported.
+## 2. Run a Small Benchmark
 
-````
+Use the maintained LLaDA2-mini GSM8K runner. Start with a small limit:
 
-`````
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+MODEL_PATH="$MODEL_PATH" \
+DATASET_LIMIT=10 \
+script/run_llada2_mini_gsm8k.sh
+```
 
-For more details, see [Installation](installation.md).
+The script wraps:
 
-## Offline Batched Inference
+```bash
+python -m diffulex_bench.main \
+  --config diffulex_bench/configs/llada2_mini_gsm8k.yml \
+  --model-path "$MODEL_PATH" \
+  --dataset-limit 10
+```
 
-With Diffulex installed, the simplest workflow is offline generation inside
-your own Python process.
+Results are written under `benchmark_results/llada2_mini_gsm8k/` by default.
+Remove `DATASET_LIMIT` only after the limited run loads the model, generates
+answers, and writes results correctly.
 
-Import the engine class and per-request sampling parameters:
+## 3. Run Python Inference
+
+For a direct in-process call:
 
 ```python
 from diffulex import Diffulex, SamplingParams
-```
 
-Construct the engine from a local model directory. The example starts in eager
-mode to make first-run debugging easier:
+model_path = "/data/ckpts/inclusionAI/LLaDA2.0-mini"
 
-```python
 llm = Diffulex(
-    model="/YOUR-CKPT-PATH/GSAI-ML/LLaDA-8B-Instruct",
-    model_name="llada",
-    decoding_strategy="d2f",
-    tensor_parallel_size=2,
+    model=model_path,
+    model_name="llada2_mini",
+    decoding_strategy="multi_bd",
+    sampling_mode="naive",
+    mask_token_id=156895,
+    tensor_parallel_size=1,
     data_parallel_size=1,
-    max_model_len=2048,
-    max_num_batched_tokens=2048,
-    max_num_reqs=32,
-    use_lora=True,
-    lora_path="/YOUR-CKPT-PATH/SJTU-DENG-Lab/D2F_LLaDA_Instruct_8B_Lora",
-    pre_merge_lora=True,
-    enforce_eager=True,
+    gpu_memory_utilization=0.45,
+    max_model_len=4096,
+    max_num_batched_tokens=4096,
+    max_num_reqs=1,
+    block_size=32,
+    buffer_size=1,
+    page_size=32,
+    attn_impl="triton_grouped",
+    enable_prefix_caching=True,
+    enable_full_static_runner=True,
+    enable_vllm_layers=True,
 )
-```
 
-Define prompts and generation parameters:
+outputs = llm.generate(
+    ["Solve: Natalia sold clips to 48 friends in April, and half as many in May. How many clips did she sell in May?"],
+    SamplingParams(temperature=0.0, max_tokens=256, max_nfe=1024),
+)
 
-```python
-prompts = [
-    "Solve: Natalia sold clips to 48 friends in April, and half as many in May.",
-]
-sampling_params = SamplingParams(temperature=0.0, max_tokens=256)
-```
-
-Run generation and read the generated text:
-
-```python
-outputs = llm.generate(prompts, sampling_params)
-
-for output in outputs.trajectories:
-    print(output.text)
+for item in outputs.trajectories:
+    print(item.text)
 
 llm.exit()
 ```
 
-`Diffulex.generate` returns a `GenerationOutputs` object. Each item in
-`outputs.trajectories` stores the generated text, token IDs, request trajectory,
-and timing data.
+Use `attn_impl="naive"` and `enforce_eager=True` only when debugging
+correctness. Use the optimized settings when measuring throughput.
 
-## Online Serving
+## 4. Start the HTTP Server
 
-For interactive use, run Diffulex behind the HTTP server.
-
-Start the server:
+The server uses the same engine configuration, exposed as CLI flags. A minimal
+single-GPU LLaDA2-mini command is:
 
 ```bash
-python -m diffulex.server.launch \
-  --model /YOUR-CKPT-PATH/GSAI-ML/LLaDA-8B-Instruct \
-  --model-name llada \
-  --decoding-strategy d2f \
-  --tensor-parallel-size 2 \
+CUDA_VISIBLE_DEVICES=0 python -m diffulex.server.launch \
+  --model "$MODEL_PATH" \
+  --model-name llada2_mini \
+  --decoding-strategy multi_bd \
+  --sampling-mode naive \
+  --tensor-parallel-size 1 \
   --data-parallel-size 1 \
-  --max-model-len 2048 \
-  --max-num-batched-tokens 2048 \
-  --max-num-reqs 32 \
-  --use-lora \
-  --lora-path /YOUR-CKPT-PATH/SJTU-DENG-Lab/D2F_LLaDA_Instruct_8B_Lora \
-  --pre-merge-lora \
-  --enforce-eager
+  --max-model-len 4096 \
+  --max-num-batched-tokens 4096 \
+  --max-num-reqs 1 \
+  --block-size 32 \
+  --buffer-size 1 \
+  --page-size 32 \
+  --gpu-memory-utilization 0.45 \
+  --attn-impl triton \
+  --host 127.0.0.1 \
+  --port 8000
 ```
 
-For a local chat UI, start the sample Streamlit frontend after the server is
-running:
+Send a request:
 
 ```bash
-streamlit run examples/streamlit_block_append_chat.py -- --base-url http://localhost:8000
+curl -s http://127.0.0.1:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Solve: 12 + 30.","temperature":0.0,"max_tokens":64,"max_nfe":256}' \
+  | python -m json.tool
 ```
 
-## Benchmarking
-
-Use `diffulex_bench` for dataset-backed evaluation workloads such as GSM8K,
-HumanEval, or MBPP.
-
-Run a D2F-LLaDA GSM8K evaluation:
+For streaming chat validation:
 
 ```bash
-python -m diffulex_bench.main \
-  --config diffulex_bench/configs/llada_instruct_gsm8k.yml \
-  --model-path /YOUR-CKPT-PATH/GSAI-ML/LLaDA-8B-Instruct \
-  --tokenizer-path /YOUR-CKPT-PATH/GSAI-ML/LLaDA-8B-Instruct \
-  --model-name llada \
-  --decoding-strategy d2f \
-  --use-lora \
-  --lora-path /YOUR-CKPT-PATH/SJTU-DENG-Lab/D2F_LLaDA_Instruct_8B_Lora \
-  --dataset gsm8k_diffulex \
-  --dataset-limit 100 \
-  --temperature 0.0 \
-  --max-tokens 256
+streamlit run examples/streamlit_block_append_chat.py -- --base-url http://127.0.0.1:8000
 ```
 
-The config file provides default engine and evaluation settings. Command line
-flags override matching config values.
+## 5. Run DiffusionGemma or vLLM Baselines
 
-## On Decoding Strategies
+Diffulex has a native DiffusionGemma benchmark config:
 
-Set `decoding_strategy` in Python or `--decoding-strategy` on the command line.
-The built-in strategies are:
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m diffulex_bench.main \
+  --config diffulex_bench/configs/diffusion_gemma_gsm8k.yml \
+  --model-path /data/ckpts/google/diffusiongemma-26B-A4B-it \
+  --dataset-limit 10
+```
 
-| Strategy | Use it for |
-| --- | --- |
-| `d2f` | D2F-style block diffusion. |
-| `multi_bd` | Multi-block diffusion strategies such as Fast-dLLM-v2 and SDAR. |
-| `dmax` | DMax-style token merging on supported LLaDA2 models. |
+The repository also keeps a vLLM DiffusionGemma baseline runner. This is for
+comparison, not for starting Diffulex:
 
-Some model names force compatible defaults during config validation. For
-example, `model_name="diffusion_gemma"` uses `multi_bd` and a larger block/page
-size.
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+CONFIG_PATH=examples/engine_lm_eval/configs/vllm_diffusion_gemma_gsm8k_smoke.yml \
+script/run_vllm_diffusion_gemma_gsm8k.sh
+```
+
+Use the `*_full.yml` config only after the smoke run succeeds.
+
+## Decoding Strategy Cheatsheet
+
+| Strategy | Typical models | Notes |
+| --- | --- | --- |
+| `d2f` | D2F LoRA-style LLaDA, Dream, DiffuCoder paths | Full-prefix block decoding; disables prefix caching. |
+| `multi_bd` | LLaDA2-mini, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Block-causal multi-block decoding; supports prefix caching. |
+| `dmax` | Supported LLaDA2 edit-sampling experiments | Requires `sampling_mode="edit"`. |
+| `diffusion_gemma` | DiffusionGemma | Native DiffusionGemma canvas/block decoder. |
+
+For more detail, read [Configuration](../user_guide/configuration.md) and
+[Benchmark](../user_guide/benchmark.md).

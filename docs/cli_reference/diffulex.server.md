@@ -14,9 +14,16 @@ python -m diffulex.server.launch --help
 
 ```bash
 python -m diffulex.server.launch \
-  --model /path/to/model \
-  --model-name llada \
-  --decoding-strategy d2f \
+  --model /path/to/LLaDA2.0-mini \
+  --model-name llada2_mini \
+  --decoding-strategy multi_bd \
+  --sampling-mode naive \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 4096 \
+  --max-num-reqs 1 \
+  --block-size 32 \
+  --buffer-size 1 \
+  --page-size 32 \
   --host 0.0.0.0 \
   --port 8000
 ```
@@ -43,7 +50,7 @@ Most local runs should leave the ZMQ addresses unset.
 | --- | --- | --- |
 | `--model` | Point to the local base-model checkpoint directory. This flag is required. | Loads model weights for the engine backend. |
 | `--model-name` | Use a registered model key. The default is `dream`. | Selects model adapter and sampler defaults. |
-| `--decoding-strategy` | Use `d2f`, `multi_bd`, or `dmax`. The default is `d2f`. | Chooses the strategy-specific request, scheduler, cache, runner, and attention metadata path. |
+| `--decoding-strategy` | Use `d2f`, `multi_bd`, `dmax`, or `diffusion_gemma` where supported by the selected model/config. | Chooses the strategy-specific request, scheduler, cache, runner, and attention metadata path. |
 | `--sampling-mode` | Use `naive` for the standard sampler or `edit` for compatible edit-sampling models. The default is `naive`. | Selects sampler behavior. |
 
 ## Parallelism and Device Arguments
@@ -74,7 +81,7 @@ Most local runs should leave the ZMQ addresses unset.
 
 | Flag | How to set it | What it does |
 | --- | --- | --- |
-| `--disable-prefill-cudagraph` | Add the flag only when you want to turn prefill graph capture off. | Disables prefill CUDA Graph capture. |
+| `--disable-prefill-cudagraph` | Deprecated no-op retained for compatibility. | Does not change current runtime behavior. |
 | `--disable-full-static-runner` | Add the flag when isolating full-static runner issues. | Disables the supported full-static CUDA Graph runner path. |
 | `--prefill-cudagraph-max-len` | Use `0` to follow `max_model_len`, or set a non-negative bucket length explicitly. | Caps the longest prefill bucket captured. |
 | `--disable-torch-compile` | Add the flag while debugging compile-related behavior. | Disables `torch.compile` where it would otherwise be used. |
