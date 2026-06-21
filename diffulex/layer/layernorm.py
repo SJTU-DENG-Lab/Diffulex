@@ -15,7 +15,7 @@ def _vllm_rms_norm_direct(
     weight: torch.Tensor | None,
     eps: float,
 ) -> torch.Tensor | None:
-    if weight is None or not x.is_cuda or not x.is_contiguous():
+    if weight is None or not x.is_cuda:
         return None
     try:
         from vllm import _custom_ops as ops
@@ -23,7 +23,12 @@ def _vllm_rms_norm_direct(
         return None
 
     orig_shape = x.shape
-    x_2d = x.view(-1, x.shape[-1])
+    if x.is_contiguous():
+        x_2d = x.view(-1, x.shape[-1])
+    elif x.stride(-1) == 1:
+        x_2d = x.reshape(-1, x.shape[-1])
+    else:
+        x_2d = x.contiguous().view(-1, x.shape[-1])
     out = torch.empty_like(x_2d)
     ops.rms_norm(out, x_2d, weight, eps)
     return out.view(orig_shape)
@@ -143,6 +148,11 @@ class RMSNorm(nn.Module):
         x: torch.Tensor,
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if torch.compiler.is_compiling():
+            if residual is None:
+                return self.rms_forward_reference(x)
+            return self.add_rms_forward_reference(x, residual)
+
         vllm_impl = getattr(self, "_vllm_impl", None)
         if self._vllm_direct_enabled and not _use_reference_rmsnorm():
             if residual is None:
@@ -161,3 +171,18 @@ class RMSNorm(nn.Module):
             return self.rms_forward(x)
         else:
             return self.add_rms_forward(x, residual)
+
+    def rms_norm_add(self, x: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
+        if torch.compiler.is_compiling():
+            return self.rms_forward_reference(x) + residual
+
+        if not _use_reference_rmsnorm():
+            try:
+                from diffulex_kernel import rms_norm_add
+
+                out = rms_norm_add(x, residual, self.weight, self.eps)
+                if out is not None:
+                    return out
+            except Exception:
+                pass
+        return self.forward(x) + residual

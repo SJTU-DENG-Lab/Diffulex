@@ -1,6 +1,12 @@
 """DiffusionGemma-compatible GSM8K prompts and answer extraction."""
 
-from diffulex_bench.tasks.gsm8k.sdar_utils import process_results_math
+from typing import Any
+
+from diffulex_bench.tasks.gsm8k.llada2_utils import process_results_math_dmax_chat
+
+
+def process_results_math(doc: dict, results: list[str]) -> dict[str, Any]:
+    return process_results_math_dmax_chat(doc, results)
 
 
 def doc_to_text_math(doc: dict) -> str:

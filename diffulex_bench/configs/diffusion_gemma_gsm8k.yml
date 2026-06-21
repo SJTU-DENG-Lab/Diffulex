@@ -11,10 +11,12 @@ engine:
   expert_parallel_size: 1
 
   gpu_memory_utilization: 0.85
-  max_model_len: 768
-  max_num_batched_tokens: 3072
+  # Match the official vLLM serve cap. Diffulex's per-step chunked prefill
+  # budget remains controlled by max_num_batched_tokens below.
+  max_model_len: 262144
+  max_num_batched_tokens: 4096
   max_num_reqs: 4
-  num_pages: 32
+  num_pages: -1
 
   enforce_eager: false
   enable_prefix_caching: false
@@ -24,25 +26,46 @@ engine:
   buffer_size: 1
   multi_block_prefix_full: false
 
-  enable_prefill_cudagraph: true
+  decoding_thresholds:
+    add_block_threshold: 0.1
+    semi_complete_threshold: 0.9
+    accept_threshold: 0.9
+
+  enable_prefill_cudagraph: false
   enable_full_static_runner: true
   enable_torch_compile: true
+  enable_cudagraph_torch_compile: true
+  torch_compile_mode: "default"
+  enable_vectorized_sampler_compile: true
 
   moe_dispatcher_backend: "standard"
-  moe_gemm_impl: "triton"
+  moe_gemm_impl: "vllm_modular"
+
+  # Official DiffusionGemma entropy-bound sampler settings.
+  diffusion_gemma_max_denoising_steps: 48
+  diffusion_gemma_stability_threshold: 1
+  diffusion_gemma_t_min: 0.4
+  diffusion_gemma_t_max: 0.8
+  diffusion_gemma_confidence_threshold: 0.005
+  diffusion_gemma_entropy_bound: 0.1
 
 eval:
   dataset_name: "gsm8k_diffusion_gemma"
   dataset_split: "test"
-  dataset_limit: 10
+  # Default to the full test split. For smoke tests, pass
+  # `--dataset-limit 10` on the command line.
+  dataset_limit: null
 
   temperature: 0.0
-  max_tokens: 256
+  # Generation cap. The DiffusionGemma canvas length is engine.block_size=256;
+  # this should stay aligned with the task's max_gen_toks, not canvas length.
+  max_tokens: 8192
   max_nfe: null
   max_repetition_run: 32
   ignore_eos: false
   add_bos_token: false
 
   output_dir: "benchmark_results/diffusion_gemma_gsm8k"
+  use_run_subdirectory: true
   save_results: true
-  use_tqdm: true
+  use_tqdm: false

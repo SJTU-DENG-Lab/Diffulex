@@ -14,6 +14,7 @@ def build_chunked_prefill_configs():
         "IS_PREFIX_FULL",
         "MASK_PREFIX_HOLE",
         "PREFIX_CAUSAL",
+        "SLIDING_WINDOW",
     ],
     so configs are selected based on those runtime parameters.
     """

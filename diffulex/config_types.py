@@ -39,6 +39,8 @@ class DecodingConfig:
     thresholds: DecodingThresholds
     max_post_edit_steps: int = 16
     penalty_lambda: float = 0.0
+    enable_vectorized_sampler: bool = False
+    enable_vectorized_sampler_compile: bool = False
 
 
 @dataclass
@@ -69,7 +71,7 @@ class ParallelConfig:
 class KernelConfig:
     enforce_eager: bool = False
     attn_impl: str = "triton"
-    enable_prefill_cudagraph: bool = True
+    enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
     enable_torch_compile: bool = True
@@ -99,6 +101,8 @@ class TokenMergeConfig:
     weight: float = 1.0
     dmax_sampler_fast_path: bool = True
     dmax_force_prefill_active: bool = False
+    enable_vectorized_sampler: bool = False
+    enable_vectorized_sampler_compile: bool = False
 
 
 @dataclass

@@ -64,6 +64,7 @@ class TPFusedMoE(FusedMoE):
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         original_shape = hidden_states.shape
         flat_hidden_states = hidden_states.reshape(-1, original_shape[-1])
+        shared_work = self.start_shared_experts_async(hidden_states)
 
         router_logits = self.gate(flat_hidden_states)
         topk_output = self.router(router_logits)
@@ -83,7 +84,10 @@ class TPFusedMoE(FusedMoE):
             final_hidden_states = tp_all_reduce(final_hidden_states, self.tp_group)
 
         final_hidden_states = final_hidden_states.reshape(original_shape)
-        final_hidden_states = self.add_shared_experts(final_hidden_states, hidden_states)
+        if shared_work is None:
+            final_hidden_states = self.add_shared_experts(final_hidden_states, hidden_states)
+        else:
+            final_hidden_states = self.finish_shared_experts_async(final_hidden_states, shared_work)
         return final_hidden_states, router_logits
 
     def _local_expert_idx(self, expert_idx: int) -> int | None:

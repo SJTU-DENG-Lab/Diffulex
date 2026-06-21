@@ -62,6 +62,8 @@ class KVCacheManagerBase(ABC):
     def _allocate_page(self, page_id: int) -> Page:
         page = self.pages[page_id]
         assert page.ref_count == 0
+        if page.hash != -1 and self.hash_to_page_id.get(page.hash) == page_id:
+            del self.hash_to_page_id[page.hash]
         page.reset()
         self.free_page_ids.remove(page_id)
         self.used_page_ids.add(page_id)
@@ -87,7 +89,7 @@ class KVCacheManagerBase(ABC):
             h = self.compute_hash(token_ids, h) if len(token_ids) == self.page_size else -1
             page_id = self.hash_to_page_id.get(h, -1) if self.enable_prefix_caching else -1
 
-            if page_id == -1 or self.pages[page_id].token_ids != token_ids:
+            if page_id == -1 or self.pages[page_id].hash != h or self.pages[page_id].token_ids != token_ids:
                 cache_miss = True
 
             req.page_cache_missed.append(cache_miss)

@@ -294,18 +294,32 @@ def _validate_rope_scaling(
     )
 
 
-@lru_cache(1)
+def _resolve_rope_type(
+    rope_type: str | None,
+    rope_scaling: tuple[tuple[str, Any], ...] | None,
+) -> str:
+    if rope_type not in (None, "default"):
+        return str(rope_type)
+    if rope_scaling is None:
+        return "default"
+    rope_scaling_dict = dict(rope_scaling)
+    return str(rope_scaling_dict.get("rope_type", rope_scaling_dict.get("type", "default")) or "default")
+
+
+@lru_cache(16)
 def _get_rope_cached(
     head_size: int,
     rotary_dim: int,
     max_position: int,
     base: float,
     rope_scaling: tuple[tuple[str, Any], ...] | None = None,
+    rope_type: str | None = "default",
 ):
-    _validate_rope_scaling(rope_scaling)
-    rotary_emb = _make_vllm_rope(head_size, rotary_dim, max_position, base)
+    resolved_rope_type = _resolve_rope_type(rope_type, rope_scaling)
+    rotary_emb = _make_vllm_rope(head_size, rotary_dim, max_position, base, rope_type=resolved_rope_type)
     if rotary_emb is not None:
         return rotary_emb
+    _validate_rope_scaling((("rope_type", resolved_rope_type),) if resolved_rope_type != "default" else rope_scaling)
     rotary_cls = RotaryEmbedding if rotary_dim == head_size else PartialRotaryEmbedding
     rotary_emb = rotary_cls(head_size, rotary_dim, max_position, base)
     return rotary_emb
@@ -317,6 +331,7 @@ def get_rope(
     max_position: int,
     base: float,
     rope_scaling: dict | tuple[tuple[str, Any], ...] | None = None,
+    rope_type: str | None = "default",
 ):
     return _get_rope_cached(
         head_size=head_size,
@@ -324,6 +339,7 @@ def get_rope(
         max_position=max_position,
         base=base,
         rope_scaling=_normalize_rope_scaling(rope_scaling),
+        rope_type=rope_type,
     )
 
 

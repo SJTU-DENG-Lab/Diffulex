@@ -155,42 +155,6 @@ class TokenMergeModelRunnerTemplate(MultiBlockModelRunnerTemplate):
             enabled=num_tokens > 0,
         )
 
-    def _init_prefill_graph_extra_metadata(
-        self: TokenMergeModelRunnerTemplate,
-        attn_metadata: TokenMergeAttnMetaDataTemplate,
-        graph_vars: dict[str, torch.Tensor],
-        bucket_len: int,
-    ) -> None:
-        capture_graph_vars = {
-            "token_merge_mask": graph_vars["token_merge_mask"],
-            "token_merge_topk_ids": graph_vars["token_merge_topk_ids"],
-            "token_merge_topk_probs": graph_vars["token_merge_topk_probs"],
-            "token_merge_residual_probs": graph_vars["token_merge_residual_probs"],
-        }
-        self._init_graph_capture_token_merge_metadata(attn_metadata, capture_graph_vars, bucket_len)
-
-    def _prefill_graph_extra_vars(
-        self: TokenMergeModelRunnerTemplate,
-        bucket_len: int,
-        device: torch.device,
-    ) -> dict[str, torch.Tensor]:
-        token_merge_top_k = self._graph_token_merge_top_k()
-        return {
-            "token_merge_mask": torch.zeros(bucket_len, dtype=torch.bool, device=device),
-            "token_merge_topk_ids": torch.full(
-                (bucket_len, token_merge_top_k),
-                int(self.config.mask_token_id),
-                dtype=torch.int64,
-                device=device,
-            ),
-            "token_merge_topk_probs": torch.zeros(
-                (bucket_len, token_merge_top_k),
-                dtype=torch.float32,
-                device=device,
-            ),
-            "token_merge_residual_probs": torch.zeros((bucket_len, 1), dtype=torch.float32, device=device),
-        }
-
     def _bind_graph_token_merge_metadata(
         self: TokenMergeModelRunnerTemplate,
         attn_metadata: TokenMergeAttnMetaDataTemplate,
@@ -254,74 +218,6 @@ class TokenMergeModelRunnerTemplate(MultiBlockModelRunnerTemplate):
             enabled=has_merge,
         )
 
-    def _bind_prefill_graph_extra_metadata(
-        self: TokenMergeModelRunnerTemplate,
-        attn_metadata: TokenMergeAttnMetaDataTemplate,
-        graph_vars: dict[str, torch.Tensor],
-        bucket_len: int,
-        runtime_num_tokens: int,
-        source_attn_metadata: TokenMergeAttnMetaDataTemplate | None = None,
-    ) -> None:
-        graph_merge_mask = graph_vars["token_merge_mask"][:bucket_len]
-        graph_topk_ids = graph_vars["token_merge_topk_ids"][:bucket_len]
-        graph_topk_probs = graph_vars["token_merge_topk_probs"][:bucket_len]
-        graph_residual_probs = graph_vars["token_merge_residual_probs"][:bucket_len]
-
-        graph_merge_mask.zero_()
-        graph_topk_ids.fill_(int(self.config.mask_token_id))
-        graph_topk_probs.zero_()
-        graph_residual_probs.zero_()
-
-        src_metadata = source_attn_metadata if source_attn_metadata is not None else attn_metadata
-        src_merge_mask = src_metadata.token_merge_mask
-        src_topk_ids = src_metadata.token_merge_topk_ids
-        src_topk_probs = src_metadata.token_merge_topk_probs
-        src_residual_probs = src_metadata.token_merge_residual_probs
-        has_merge = (
-            bool(src_metadata.token_merge_enabled)
-            and src_merge_mask is not None
-            and src_topk_ids is not None
-            and src_topk_probs is not None
-            and src_residual_probs is not None
-        )
-        if has_merge:
-            if int(src_merge_mask.numel()) != runtime_num_tokens:
-                raise RuntimeError(
-                    "Token-merge metadata length does not match prefill graph runtime size: "
-                    f"merge_mask={src_merge_mask.numel()}, runtime_num_tokens={runtime_num_tokens}"
-                )
-            src_top_k = int(src_topk_ids.shape[1])
-            graph_top_k = int(graph_topk_ids.shape[1])
-            if src_top_k > graph_top_k:
-                raise RuntimeError(
-                    "Token-merge top-k exceeds CUDA graph capture capacity: "
-                    f"src_top_k={src_top_k}, graph_top_k={graph_top_k}"
-                )
-            graph_merge_mask[:runtime_num_tokens].copy_(
-                src_merge_mask.to(device=graph_merge_mask.device, dtype=torch.bool)
-            )
-            graph_topk_ids[:runtime_num_tokens, :src_top_k].copy_(
-                src_topk_ids.to(device=graph_topk_ids.device, dtype=torch.int64)
-            )
-            graph_topk_probs[:runtime_num_tokens, :src_top_k].copy_(
-                src_topk_probs.to(device=graph_topk_probs.device, dtype=torch.float32)
-            )
-            graph_residual_probs[:runtime_num_tokens].copy_(
-                src_residual_probs.to(device=graph_residual_probs.device, dtype=torch.float32)
-            )
-
-        attn_metadata.init_token_merge(
-            merge_mask=graph_merge_mask,
-            topk_ids=graph_topk_ids,
-            topk_probs=graph_topk_probs,
-            residual_probs=graph_residual_probs,
-            mask_token_id=self.config.mask_token_id,
-            renormalize=bool(self.config.token_merge_renormalize),
-            mode=self.config.token_merge_mode,
-            weight=float(self.config.token_merge_weight),
-            enabled=has_merge,
-        )
-
     def run_multi_block(
         self: TokenMergeModelRunnerTemplate,
         reqs: list[TokenMergeReqTemplate],
@@ -339,9 +235,6 @@ class TokenMergeModelRunnerTemplate(MultiBlockModelRunnerTemplate):
             full_runner = self._full_static_runner()
 
             if attn_metadata.has_prefill:
-                if full_runner.can_run_prefill(attn_metadata, int(input_ids.size(0))):
-                    with record_function("diffulex.token_merge.full_static_prefill"):
-                        return full_runner.run_prefill(input_ids, positions, attn_metadata)
                 with record_function("diffulex.token_merge.eager_prefill"):
                     return self.model.compute_logits(self.model(input_ids, positions))
 
@@ -411,7 +304,6 @@ class TokenMergeModelRunnerTemplate(MultiBlockModelRunnerTemplate):
         for num_seqs in seq_bs_list:
             self.graph_bs.append(num_seqs * chunk_size)
         self.graphs = {}
-        self.prefill_graphs = {}
         self.graph_pool = None
 
         for num_tokens in tqdm(reversed(self.graph_bs), desc="Capturing CUDA graphs"):

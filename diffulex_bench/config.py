@@ -130,7 +130,7 @@ class EngineConfig:
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
     skip_warmup: bool = False
-    enable_prefill_cudagraph: bool = True
+    enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
     enable_torch_compile: bool = True
@@ -154,6 +154,8 @@ class EngineConfig:
     token_merge_weight: float = 1.0
     dmax_sampler_fast_path: bool = True
     dmax_force_prefill_active: bool = False
+    enable_vectorized_sampler: bool = False
+    enable_vectorized_sampler_compile: bool = False
 
     # MoE configuration
     moe_dispatcher_backend: str = "standard"
@@ -249,7 +251,7 @@ class EvalConfig:
     # If True, lm-eval outputs + diffulex stats/trajectory go under output_dir/run_<time>_<task>/
     use_run_subdirectory: bool = True
     save_results: bool = True
-    use_tqdm: bool = True
+    use_tqdm: bool = False
     # lm-eval requires explicit confirmation for code tasks that execute generated code.
     confirm_run_unsafe_code: bool = True
 

@@ -36,7 +36,7 @@ class ServerArgs:
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
     max_model_len: int = 2048
-    enable_prefill_cudagraph: bool = True
+    enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
     enable_torch_compile: bool = True
@@ -157,7 +157,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
     parser.add_argument("--max-num-reqs", type=int, default=128)
     parser.add_argument("--max-model-len", type=int, default=2048)
-    parser.add_argument("--disable-prefill-cudagraph", action="store_true")
+    parser.add_argument("--disable-prefill-cudagraph", action="store_true", help="Deprecated no-op")
     parser.add_argument("--disable-full-static-runner", action="store_true")
     parser.add_argument("--prefill-cudagraph-max-len", type=int, default=0)
     parser.add_argument("--disable-torch-compile", action="store_true")
@@ -217,7 +217,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         max_num_batched_tokens=ns.max_num_batched_tokens,
         max_num_reqs=ns.max_num_reqs,
         max_model_len=ns.max_model_len,
-        enable_prefill_cudagraph=not ns.disable_prefill_cudagraph,
+        enable_prefill_cudagraph=False,
         enable_full_static_runner=not ns.disable_full_static_runner,
         prefill_cudagraph_max_len=ns.prefill_cudagraph_max_len,
         enable_torch_compile=not ns.disable_torch_compile,

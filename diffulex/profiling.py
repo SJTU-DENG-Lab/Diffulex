@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -79,6 +80,88 @@ def record_function(name: str):
 
 
 profile_scope = record_function
+
+_STAGE_TIMING_COUNTS: dict[str, int] = {}
+
+
+class CudaStageTimer:
+    def __init__(self, scope: str, *, rank: int | None, path: str | None, step: int, enabled: bool) -> None:
+        self.scope = scope
+        self.rank = rank
+        self.path = Path(path).expanduser().resolve() if path else None
+        self.step = step
+        self.enabled = enabled and self.path is not None
+        self.rows: list[dict[str, Any]] = []
+
+    @classmethod
+    def from_env(cls, scope: str, *, rank: int | None = None) -> "CudaStageTimer":
+        path = os.getenv("DIFFULEX_CUDA_STAGE_TIMING_PATH", "")
+        if not path:
+            return cls(scope, rank=rank, path=None, step=0, enabled=False)
+        max_steps = int(os.getenv("DIFFULEX_CUDA_STAGE_TIMING_MAX_STEPS", "256"))
+        key = f"{scope}:{rank}"
+        step = _STAGE_TIMING_COUNTS.get(key, 0)
+        _STAGE_TIMING_COUNTS[key] = step + 1
+        return cls(scope, rank=rank, path=path, step=step, enabled=step < max_steps)
+
+    @contextmanager
+    def stage(self, name: str):
+        if not self.enabled:
+            yield
+            return
+
+        device = torch.cuda.current_device() if torch.cuda.is_available() else None
+        start_event = end_event = None
+        if device is not None:
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+        cpu_start = time.perf_counter()
+        exc_type = None
+        try:
+            yield
+        except BaseException as exc:
+            exc_type = type(exc).__name__
+            raise
+        finally:
+            cpu_end = time.perf_counter()
+            if end_event is not None:
+                end_event.record()
+            self.rows.append(
+                {
+                    "scope": self.scope,
+                    "rank": "" if self.rank is None else self.rank,
+                    "pid": os.getpid(),
+                    "step": self.step,
+                    "stage": name,
+                    "cpu_ms": (cpu_end - cpu_start) * 1000.0,
+                    "cuda_ms": "",
+                    "device": "" if device is None else device,
+                    "exception": "" if exc_type is None else exc_type,
+                    "_start_event": start_event,
+                    "_end_event": end_event,
+                }
+            )
+
+    def flush(self) -> None:
+        if not self.enabled or not self.rows or self.path is None:
+            return
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        header = ["scope", "rank", "pid", "step", "stage", "cpu_ms", "cuda_ms", "device", "exception"]
+        file_exists = self.path.exists()
+        with self.path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=header)
+            if not file_exists:
+                writer.writeheader()
+            for row in self.rows:
+                start_event = row.pop("_start_event")
+                end_event = row.pop("_end_event")
+                if start_event is not None and end_event is not None:
+                    row["cuda_ms"] = start_event.elapsed_time(end_event)
+                writer.writerow(row)
+        self.rows.clear()
 
 
 class TorchProfileSession:

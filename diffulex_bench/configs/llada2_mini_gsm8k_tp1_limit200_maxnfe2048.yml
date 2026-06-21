@@ -1,7 +1,6 @@
-# LLaDA2.0-mini GSM8K bench config.
-# Default is the current efficient TP1 Diffulex setup aligned with the
-# SGLang llada2 GSM8K eval prompt/template. For a 200-sample parity run,
-# set eval.dataset_limit to 200.
+# LLaDA2.0-mini GSM8K parity run against the SGLang llada2 eval config.
+# Keep TP1 and generation caps in YAML because CLI values equal to argparse
+# defaults are not always treated as explicit overrides by diffulex_bench.main.
 
 engine:
   model_path: "/data/ckpts/inclusionAI/LLaDA2.0-mini"
@@ -29,10 +28,10 @@ engine:
   max_num_reqs: 1
 
   enforce_eager: false
+  kv_cache_layout: "unified"
   attn_impl: "triton_grouped"
   enable_vllm_layers: true
   enable_prefix_caching: true
-  kv_cache_layout: "unified"
   page_size: 32
 
   enable_prefill_cudagraph: false
@@ -48,8 +47,6 @@ engine:
   token_merge_weight: 1.0
   dmax_sampler_fast_path: true
   dmax_force_prefill_active: false
-  enable_vectorized_sampler: true
-  enable_vectorized_sampler_compile: false
 
   decoding_thresholds:
     add_block_threshold: 0.1
@@ -60,18 +57,17 @@ engine:
 
   block_size: 32
   buffer_size: 1
-  multi_block_prefix_full: false
+  multi_block_prefix_full: true
 
 eval:
   dataset_name: "gsm8k_llada2"
   dataset_split: "test"
-  dataset_limit: null
+  dataset_limit: 200
   temperature: 0.0
-  max_tokens: 4096
-  max_nfe: 1024
+  max_tokens: 2048
+  max_nfe: 2048
   ignore_eos: false
   add_bos_token: false
-  output_dir: "benchmark_results/llada2_mini_gsm8k"
-  use_run_subdirectory: true
+  output_dir: "benchmark_results/llada2_modular"
+  use_run_subdirectory: false
   save_results: true
-  use_tqdm: false

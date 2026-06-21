@@ -52,6 +52,44 @@ def _strip_at_until_terms(response: str, until_terms: list[str]) -> str:
     return out
 
 
+def _get_generation_arg(gen_kw: object, *names: str, default=None):
+    if gen_kw is None:
+        return default
+    for name in names:
+        if isinstance(gen_kw, dict):
+            if name in gen_kw:
+                return gen_kw[name]
+        elif hasattr(gen_kw, name):
+            return getattr(gen_kw, name)
+    return default
+
+
+def _sampling_params_from_generation_kwargs(default: SamplingParams, gen_kw: object) -> SamplingParams:
+    max_tokens = _get_generation_arg(
+        gen_kw,
+        "max_gen_toks",
+        "max_tokens",
+        "max_new_tokens",
+        default=default.max_tokens,
+    )
+    temperature = _get_generation_arg(gen_kw, "temperature", default=default.temperature)
+    max_nfe = _get_generation_arg(gen_kw, "max_nfe", default=default.max_nfe)
+    max_repetition_run = _get_generation_arg(
+        gen_kw,
+        "max_repetition_run",
+        default=default.max_repetition_run,
+    )
+    ignore_eos = _get_generation_arg(gen_kw, "ignore_eos", default=default.ignore_eos)
+
+    return SamplingParams(
+        temperature=float(temperature),
+        max_tokens=int(max_tokens),
+        max_nfe=None if max_nfe is None else int(max_nfe),
+        max_repetition_run=None if max_repetition_run is None else int(max_repetition_run),
+        ignore_eos=_coerce_bool(ignore_eos, default=default.ignore_eos),
+    )
+
+
 def _coerce_bool(v: Union[bool, str, int, None], default: bool = False) -> bool:
     if v is None:
         return default
@@ -282,7 +320,7 @@ class DiffulexLM(LM):
     def tokenizer_name(self) -> str:
         return self.tokenizer.name_or_path.replace("/", "__")
 
-    def generate_until(self, requests: List[Instance], disable_tqdm: bool = False):
+    def generate_until(self, requests: List[Instance], disable_tqdm: bool = True):
         """
         Generate text until stopping conditions are met.
 
@@ -308,9 +346,13 @@ class DiffulexLM(LM):
 
         # Run generation
         start_time = time.time()
+        sampling_params = [
+            _sampling_params_from_generation_kwargs(self.sampling_params, gen_kw)
+            for gen_kw in gen_args
+        ]
         outputs = self.runner.generate(
             prompts,
-            self.sampling_params,
+            sampling_params,
             use_tqdm=not disable_tqdm,
         )
         end_time = time.time()

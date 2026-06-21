@@ -67,6 +67,14 @@ def __getattr__(name: str):
         from diffulex_kernel.python.fused_topk_triton import fused_group_limited_topk
         return fused_group_limited_topk
 
+    if name == "greedy_confidence":
+        from diffulex_kernel.python.sampler_kernels import greedy_confidence
+        return greedy_confidence
+
+    if name == "rms_norm_add":
+        from diffulex_kernel.python.layernorm_kernels import rms_norm_add
+        return rms_norm_add
+
     raise AttributeError(name)
 
 
@@ -83,4 +91,6 @@ __all__ = [
     "fused_topk",
     "fused_group_limited_topk",
     "fused_grouped_topk",
+    "greedy_confidence",
+    "rms_norm_add",
 ]

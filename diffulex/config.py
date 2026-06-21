@@ -95,6 +95,8 @@ class Config:
     token_merge_weight: float = 1.0
     dmax_sampler_fast_path: bool = True
     dmax_force_prefill_active: bool = False
+    enable_vectorized_sampler: bool = False
+    enable_vectorized_sampler_compile: bool = False
     sampling_mode: str = "naive"  # "naive" or "edit"
     max_post_edit_steps: int = 16  # max refinement steps after all masks filled (JointThreshold)
     penalty_lambda: float = 0.0  # repetition penalty coefficient (JointThreshold)
@@ -131,7 +133,7 @@ class Config:
     # CUDA Graph
     enforce_eager: bool = False
     attn_impl: str = "triton"  # "triton", "triton_grouped", or "naive"
-    enable_prefill_cudagraph: bool = True
+    enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
     enable_torch_compile: bool = True
@@ -363,7 +365,7 @@ class Config:
             raise AttributeError(f"Cannot determine max model length from config: {type(self.hf_config)}")
         self.max_model_len = min(self.max_model_len, cfg_max_model_len)
         
-        if self.max_num_batched_tokens < self.max_model_len:
+        if self.max_num_batched_tokens < self.max_model_len and not self.is_diffusion_gemma:
             raise ValueError(
                 "max_num_batched_tokens must be >= max_model_len after HF config clamp, "
                 f"got max_num_batched_tokens={self.max_num_batched_tokens}, "
@@ -496,6 +498,8 @@ class Config:
             thresholds=self.decoding_thresholds,
             max_post_edit_steps=self.max_post_edit_steps,
             penalty_lambda=self.penalty_lambda,
+            enable_vectorized_sampler=self.enable_vectorized_sampler,
+            enable_vectorized_sampler_compile=self.enable_vectorized_sampler_compile,
         )
         self.scheduler_config = SchedulerConfig(
             max_num_batched_tokens=self.max_num_batched_tokens,
@@ -546,6 +550,8 @@ class Config:
             weight=self.token_merge_weight,
             dmax_sampler_fast_path=self.dmax_sampler_fast_path,
             dmax_force_prefill_active=self.dmax_force_prefill_active,
+            enable_vectorized_sampler=self.enable_vectorized_sampler,
+            enable_vectorized_sampler_compile=self.enable_vectorized_sampler_compile,
         )
         self.runtime = RuntimeConfig(
             model=self.model_config,

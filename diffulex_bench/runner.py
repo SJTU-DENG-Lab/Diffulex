@@ -35,6 +35,8 @@ class BenchmarkRunner:
         self.model_path = model_path
         self.tokenizer_path = tokenizer_path or model_path
         self.logger = get_logger(__name__)
+        self.profiler_config = diffulex_kwargs.get("profiler_config")
+        self._profile_started = False
 
         # Initialize Diffulex engine
         self.logger.info("Initializing Diffulex engine...")
@@ -84,11 +86,23 @@ class BenchmarkRunner:
         self.logger.success("Engine is ready")
         return
 
+    def _maybe_start_profile(self) -> None:
+        if self._profile_started or not self.profiler_config:
+            return
+        start_profile = getattr(self.llm, "start_profile", None)
+        if not callable(start_profile):
+            return
+        profile_prefix = None
+        if isinstance(self.profiler_config, dict):
+            profile_prefix = self.profiler_config.get("run_id")
+        start_profile(profile_prefix)
+        self._profile_started = True
+
     def generate(
         self,
         prompts: List[str],
         sampling_params: SamplingParams,
-        use_tqdm: bool = True,
+        use_tqdm: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Generate text
@@ -100,6 +114,7 @@ class BenchmarkRunner:
         Returns:
             List of generation results, each containing text, token_ids, nfe
         """
+        self._maybe_start_profile()
         start_time = time.time()
 
         raw_outputs = self.llm.generate(prompts, sampling_params, use_tqdm=use_tqdm)
@@ -137,7 +152,7 @@ class BenchmarkRunner:
         self,
         prompts: List[str],
         sampling_params: SamplingParams,
-        use_tqdm: bool = True,
+        use_tqdm: bool = False,
     ) -> Dict[str, Any]:
         """
         Evaluate a batch of prompts

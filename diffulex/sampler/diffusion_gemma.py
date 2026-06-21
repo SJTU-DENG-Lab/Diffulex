@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+
 import torch
 import torch.nn.functional as F
 
@@ -9,6 +12,42 @@ from diffulex.sampler.auto_sampler import AutoSampler
 from diffulex.sampler.base import DllmSamplerNoShiftBase, SampleOutputBase
 
 logger = get_logger(__name__)
+
+
+def _diffusion_gemma_entropy_bound_mask_eager(
+    entropy: torch.Tensor,
+    entropy_bound: torch.Tensor,
+) -> torch.Tensor:
+    order = torch.argsort(entropy, dim=0)
+    sorted_entropy = entropy[order]
+    cumulative = torch.cumsum(sorted_entropy, dim=0)
+    cumulative_max = torch.cummax(sorted_entropy, dim=0).values
+    sorted_mask = (cumulative - cumulative_max) <= entropy_bound
+    mask = torch.zeros_like(sorted_mask, dtype=torch.bool)
+    return mask.scatter(0, order, sorted_mask)
+
+
+def _diffusion_gemma_denoise_step_eager(
+    logits_fp32: torch.Tensor,
+    temperature: torch.Tensor,
+    entropy_bound: torch.Tensor,
+    vocab_limit: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    scaled_logits = logits_fp32 / temperature.to(torch.float32).clamp(min=1e-10)
+
+    noise = torch.rand_like(scaled_logits, dtype=torch.float32).clamp_(1e-6, 1 - 1e-6)
+    gumbel = -torch.log(-torch.log(noise))
+    use_noise = (temperature > 0).to(dtype=torch.float32)
+    sampled_tokens = torch.argmax(scaled_logits + gumbel * use_noise, dim=-1)
+    argmax_tokens = torch.argmax(scaled_logits, dim=-1)
+
+    log_probs = F.log_softmax(scaled_logits, dim=-1)
+    probs = log_probs.exp()
+    entropy = -(probs * log_probs).sum(dim=-1)
+    entropy_mask = _diffusion_gemma_entropy_bound_mask_eager(entropy, entropy_bound)
+    random_tokens = torch.randint(0, vocab_limit, sampled_tokens.shape, device=sampled_tokens.device)
+    denoised_tokens = torch.where(entropy_mask, sampled_tokens, random_tokens)
+    return denoised_tokens, argmax_tokens, entropy, probs
 
 
 @AutoSampler.register("diffusion_gemma", use_full_config=True)
@@ -30,6 +69,26 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
         self._states: dict[str, dict] = {}
         self._model = None
         self._warned_self_conditioning_unavailable = False
+        self._debug_path = os.environ.get("DIFFULEX_GEMMA_DEBUG_PATH") or None
+        self._sanitize_logits_enabled = os.getenv("DIFFULEX_SANITIZE_LOGITS", "0") == "1"
+        self._save_confidence_map = os.getenv("DIFFULEX_SAVE_CONFIDENCE_MAP", "0") == "1"
+        self._enable_sampler_compile = bool(getattr(config, "enable_vectorized_sampler_compile", False))
+        self._compiled_denoise_step = None
+        self._compile_failed = False
+
+    def _debug_record(self, payload: dict) -> None:
+        if not self._debug_path:
+            return
+        with open(self._debug_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _tensor_to_python_list(tensor: torch.Tensor) -> list:
+        return tensor.detach().to("cpu").numpy().tolist()
+
+    @staticmethod
+    def _tensor_to_python_float(tensor: torch.Tensor) -> float:
+        return float(tensor.detach().to("cpu").numpy().item())
 
     def evict_req_states(self, req_ids: list[int] | list[str]) -> None:
         for req_id in req_ids:
@@ -44,12 +103,12 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
         return self.t_min + (self.t_max - self.t_min) * remaining_ratio
 
     @staticmethod
-    def _sample_argmax(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    def _sample_argmax(scaled_logits: torch.Tensor, temperature: float) -> torch.Tensor:
         if temperature <= 0:
-            return torch.argmax(logits, dim=-1)
-        noise = torch.rand_like(logits, dtype=torch.float32).clamp_(1e-6, 1 - 1e-6)
+            return torch.argmax(scaled_logits, dim=-1)
+        noise = torch.rand_like(scaled_logits, dtype=torch.float32).clamp_(1e-6, 1 - 1e-6)
         gumbel = -torch.log(-torch.log(noise))
-        return torch.argmax(logits.to(torch.float32) + gumbel * temperature, dim=-1)
+        return torch.argmax(scaled_logits.to(torch.float32) + gumbel, dim=-1)
 
     @staticmethod
     def _entropy_bound_mask(entropy: torch.Tensor, entropy_bound: float) -> torch.Tensor:
@@ -86,25 +145,56 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
         return all(torch.equal(latest, previous) for previous in history[-threshold:])
 
     def _random_tokens_like(self, tokens: torch.Tensor, vocab_limit: int, mask_token_id: int) -> torch.Tensor:
-        random_tokens = torch.randint(0, vocab_limit, tokens.shape, device=tokens.device)
-        if 0 <= mask_token_id < vocab_limit and vocab_limit > 1:
-            replacement = torch.randint(0, vocab_limit - 1, tokens.shape, device=tokens.device)
-            replacement = replacement + (replacement >= mask_token_id).to(replacement.dtype)
-            random_tokens = torch.where(random_tokens == mask_token_id, replacement, random_tokens)
-        return random_tokens
+        del mask_token_id
+        return torch.randint(0, vocab_limit, tokens.shape, device=tokens.device)
 
     def _sanitize_logits(self, logits: torch.Tensor, vocab_limit: int, mask_token_id: int) -> torch.Tensor:
         logits = logits.to(torch.float32)
         logits_min = torch.finfo(logits.dtype).min
-        if not torch.isfinite(logits).all():
+        if self._sanitize_logits_enabled:
             logits = torch.where(torch.isfinite(logits), logits, torch.full_like(logits, logits_min))
         if 0 < vocab_limit < logits.size(-1):
             logits = logits.clone()
             logits[..., vocab_limit:] = logits_min
-        if 0 <= mask_token_id < logits.size(-1):
-            logits = logits.clone()
-            logits[..., mask_token_id] = logits_min
+        # DiffusionGemma denoises random canvas tokens over the model vocabulary.
+        # Unlike mask-based diffusion models, the official vLLM sampler does not
+        # suppress a mask token during sampling or entropy computation.
+        del mask_token_id
         return logits
+
+    def _denoise_step(
+        self,
+        logits_fp32: torch.Tensor,
+        temperature: float,
+        vocab_limit: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        if not self._enable_sampler_compile or self._compile_failed or self._debug_path:
+            return None
+        if self._compiled_denoise_step is None:
+            try:
+                self._compiled_denoise_step = torch.compile(
+                    _diffusion_gemma_denoise_step_eager,
+                    dynamic=True,
+                    fullgraph=False,
+                )
+            except Exception as exc:
+                self._compile_failed = True
+                logger.warning("Disabling DiffusionGemma compiled sampler: %s", exc)
+                return None
+
+        temperature_tensor = torch.tensor(float(temperature), device=logits_fp32.device, dtype=torch.float32)
+        entropy_bound_tensor = torch.tensor(float(self.entropy_bound), device=logits_fp32.device, dtype=torch.float32)
+        try:
+            return self._compiled_denoise_step(
+                logits_fp32,
+                temperature_tensor,
+                entropy_bound_tensor,
+                int(vocab_limit),
+            )
+        except Exception as exc:
+            self._compile_failed = True
+            logger.warning("Disabling DiffusionGemma compiled sampler after runtime failure: %s", exc)
+            return None
 
     def get_self_conditioning_embeds(self, req_id, block_id) -> torch.Tensor | None:
         state = self._states.get(str(req_id))
@@ -137,7 +227,10 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                 probs_shard = probs[..., vocab_start:vocab_end]
                 soft_embeds = torch.matmul(probs_shard.to(embed_weight.dtype), embed_weight)
                 soft_embeds = tp_all_reduce(soft_embeds, tp_group)
-                soft_embeds = soft_embeds * normalizer.to(device=soft_embeds.device, dtype=soft_embeds.dtype)
+                soft_embeds = soft_embeds.to(torch.float32) * normalizer.to(
+                    device=soft_embeds.device,
+                    dtype=torch.float32,
+                )
                 if valid_commit_len < block_size:
                     soft_embeds = soft_embeds.clone()
                     soft_embeds[valid_commit_len:] = 0
@@ -154,7 +247,10 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
             return None
 
         soft_embeds = torch.matmul(probs.to(embed_weight.dtype), embed_weight)
-        soft_embeds = soft_embeds * normalizer.to(device=soft_embeds.device, dtype=soft_embeds.dtype)
+        soft_embeds = soft_embeds.to(torch.float32) * normalizer.to(
+            device=soft_embeds.device,
+            dtype=torch.float32,
+        )
         if valid_commit_len < block_size:
             soft_embeds = soft_embeds.clone()
             soft_embeds[valid_commit_len:] = 0
@@ -234,7 +330,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                     argmax_canvas = state.get("argmax_canvas")
                     if argmax_canvas is None:
                         argmax_tokens = torch.argmax(logits_fp32, dim=-1)
-                        block_tokens = argmax_tokens.detach().to("cpu").tolist()
+                        block_tokens = self._tensor_to_python_list(argmax_tokens)
                     else:
                         block_tokens = list(argmax_canvas)
                     true_local_ids_sub[block_id_str] = []
@@ -251,35 +347,88 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                         "all_confident": True,
                         "valid_commit_len": valid_commit_len,
                     }
+                    self._debug_record(
+                        {
+                            "req_id": int(req.req_id),
+                            "block_id": int(block.block_id),
+                            "event": "commit",
+                            "valid_commit_len": valid_commit_len,
+                            "num_tokens": len(block_tokens),
+                        }
+                    )
                     self._states.pop(req_id_str, None)
                     continue
 
                 step = int(state.get("step", 0))
                 temperature = self._temperature_for_step(step)
-                sampled_tokens = self._sample_argmax(logits_fp32, temperature)
-                argmax_tokens = torch.argmax(logits_fp32, dim=-1)
+                denoise_step_output = self._denoise_step(
+                    logits_fp32,
+                    temperature,
+                    vocab_limit,
+                )
+                if denoise_step_output is None:
+                    scaled_logits = logits_fp32 / max(float(temperature), 1e-10)
+                    sampled_tokens = self._sample_argmax(scaled_logits, temperature)
+                    argmax_tokens = torch.argmax(scaled_logits, dim=-1)
 
-                probs = F.softmax(logits_fp32, dim=-1)
-                log_probs = F.log_softmax(logits_fp32, dim=-1)
-                entropy = -(probs * log_probs).sum(dim=-1)
-                entropy_mask = self._entropy_bound_mask(entropy, self.entropy_bound)
-                random_tokens = self._random_tokens_like(sampled_tokens, vocab_limit, int(block.mask_token_id))
-                denoised_tokens = torch.where(entropy_mask, sampled_tokens, random_tokens)
+                    log_probs = F.log_softmax(scaled_logits, dim=-1)
+                    probs = log_probs.exp()
+                    entropy = -(probs * log_probs).sum(dim=-1)
+                    entropy_mask = self._entropy_bound_mask(entropy, self.entropy_bound)
+                    random_tokens = self._random_tokens_like(sampled_tokens, vocab_limit, int(block.mask_token_id))
+                    denoised_tokens = torch.where(entropy_mask, sampled_tokens, random_tokens)
+                else:
+                    denoised_tokens, argmax_tokens, entropy, probs = denoise_step_output
+                    entropy_mask = None
+                argmax_tokens_cpu = argmax_tokens.detach().to("cpu")
 
                 history = list(state.get("history", []))
-                history.append(argmax_tokens.detach().to("cpu"))
+                history.append(argmax_tokens_cpu)
                 max_history = max(1, self.stability_threshold)
                 history = history[-max_history:]
 
                 next_step = step + 1
                 stable = self._stable_argmax(history, self.stability_threshold)
-                mean_entropy = float(entropy.mean().item()) if entropy.numel() else 0.0
+                mean_entropy = self._tensor_to_python_float(entropy.mean()) if entropy.numel() else 0.0
                 confident = mean_entropy <= self.confidence_threshold
                 timed_out = next_step >= max(1, self.max_denoising_steps)
                 converged = timed_out or (stable and confident)
+                if self._debug_path:
+                    unscaled_log_probs = F.log_softmax(logits_fp32, dim=-1)
+                    unscaled_probs = unscaled_log_probs.exp()
+                    unscaled_entropy = -(unscaled_probs * unscaled_log_probs).sum(dim=-1)
+                    eos_token_id = int(getattr(req, "eos_token_id", -1))
+                    self._debug_record(
+                        {
+                            "req_id": int(req.req_id),
+                            "block_id": int(block.block_id),
+                            "event": "denoise",
+                            "step": step,
+                            "next_step": next_step,
+                            "temperature": float(temperature),
+                            "mean_entropy": mean_entropy,
+                            "mean_entropy_unscaled": float(unscaled_entropy.mean().item())
+                            if unscaled_entropy.numel()
+                            else 0.0,
+                            "confidence_threshold": self.confidence_threshold,
+                            "stable": bool(stable),
+                            "confident": bool(confident),
+                            "timed_out": bool(timed_out),
+                            "converged": bool(converged),
+                            "entropy_bound": self.entropy_bound,
+                            "entropy_accept_count": int(entropy_mask.sum().item()) if entropy_mask is not None else -1,
+                            "valid_commit_len": valid_commit_len,
+                            "argmax_eos_count": int((argmax_tokens == eos_token_id).sum().item())
+                            if eos_token_id >= 0
+                            else 0,
+                            "denoised_eos_count": int((denoised_tokens == eos_token_id).sum().item())
+                            if eos_token_id >= 0
+                            else 0,
+                        }
+                    )
 
                 if converged:
-                    block_tokens = argmax_tokens.detach().to("cpu").tolist()
+                    block_tokens = self._tensor_to_python_list(argmax_tokens_cpu)
                     true_local_ids_sub[block_id_str] = []
                     accepted_ids_sub[block_id_str] = []
                     sampled_tokens_sub[block_id_str] = block_tokens
@@ -294,7 +443,7 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                     if embeds_by_block is not None:
                         embeds_by_block.pop(block_id_str, None)
                 else:
-                    block_tokens = denoised_tokens.detach().to("cpu").tolist()
+                    block_tokens = self._tensor_to_python_list(denoised_tokens)
                     true_local_ids_sub[block_id_str] = []
                     accepted_ids_sub[block_id_str] = []
                     sampled_tokens_sub[block_id_str] = block_tokens
@@ -316,7 +465,9 @@ class DiffusionGemmaSampler(DllmSamplerNoShiftBase):
                         if embeds_by_block is not None:
                             embeds_by_block.pop(block_id_str, None)
 
-                confidence_sub[block_id_str] = (-entropy).detach().to("cpu").tolist()
+                confidence_sub[block_id_str] = (
+                    self._tensor_to_python_list(-entropy) if self._save_confidence_map else []
+                )
                 block_state_sub[block_id_str] = {
                     "committable": False,
                     "same_as_previous": stable,

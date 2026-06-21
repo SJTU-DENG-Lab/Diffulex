@@ -5,11 +5,78 @@ import torch
 import torch.nn.functional as F
 
 from diffulex.mixin import BlockRewriteSamplerMixin, TokenMergeSamplerMixin
+from diffulex.profiling import record_function
 from diffulex.sampler.auto_sampler import AutoSampler
 from diffulex.sampler.base import DllmSamplerNoShiftBase
 
 
+def _llada2_greedy_sample_eager(
+    logits: torch.Tensor,
+    tokenizer_vocab_size: int,
+    mask_token_id: int,
+    sanitize_logits: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    logits_min = torch.finfo(logits.dtype).min
+    logits_neg_inf = torch.tensor(float("-inf"), dtype=logits.dtype, device=logits.device)
+
+    if sanitize_logits and not torch.isfinite(logits).all():
+        logits = logits.clone()
+        logits = torch.where(torch.isfinite(logits), logits, torch.full_like(logits, logits_min))
+
+    needs_vocab_mask = 0 <= int(tokenizer_vocab_size) < logits.size(-1)
+    needs_mask_token_mask = 0 <= int(mask_token_id) < logits.size(-1)
+    if needs_vocab_mask or needs_mask_token_mask:
+        logits = logits.clone()
+        if needs_vocab_mask:
+            logits[..., int(tokenizer_vocab_size) :] = logits_neg_inf
+        if needs_mask_token_mask:
+            logits[..., int(mask_token_id)] = logits_neg_inf
+
+    probs = torch.softmax(logits, dim=-1)
+    max_logits = logits.max(dim=-1).values
+    tie_mask = logits == max_logits.unsqueeze(-1)
+    sampled_tokens = logits.size(-1) - 1 - tie_mask.flip(dims=[-1]).to(torch.int32).argmax(dim=-1)
+    initial_confidence = torch.gather(probs, -1, sampled_tokens.unsqueeze(-1)).squeeze(-1)
+    confidence = initial_confidence.clone()
+    return confidence, sampled_tokens, initial_confidence
+
+
+def _temperature_value(temperatures, req_idx: int) -> float:
+    temperature = temperatures[req_idx]
+    if torch.is_tensor(temperature):
+        return float(temperature.item())
+    return float(temperature)
+
+
 class LLaDA2AcceptedIdsMixin:
+    def _can_compute_accepted_ids_cpu(self, block) -> bool:
+        del block
+        return True
+
+    def _compute_accepted_ids_cpu(
+        self,
+        block,
+        confidence: list[float],
+        initial_confidence: list[float],
+        sampled_tokens: list[int],
+        **kwargs,
+    ) -> list[int] | None:
+        del sampled_tokens, kwargs
+        accept_threshold = float(block.thresholds.accept_threshold)
+        pre_block_complete = block.prev_block.is_semi_complete if block.prev_block else True
+
+        high_conf_indices = [
+            idx for idx, value in enumerate(initial_confidence) if float(value) > accept_threshold
+        ]
+        if pre_block_complete:
+            if not high_conf_indices:
+                if not confidence:
+                    return []
+                best_idx = max(range(len(confidence)), key=lambda idx: confidence[idx])
+                return [int(best_idx)]
+            return sorted(set(int(idx) for idx in high_conf_indices))
+        return [int(idx) for idx in high_conf_indices]
+
     def _compute_accepted_ids(
         self,
         block,
@@ -35,6 +102,360 @@ class LLaDA2Sampler(LLaDA2AcceptedIdsMixin, DllmSamplerNoShiftBase):
     def __init__(self, config=None):
         del config
         super().__init__()
+
+
+class LLaDA2VectorizedSampler(LLaDA2Sampler):
+    def __init__(self, config=None):
+        super().__init__(config=config)
+        self._enable_vectorized_compile = bool(getattr(config, "enable_vectorized_sampler_compile", False))
+        self._tensor_parallel_size = int(getattr(config, "tensor_parallel_size", 1))
+        self._compiled_greedy_sample = None
+        self._compile_failed = False
+        self._fused_greedy_unavailable = False
+
+    def _can_vectorize_request(
+        self,
+        temperatures: torch.Tensor | None,
+        top_p,
+        top_k,
+        margin_confidence,
+        neg_entropy,
+    ) -> bool:
+        if self._tensor_parallel_size != 1:
+            return False
+        if top_p is not None or top_k is not None:
+            return False
+        if margin_confidence not in (False, None):
+            return False
+        if neg_entropy not in (False, None):
+            return False
+        if temperatures is None:
+            return False
+        if torch.is_tensor(temperatures):
+            if temperatures.numel() == 0:
+                return True
+            return not bool((temperatures != 0).any().item())
+        return all(float(value) == 0.0 for value in temperatures)
+
+    def _greedy_sample(
+        self,
+        logits: torch.Tensor,
+        mask_token_id: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        tokenizer_vocab_size = self.tokenizer_vocab_size
+        vocab_limit = -1 if tokenizer_vocab_size is None else int(tokenizer_vocab_size)
+        sanitize_logits = os.getenv("DIFFULEX_SANITIZE_LOGITS", "0") == "1"
+
+        use_experimental_fused_greedy = (
+            os.getenv("DIFFULEX_ENABLE_EXPERIMENTAL_FUSED_GREEDY_CONFIDENCE", "0") == "1"
+        )
+        if (
+            use_experimental_fused_greedy
+            and logits.is_cuda
+            and not sanitize_logits
+            and not self._fused_greedy_unavailable
+        ):
+            try:
+                from diffulex_kernel import greedy_confidence
+
+                return greedy_confidence(
+                    logits,
+                    vocab_limit=vocab_limit,
+                    forbidden_token_id=int(mask_token_id),
+                )
+            except Exception:
+                self._fused_greedy_unavailable = True
+
+        if not self._enable_vectorized_compile or self._compile_failed:
+            return _llada2_greedy_sample_eager(logits, vocab_limit, int(mask_token_id), sanitize_logits)
+
+        if self._compiled_greedy_sample is None:
+            try:
+                self._compiled_greedy_sample = torch.compile(
+                    _llada2_greedy_sample_eager,
+                    dynamic=True,
+                    fullgraph=False,
+                )
+            except Exception:
+                self._compile_failed = True
+                return _llada2_greedy_sample_eager(logits, vocab_limit, int(mask_token_id), sanitize_logits)
+
+        try:
+            return self._compiled_greedy_sample(logits, vocab_limit, int(mask_token_id), sanitize_logits)
+        except Exception:
+            self._compile_failed = True
+            return _llada2_greedy_sample_eager(logits, vocab_limit, int(mask_token_id), sanitize_logits)
+
+    @staticmethod
+    def _decode_mask_token_local_ids(req, block) -> list[int]:
+        buf_offset = int(block.start - req.dllm_block_buffer.first_running_block.start)
+        return [buf_offset + int(rel_id) for rel_id in block.mask_token_relative_ids]
+
+    @staticmethod
+    def _sample_output_plain(output) -> dict:
+        return {
+            "true_local_ids_map": output.true_local_ids_map,
+            "accepted_ids_map": output.accepted_ids_map,
+            "sampled_tokens_map": output.sampled_tokens_map,
+            "mask_token_rel_ids_map": output.mask_token_rel_ids_map,
+            "confidence_map": output.confidence_map,
+            "initial_confidence_map": output.initial_confidence_map,
+        }
+
+    @staticmethod
+    def _confidence_maps_close(lhs: dict, rhs: dict) -> bool:
+        if lhs.keys() != rhs.keys():
+            return False
+        for req_id, lhs_blocks in lhs.items():
+            rhs_blocks = rhs[req_id]
+            if lhs_blocks.keys() != rhs_blocks.keys():
+                return False
+            for block_id, lhs_values in lhs_blocks.items():
+                rhs_values = rhs_blocks[block_id]
+                if len(lhs_values) != len(rhs_values):
+                    return False
+                for lhs_value, rhs_value in zip(lhs_values, rhs_values):
+                    if abs(float(lhs_value) - float(rhs_value)) > 2e-3:
+                        return False
+        return True
+
+    def _validate_against_legacy(
+        self,
+        vectorized_output,
+        reqs,
+        logits: torch.Tensor,
+        temperatures,
+        top_p,
+        top_k,
+        margin_confidence,
+        neg_entropy,
+        **kwargs,
+    ) -> None:
+        if os.getenv("DIFFULEX_VALIDATE_VECTORIZED_SAMPLER", "0") != "1":
+            return
+        with record_function("diffulex.sampler.vectorized.validate_legacy"):
+            legacy_output = super().forward(
+                reqs,
+                logits,
+                temperatures,
+                top_p=top_p,
+                top_k=top_k,
+                margin_confidence=margin_confidence,
+                neg_entropy=neg_entropy,
+                **kwargs,
+            )
+        vectorized_plain = self._sample_output_plain(vectorized_output)
+        legacy_plain = self._sample_output_plain(legacy_output)
+        for key in (
+            "true_local_ids_map",
+            "accepted_ids_map",
+            "sampled_tokens_map",
+            "mask_token_rel_ids_map",
+        ):
+            if vectorized_plain[key] != legacy_plain[key]:
+                raise AssertionError("LLaDA2 vectorized sampler output does not match legacy sampler")
+        for key in ("confidence_map", "initial_confidence_map"):
+            if not self._confidence_maps_close(vectorized_plain[key], legacy_plain[key]):
+                raise AssertionError("LLaDA2 vectorized sampler confidence does not match legacy sampler")
+
+    def forward(
+        self,
+        reqs,
+        logits: torch.Tensor,
+        temperatures: torch.Tensor,
+        top_p=None,
+        top_k=None,
+        margin_confidence=False,
+        neg_entropy=False,
+        **kwargs,
+    ):
+        if not self._can_vectorize_request(temperatures, top_p, top_k, margin_confidence, neg_entropy):
+            return super().forward(
+                reqs,
+                logits,
+                temperatures,
+                top_p=top_p,
+                top_k=top_k,
+                margin_confidence=margin_confidence,
+                neg_entropy=neg_entropy,
+                **kwargs,
+            )
+
+        with record_function("diffulex.sampler.vectorized.fetch_attn_metadata"):
+            attn_metadata = self.fetch_attn_metadata()
+        with record_function("diffulex.sampler.vectorized.split_logits"):
+            split_logits = self._split_logits_per_req(attn_metadata, reqs, logits)
+
+        true_local_ids_map: dict[str, dict[str, list[int]]] = {}
+        accepted_ids_map: dict[str, dict[str, list[int]]] = {}
+        sampled_tokens_map: dict[str, dict[str, list[int]]] = {}
+        mask_token_rel_ids_map: dict[str, dict[str, list[int]]] = {}
+        confidence_map: dict[str, dict[str, list[float]]] = {}
+        initial_confidence_map: dict[str, dict[str, list[float]]] = {}
+
+        records: list[dict] = []
+        row_indices: list[int] = []
+        offset = 0
+        mask_token_id: int | None = None
+
+        with record_function("diffulex.sampler.vectorized.collect_rows"):
+            for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
+                req_id_str = str(req.req_id)
+                true_local_ids_map[req_id_str] = {}
+                accepted_ids_map[req_id_str] = {}
+                sampled_tokens_map[req_id_str] = {}
+                mask_token_rel_ids_map[req_id_str] = {}
+                confidence_map[req_id_str] = {}
+                initial_confidence_map[req_id_str] = {}
+
+                for block_id, block in enumerate(req.dllm_blocks):
+                    if not block.is_active or block.num_mask_tokens == 0:
+                        continue
+                    if len(block.mask_token_global_ids) == 0:
+                        continue
+
+                    current_mask_token_id = int(block.mask_token_id)
+                    if mask_token_id is None:
+                        mask_token_id = current_mask_token_id
+                    elif current_mask_token_id != mask_token_id:
+                        return super().forward(
+                            reqs,
+                            logits,
+                            temperatures,
+                            top_p=top_p,
+                            top_k=top_k,
+                            margin_confidence=margin_confidence,
+                            neg_entropy=neg_entropy,
+                            **kwargs,
+                        )
+
+                    if attn_metadata.is_prefill[req_idx]:
+                        if req_logits.shape[0] == 0:
+                            continue
+                        local_ids = self._prefill_mask_token_local_ids(req, block, req_logits)
+                    else:
+                        local_ids = self._decode_mask_token_local_ids(req, block)
+
+                    if not local_ids:
+                        continue
+                    if min(local_ids) < 0 or max(local_ids) >= req_logits.shape[0]:
+                        return super().forward(
+                            reqs,
+                            logits,
+                            temperatures,
+                            top_p=top_p,
+                            top_k=top_k,
+                            margin_confidence=margin_confidence,
+                            neg_entropy=neg_entropy,
+                            **kwargs,
+                        )
+
+                    row_start = len(row_indices)
+                    row_indices.extend(offset + int(local_id) for local_id in local_ids)
+                    records.append(
+                        {
+                            "req_id_str": req_id_str,
+                            "block_id_str": str(block_id),
+                            "block": block,
+                            "row_start": row_start,
+                            "row_count": len(local_ids),
+                        }
+                    )
+                offset += int(req_logits.shape[0])
+
+        if not records:
+            sample_output = self.output_cls(
+                true_local_ids_map=true_local_ids_map,
+                accepted_ids_map=accepted_ids_map,
+                sampled_tokens_map=sampled_tokens_map,
+                mask_token_rel_ids_map=mask_token_rel_ids_map,
+                confidence_map=confidence_map,
+                initial_confidence_map=initial_confidence_map,
+            )
+            self._validate_against_legacy(
+                sample_output,
+                reqs,
+                logits,
+                temperatures,
+                top_p,
+                top_k,
+                margin_confidence,
+                neg_entropy,
+                **kwargs,
+            )
+            return sample_output
+
+        with record_function("diffulex.sampler.vectorized.gather_logits"):
+            index = torch.tensor(row_indices, dtype=torch.long, device=logits.device)
+            flat_mask_logits = logits.index_select(0, index)
+
+        with record_function("diffulex.sampler.vectorized.greedy_sample"):
+            confidence, sampled_tokens, initial_confidence = self._greedy_sample(
+                flat_mask_logits,
+                int(mask_token_id),
+            )
+
+        with record_function("diffulex.sampler.vectorized.to_cpu"):
+            packed = torch.stack(
+                (
+                    sampled_tokens.to(dtype=torch.float32),
+                    confidence.to(dtype=torch.float32),
+                    initial_confidence.to(dtype=torch.float32),
+                ),
+                dim=0,
+            )
+            sampled_tokens_raw, confidence_raw, initial_confidence_raw = packed.to(device="cpu").tolist()
+
+        with record_function("diffulex.sampler.vectorized.build_maps"):
+            for record in records:
+                start = int(record["row_start"])
+                end = start + int(record["row_count"])
+                block = record["block"]
+                sampled_tokens_list = [int(token) for token in sampled_tokens_raw[start:end]]
+                confidence_list = [float(value) for value in confidence_raw[start:end]]
+                initial_confidence_list = [float(value) for value in initial_confidence_raw[start:end]]
+                accepted_ids_list = self._compute_accepted_ids_cpu(
+                    block,
+                    confidence=confidence_list,
+                    initial_confidence=initial_confidence_list,
+                    sampled_tokens=sampled_tokens_list,
+                    **kwargs,
+                )
+                if accepted_ids_list is None:
+                    accepted_ids_list = []
+
+                req_id_str = record["req_id_str"]
+                block_id_str = record["block_id_str"]
+                accepted_ids_list = [int(idx) for idx in accepted_ids_list]
+                true_local_ids_map[req_id_str][block_id_str] = [
+                    block.mask_token_relative_ids[i] for i in accepted_ids_list
+                ]
+                accepted_ids_map[req_id_str][block_id_str] = accepted_ids_list
+                sampled_tokens_map[req_id_str][block_id_str] = sampled_tokens_list
+                mask_token_rel_ids_map[req_id_str][block_id_str] = list(block.mask_token_relative_ids)
+                confidence_map[req_id_str][block_id_str] = confidence_list
+                initial_confidence_map[req_id_str][block_id_str] = initial_confidence_list
+
+        sample_output = self.output_cls(
+            true_local_ids_map=true_local_ids_map,
+            accepted_ids_map=accepted_ids_map,
+            sampled_tokens_map=sampled_tokens_map,
+            mask_token_rel_ids_map=mask_token_rel_ids_map,
+            confidence_map=confidence_map,
+            initial_confidence_map=initial_confidence_map,
+        )
+        self._validate_against_legacy(
+            sample_output,
+            reqs,
+            logits,
+            temperatures,
+            top_p,
+            top_k,
+            margin_confidence,
+            neg_entropy,
+            **kwargs,
+        )
+        return sample_output
 
 
 class LLaDA2dot1Sampler(BlockRewriteSamplerMixin, LLaDA2Sampler):
@@ -145,7 +566,7 @@ class LLaDA2dot1Sampler(BlockRewriteSamplerMixin, LLaDA2Sampler):
                 block_size = int(block.block_size)
 
                 # Argmax + confidence over full block
-                temperature = float(temperatures[req_idx].item())
+                temperature = _temperature_value(temperatures, req_idx)
                 x = self._sample_argmax(block_logits, temperature)
                 logits_fp32 = block_logits.to(torch.float32)
 
@@ -312,26 +733,30 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
         # _build_block_writes_map. Running the generic mask-token sampler first
         # duplicates argmax/softmax work and its accepted-id output is unused.
         del top_p, top_k, margin_confidence, neg_entropy
-        attn_metadata = self.fetch_attn_metadata()
-        split_logits = self._split_logits_per_req(attn_metadata, reqs, logits)
+        with record_function("diffulex.sampler.dmax.fetch_attn_metadata"):
+            attn_metadata = self.fetch_attn_metadata()
+        with record_function("diffulex.sampler.dmax.split_logits"):
+            split_logits = self._split_logits_per_req(attn_metadata, reqs, logits)
 
-        empty_per_req = {str(req.req_id): {} for req in reqs}
-        sample_output = self.output_cls(
-            true_local_ids_map=dict(empty_per_req),
-            accepted_ids_map=dict(empty_per_req),
-            sampled_tokens_map=dict(empty_per_req),
-            mask_token_rel_ids_map=dict(empty_per_req),
-            confidence_map=dict(empty_per_req),
-            initial_confidence_map=dict(empty_per_req),
-        )
-        return self._postprocess_sample_output(
-            reqs=reqs,
-            split_logits=split_logits,
-            temperatures=temperatures,
-            sample_output=sample_output,
-            attn_metadata=attn_metadata,
-            **kwargs,
-        )
+        with record_function("diffulex.sampler.dmax.init_output"):
+            empty_per_req = {str(req.req_id): {} for req in reqs}
+            sample_output = self.output_cls(
+                true_local_ids_map=dict(empty_per_req),
+                accepted_ids_map=dict(empty_per_req),
+                sampled_tokens_map=dict(empty_per_req),
+                mask_token_rel_ids_map=dict(empty_per_req),
+                confidence_map=dict(empty_per_req),
+                initial_confidence_map=dict(empty_per_req),
+            )
+        with record_function("diffulex.sampler.dmax.postprocess"):
+            return self._postprocess_sample_output(
+                reqs=reqs,
+                split_logits=split_logits,
+                temperatures=temperatures,
+                sample_output=sample_output,
+                attn_metadata=attn_metadata,
+                **kwargs,
+            )
 
     @staticmethod
     def _sample_argmax(logits: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -376,93 +801,100 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
 
         mask_id = int(block.mask_token_id)
         accept_threshold = float(block.thresholds.accept_threshold)
-        full_block_before = block_tokens.clone()
-        top1_tokens = self._sample_argmax(block_logits, temperature)
-        mask_index = full_block_before.eq(mask_id)
-        mask_positions = torch.nonzero(mask_index, as_tuple=False).flatten()
+        with record_function("diffulex.sampler.dmax.block.setup_cpu_state"):
+            full_block_before_cpu = [int(token) for token in block.token_ids]
+            mask_positions_cpu = [idx for idx, token in enumerate(full_block_before_cpu) if token == mask_id]
+        with record_function("diffulex.sampler.dmax.block.argmax"):
+            top1_tokens = self._sample_argmax(block_logits, temperature)
         if self._fast_prob_path:
             # Fast path: only compute exact confidence for mask positions.
-            top1_confidence = torch.ones(top1_tokens.shape, dtype=torch.float32, device=top1_tokens.device)
-            if mask_positions.numel() > 0:
-                mask_logits_fp32 = block_logits.index_select(0, mask_positions).to(torch.float32)
-                mask_top1 = top1_tokens.index_select(0, mask_positions).unsqueeze(-1)
-                mask_top1_logits = mask_logits_fp32.gather(dim=-1, index=mask_top1).squeeze(-1)
-                mask_lse = torch.logsumexp(mask_logits_fp32, dim=-1)
-                top1_confidence[mask_positions] = torch.exp(mask_top1_logits - mask_lse)
+            with record_function("diffulex.sampler.dmax.block.confidence_fast_init"):
+                top1_confidence = torch.ones(top1_tokens.shape, dtype=torch.float32, device=top1_tokens.device)
+            if mask_positions_cpu:
+                with record_function("diffulex.sampler.dmax.block.confidence_fast_mask"):
+                    mask_positions = torch.tensor(mask_positions_cpu, dtype=torch.long, device=top1_tokens.device)
+                    mask_logits_fp32 = block_logits.index_select(0, mask_positions).to(torch.float32)
+                    mask_top1 = top1_tokens.index_select(0, mask_positions).unsqueeze(-1)
+                    mask_top1_logits = mask_logits_fp32.gather(dim=-1, index=mask_top1).squeeze(-1)
+                    mask_lse = torch.logsumexp(mask_logits_fp32, dim=-1)
+                    top1_confidence[mask_positions] = torch.exp(mask_top1_logits - mask_lse)
         else:
-            logits_fp32 = block_logits.to(torch.float32)
-            top1_logits = logits_fp32.gather(dim=-1, index=top1_tokens.unsqueeze(-1)).squeeze(-1)
-            logsumexp = torch.logsumexp(logits_fp32, dim=-1)
-            top1_confidence = torch.exp(top1_logits - logsumexp)
+            with record_function("diffulex.sampler.dmax.block.confidence_full"):
+                logits_fp32 = block_logits.to(torch.float32)
+                top1_logits = logits_fp32.gather(dim=-1, index=top1_tokens.unsqueeze(-1)).squeeze(-1)
+                logsumexp = torch.logsumexp(logits_fp32, dim=-1)
+                top1_confidence = torch.exp(top1_logits - logsumexp)
 
-        target_tokens = full_block_before.clone()
-        token_index = full_block_before.ne(mask_id)
-        if bool(token_index.any().item()):
-            target_tokens[token_index] = top1_tokens[token_index]
+        with record_function("diffulex.sampler.dmax.block.cpu_materialize_top1"):
+            top1_tokens_cpu = [int(token) for token in top1_tokens.detach().to("cpu").tolist()]
+            top1_confidence_cpu = [float(conf) for conf in top1_confidence.detach().to("cpu").tolist()]
 
-        decode_positions = torch.empty(0, dtype=torch.long, device=full_block_before.device)
-        below_threshold_positions = torch.empty(0, dtype=torch.long, device=full_block_before.device)
-        if bool(mask_index.any().item()):
-            mask_confidence = top1_confidence[mask_positions]
-            below_threshold = torch.nonzero(mask_confidence < accept_threshold, as_tuple=False).flatten()
-            if below_threshold.numel() > 0:
-                below_threshold_positions = mask_positions[below_threshold]
-            if below_threshold.numel() == 0:
-                decode_upto = int(mask_positions.numel())
-            elif int(below_threshold[0].item()) == 0:
-                decode_upto = 1
+        with record_function("diffulex.sampler.dmax.block.build_writes_cpu"):
+            target_tokens_cpu = list(full_block_before_cpu)
+            for rel_idx, token in enumerate(full_block_before_cpu):
+                if token != mask_id:
+                    target_tokens_cpu[rel_idx] = top1_tokens_cpu[rel_idx]
+
+            if mask_positions_cpu:
+                decode_upto = len(mask_positions_cpu)
+                for mask_offset, rel_idx in enumerate(mask_positions_cpu):
+                    if top1_confidence_cpu[rel_idx] < accept_threshold:
+                        decode_upto = 1 if mask_offset == 0 else mask_offset
+                        break
+                for rel_idx in mask_positions_cpu[:decode_upto]:
+                    target_tokens_cpu[rel_idx] = top1_tokens_cpu[rel_idx]
+
+            block_writes: dict[int, int] = {}
+            token_merge_entries: dict[int, dict | None] = {}
+            changed_positions = [
+                rel_idx
+                for rel_idx, (target_token, old_token) in enumerate(zip(target_tokens_cpu, full_block_before_cpu))
+                if target_token != old_token
+            ]
+            same_as_previous = not changed_positions
+            comparable_positions = [
+                rel_idx
+                for rel_idx, (old_token, target_token) in enumerate(zip(full_block_before_cpu, target_tokens_cpu))
+                if old_token != mask_id and target_token != mask_id
+            ]
+            if comparable_positions:
+                same_count = sum(
+                    1 for rel_idx in comparable_positions if target_tokens_cpu[rel_idx] == full_block_before_cpu[rel_idx]
+                )
+                same_token_ratio = float(same_count / len(comparable_positions))
             else:
-                decode_upto = int(below_threshold[0].item())
-            decode_positions = mask_positions[:decode_upto]
-            if decode_positions.numel() > 0:
-                target_tokens[decode_positions] = top1_tokens[decode_positions]
-
-        block_writes: dict[int, int] = {}
-        token_merge_entries: dict[int, dict | None] = {}
-        changed_positions = torch.nonzero(target_tokens.ne(full_block_before), as_tuple=False).flatten()
-        same_as_previous = not bool(changed_positions.numel())
-        comparable_positions = torch.nonzero(
-            full_block_before.ne(mask_id) & target_tokens.ne(mask_id),
-            as_tuple=False,
-        ).flatten()
-        if comparable_positions.numel() > 0:
-            same_token_ratio = float(
-                target_tokens.index_select(0, comparable_positions)
-                .eq(full_block_before.index_select(0, comparable_positions))
-                .to(torch.float32)
-                .mean()
-                .item()
-            )
-        else:
-            same_token_ratio = 1.0
-        all_confident = bool((top1_confidence >= 0.9).all().item()) if top1_confidence.numel() > 0 else True
-        for rel_idx in changed_positions.tolist():
-            if int(rel_idx) < editable_start:
-                continue
-            token = int(target_tokens[rel_idx].item())
-            if token != int(full_block_before[rel_idx].item()):
-                block_writes[int(rel_idx)] = token
+                same_token_ratio = 1.0
+            all_confident = all(confidence >= 0.9 for confidence in top1_confidence_cpu)
+            for rel_idx in changed_positions:
+                if rel_idx < editable_start:
+                    continue
+                token = target_tokens_cpu[rel_idx]
+                if token != full_block_before_cpu[rel_idx]:
+                    block_writes[rel_idx] = token
 
         if self._enable_token_merge:
-            non_mask_positions = torch.nonzero(target_tokens.ne(mask_id), as_tuple=False).flatten()
-            for rel_idx in non_mask_positions.tolist():
-                if int(rel_idx) < editable_start:
-                    continue
-                token = int(target_tokens[rel_idx].item())
-                if self._token_merge_mode == "dmax_topk":
-                    descriptor = self._build_manual_token_merge_descriptor(
-                        token=token,
-                        confidence=float(top1_confidence[rel_idx].item()),
-                        mask_id=mask_id,
-                    )
-                else:
-                    row_probs = F.softmax(block_logits[rel_idx].to(torch.float32), dim=-1)
-                    descriptor = self._build_token_merge_descriptor(
-                        probs=row_probs,
-                        token=token,
-                        mask_id=mask_id,
-                    )
-                token_merge_entries[int(rel_idx)] = descriptor
+            with record_function("diffulex.sampler.dmax.block.token_merge_descriptors"):
+                non_mask_positions = [
+                    rel_idx for rel_idx, token in enumerate(target_tokens_cpu) if token != mask_id
+                ]
+                for rel_idx in non_mask_positions:
+                    if rel_idx < editable_start:
+                        continue
+                    token = target_tokens_cpu[rel_idx]
+                    if self._token_merge_mode == "dmax_topk":
+                        descriptor = self._build_manual_token_merge_descriptor(
+                            token=token,
+                            confidence=top1_confidence_cpu[rel_idx],
+                            mask_id=mask_id,
+                        )
+                    else:
+                        row_probs = F.softmax(block_logits[rel_idx].to(torch.float32), dim=-1)
+                        descriptor = self._build_token_merge_descriptor(
+                            probs=row_probs,
+                            token=token,
+                            mask_id=mask_id,
+                        )
+                    token_merge_entries[rel_idx] = descriptor
 
         return block_writes, token_merge_entries, {
             "committable": bool(same_as_previous or all_confident),
@@ -485,42 +917,49 @@ class LLaDA2DMaxSampler(TokenMergeSamplerMixin, LLaDA2dot1Sampler):
     ) -> dict[str, dict[str, dict[int, int]]]:
         del sample_output, kwargs
         block_writes_map: dict[str, dict[str, dict[int, int]]] = {}
-        self._reset_token_merge_map()
-        self._reset_block_state_map()
-        for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
-            req_id_str = str(req.req_id)
-            req_block_writes: dict[str, dict[int, int]] = {}
-            req_token_merge: dict[int, dict | None] = {}
-            req_block_states: dict[str, dict] = {}
-            for block_id, block in enumerate(req.dllm_blocks):
-                if not block.is_active:
-                    continue
-                req_block_states[str(block_id)] = {
-                    "committable": False,
-                    "same_as_previous": False,
-                    "same_token_ratio": 0.0,
-                    "all_confident": False,
-                }
-                block_logits = self._extract_block_logits(req, req_logits, block, attn_metadata.is_prefill[req_idx])
-                if block_logits is None or block_logits.shape[0] != int(block.block_size):
-                    continue
-                for rel_idx in range(int(block.block_size)):
-                    req_token_merge.setdefault(int(block.start + rel_idx), None)
-                block_tokens = torch.tensor(block.token_ids, dtype=torch.long, device=block_logits.device)
-                block_writes, token_merge_entries, block_state = self._build_dmax_block_outputs(
-                    block=block,
-                    block_tokens=block_tokens,
-                    block_logits=block_logits,
-                    temperature=float(temperatures[req_idx].item()),
-                )
-                req_block_states[str(block_id)] = block_state
-                if block_writes:
-                    req_block_writes[str(block_id)] = block_writes
-                for rel_idx, descriptor in token_merge_entries.items():
-                    req_token_merge[int(block.start + rel_idx)] = descriptor
-            block_writes_map[req_id_str] = req_block_writes
-            self._set_token_merge_entries(req_id_str, req_token_merge)
-            self._last_block_state_map[req_id_str] = req_block_states
+        with record_function("diffulex.sampler.dmax.reset_maps"):
+            self._reset_token_merge_map()
+            self._reset_block_state_map()
+        with record_function("diffulex.sampler.dmax.build_block_writes_map.loop"):
+            for req_idx, (req, req_logits) in enumerate(zip(reqs, split_logits)):
+                req_id_str = str(req.req_id)
+                req_block_writes: dict[str, dict[int, int]] = {}
+                req_token_merge: dict[int, dict | None] = {}
+                req_block_states: dict[str, dict] = {}
+                for block_id, block in enumerate(req.dllm_blocks):
+                    if not block.is_active:
+                        continue
+                    req_block_states[str(block_id)] = {
+                        "committable": False,
+                        "same_as_previous": False,
+                        "same_token_ratio": 0.0,
+                        "all_confident": False,
+                    }
+                    with record_function("diffulex.sampler.dmax.extract_block_logits"):
+                        block_logits = self._extract_block_logits(req, req_logits, block, attn_metadata.is_prefill[req_idx])
+                    if block_logits is None or block_logits.shape[0] != int(block.block_size):
+                        continue
+                    with record_function("diffulex.sampler.dmax.init_token_merge_slots"):
+                        for rel_idx in range(int(block.block_size)):
+                            req_token_merge.setdefault(int(block.start + rel_idx), None)
+                    with record_function("diffulex.sampler.dmax.block_tokens_tensor"):
+                        block_tokens = torch.tensor(block.token_ids, dtype=torch.long, device=block_logits.device)
+                    with record_function("diffulex.sampler.dmax.build_block_outputs"):
+                        block_writes, token_merge_entries, block_state = self._build_dmax_block_outputs(
+                            block=block,
+                            block_tokens=block_tokens,
+                            block_logits=block_logits,
+                            temperature=_temperature_value(temperatures, req_idx),
+                        )
+                    req_block_states[str(block_id)] = block_state
+                    if block_writes:
+                        req_block_writes[str(block_id)] = block_writes
+                    with record_function("diffulex.sampler.dmax.merge_token_entries"):
+                        for rel_idx, descriptor in token_merge_entries.items():
+                            req_token_merge[int(block.start + rel_idx)] = descriptor
+                block_writes_map[req_id_str] = req_block_writes
+                self._set_token_merge_entries(req_id_str, req_token_merge)
+                self._last_block_state_map[req_id_str] = req_block_states
         return block_writes_map
 
     def _postprocess_sample_output(
@@ -556,6 +995,11 @@ def build_llada2_sampler(config=None):
     ]:
         return LLaDA2dot1Sampler(config)
     if sampling_mode == "naive" and getattr(config, "model_name", None) in ["llada2", "llada2_moe", "llada2_mini"]:
+        if (
+            bool(getattr(config, "enable_vectorized_sampler", False))
+            and getattr(config, "decoding_strategy", None) == "multi_bd"
+        ):
+            return LLaDA2VectorizedSampler(config)
         return LLaDA2Sampler(config)
 
 

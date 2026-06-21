@@ -125,7 +125,7 @@ class ModelRunnerBase(MultiBlockModelRunnerMixin, ABC):
             return
 
         if not self.enforce_eager:
-            for name in ("graphs", "graph_vars", "prefill_graphs", "graph_pool", "graph_capture_stream"):
+            for name in ("graphs", "graph_vars", "graph_pool", "graph_capture_stream"):
                 if hasattr(self, name):
                     try:
                         delattr(self, name)
@@ -406,11 +406,7 @@ class ModelRunnerBase(MultiBlockModelRunnerMixin, ABC):
         return self.prepare_decode_multi_block(reqs)
 
     def prepare_sample(self, reqs: list[DllmReq]):
-        temperatures = []
-        for req in reqs:
-            temperatures.append(req.temperature)
-        temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        return temperatures
+        return [float(req.temperature) for req in reqs]
 
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor):

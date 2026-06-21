@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from diffulex.engine.request import DllmReq
+from diffulex.profiling import record_function
 
 from .core import SamplerBase
 from .output import SampleOutputBase
@@ -59,89 +60,112 @@ class DllmSamplerNoShiftBase(SamplerNoShiftLogits):
         neg_entropy=False,
         **kwargs,
     ):
-        attn_metadata = self.fetch_attn_metadata()
+        with record_function("diffulex.sampler.no_shift.fetch_attn_metadata"):
+            attn_metadata = self.fetch_attn_metadata()
 
-        split_logits = self._split_logits_per_req(attn_metadata, reqs, logits)
+        with record_function("diffulex.sampler.no_shift.split_logits"):
+            split_logits = self._split_logits_per_req(attn_metadata, reqs, logits)
 
-        accepted_ids_map = {}
-        sampled_tokens_map = {}
-        true_local_ids_map = {}
-        mask_token_rel_ids_map = {}
-        confidence_map = {}
-        initial_confidence_map = {}
+        with record_function("diffulex.sampler.no_shift.init_maps"):
+            accepted_ids_map = {}
+            sampled_tokens_map = {}
+            true_local_ids_map = {}
+            mask_token_rel_ids_map = {}
+            confidence_map = {}
+            initial_confidence_map = {}
 
-        for idx, (temperature, req, req_logits) in enumerate(zip(temperatures, reqs, split_logits)):
-            true_local_ids_sub_map = {}
-            accepted_ids_sub_map = {}
-            sampled_tokens_sub_map = {}
-            mask_token_rel_ids_sub_map = {}
-            confidence_sub_map = {}
-            initial_confidence_sub_map = {}
+        with record_function("diffulex.sampler.no_shift.req_loop"):
+            for idx, (temperature, req, req_logits) in enumerate(zip(temperatures, reqs, split_logits)):
+                with record_function("diffulex.sampler.no_shift.temperature"):
+                    temperature_value = float(temperature.item()) if torch.is_tensor(temperature) else float(temperature)
+                with record_function("diffulex.sampler.no_shift.init_req_maps"):
+                    true_local_ids_sub_map = {}
+                    accepted_ids_sub_map = {}
+                    sampled_tokens_sub_map = {}
+                    mask_token_rel_ids_sub_map = {}
+                    confidence_sub_map = {}
+                    initial_confidence_sub_map = {}
 
-            for block_id, block in enumerate(req.dllm_blocks):
-                if not block.is_active or (block.num_mask_tokens == 0):
-                    continue
+                for block_id, block in enumerate(req.dllm_blocks):
+                    with record_function("diffulex.sampler.no_shift.block_filter"):
+                        if not block.is_active or (block.num_mask_tokens == 0):
+                            continue
 
-                if len(block.mask_token_global_ids) == 0:
-                    continue
+                        if len(block.mask_token_global_ids) == 0:
+                            continue
 
-                if attn_metadata.is_prefill[idx]:
-                    # Prefix-cache prefill can produce q_len=0 for some requests in mixed batches.
-                    # In that case there are no logits to sample for this req in this step.
-                    if req_logits.shape[0] == 0:
-                        continue
-                    local_ids = self._prefill_mask_token_local_ids(req, block, req_logits)
-                    mask_token_logits = req_logits[local_ids, ...]
-                else:
-                    buf_offset = block.start - req.dllm_block_buffer.first_running_block.start
-                    buf_ids = [buf_offset + i for i in block.mask_token_relative_ids]
-                    mask_token_logits = req_logits[buf_ids, ...]
+                    with record_function("diffulex.sampler.no_shift.mask_logits"):
+                        if attn_metadata.is_prefill[idx]:
+                            # Prefix-cache prefill can produce q_len=0 for some requests in mixed batches.
+                            # In that case there are no logits to sample for this req in this step.
+                            if req_logits.shape[0] == 0:
+                                continue
+                            local_ids = self._prefill_mask_token_local_ids(req, block, req_logits)
+                            mask_token_logits = req_logits[local_ids, ...]
+                        else:
+                            buf_offset = block.start - req.dllm_block_buffer.first_running_block.start
+                            buf_ids = [buf_offset + i for i in block.mask_token_relative_ids]
+                            mask_token_logits = req_logits[buf_ids, ...]
 
-                confidence, sampled_tokens, initial_confidence = self.sample_tokens(
-                    mask_token_logits,
-                    temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    neg_entropy=(neg_entropy == "neg_entropy"),
-                    margin_confidence=(margin_confidence == "margin_confidence"),
-                    forbidden_token_ids=[int(block.mask_token_id)],
-                )
-                accepted_ids = self._compute_accepted_ids(
-                    block, confidence, initial_confidence, sampled_tokens, **kwargs
-                )
-                block_id_str = str(block_id)
-                accepted_ids_list = accepted_ids.to(device="cpu").tolist()
-                true_local_ids_sub_map[block_id_str] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
-                accepted_ids_sub_map[block_id_str] = accepted_ids_list
-                sampled_tokens_sub_map[block_id_str] = sampled_tokens.to(device="cpu").tolist()
-                mask_token_rel_ids_sub_map[block_id_str] = list(block.mask_token_relative_ids)
-                confidence_sub_map[block_id_str] = confidence.to(device="cpu").tolist()
-                initial_confidence_sub_map[block_id_str] = initial_confidence.to(device="cpu").tolist()
+                    with record_function("diffulex.sampler.no_shift.sample_tokens"):
+                        confidence, sampled_tokens, initial_confidence = self.sample_tokens(
+                            mask_token_logits,
+                            temperature_value,
+                            top_p=top_p,
+                            top_k=top_k,
+                            neg_entropy=(neg_entropy == "neg_entropy"),
+                            margin_confidence=(margin_confidence == "margin_confidence"),
+                            forbidden_token_ids=[int(block.mask_token_id)],
+                        )
+                    block_id_str = str(block_id)
+                    with record_function("diffulex.sampler.no_shift.materialize_block"):
+                        (
+                            accepted_ids_list,
+                            sampled_tokens_list,
+                            confidence_list,
+                            initial_confidence_list,
+                        ) = self._materialize_sampled_block(
+                            block,
+                            confidence,
+                            sampled_tokens,
+                            initial_confidence,
+                            **kwargs,
+                        )
+                    with record_function("diffulex.sampler.no_shift.fill_output_maps"):
+                        true_local_ids_sub_map[block_id_str] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
+                        accepted_ids_sub_map[block_id_str] = accepted_ids_list
+                        sampled_tokens_sub_map[block_id_str] = sampled_tokens_list
+                        mask_token_rel_ids_sub_map[block_id_str] = list(block.mask_token_relative_ids)
+                        confidence_sub_map[block_id_str] = confidence_list
+                        initial_confidence_sub_map[block_id_str] = initial_confidence_list
 
-            req_id_str = str(req.req_id)
-            true_local_ids_map[req_id_str] = true_local_ids_sub_map
-            accepted_ids_map[req_id_str] = accepted_ids_sub_map
-            sampled_tokens_map[req_id_str] = sampled_tokens_sub_map
-            mask_token_rel_ids_map[req_id_str] = mask_token_rel_ids_sub_map
-            confidence_map[req_id_str] = confidence_sub_map
-            initial_confidence_map[req_id_str] = initial_confidence_sub_map
+                with record_function("diffulex.sampler.no_shift.fill_req_maps"):
+                    req_id_str = str(req.req_id)
+                    true_local_ids_map[req_id_str] = true_local_ids_sub_map
+                    accepted_ids_map[req_id_str] = accepted_ids_sub_map
+                    sampled_tokens_map[req_id_str] = sampled_tokens_sub_map
+                    mask_token_rel_ids_map[req_id_str] = mask_token_rel_ids_sub_map
+                    confidence_map[req_id_str] = confidence_sub_map
+                    initial_confidence_map[req_id_str] = initial_confidence_sub_map
 
-        sample_output = self.output_cls(
-            true_local_ids_map=true_local_ids_map,
-            accepted_ids_map=accepted_ids_map,
-            sampled_tokens_map=sampled_tokens_map,
-            mask_token_rel_ids_map=mask_token_rel_ids_map,
-            confidence_map=confidence_map,
-            initial_confidence_map=initial_confidence_map,
-        )
-        return self._postprocess_sample_output(
-            reqs=reqs,
-            split_logits=split_logits,
-            temperatures=temperatures,
-            sample_output=sample_output,
-            attn_metadata=attn_metadata,
-            **kwargs,
-        )
+        with record_function("diffulex.sampler.no_shift.create_output"):
+            sample_output = self.output_cls(
+                true_local_ids_map=true_local_ids_map,
+                accepted_ids_map=accepted_ids_map,
+                sampled_tokens_map=sampled_tokens_map,
+                mask_token_rel_ids_map=mask_token_rel_ids_map,
+                confidence_map=confidence_map,
+                initial_confidence_map=initial_confidence_map,
+            )
+        with record_function("diffulex.sampler.no_shift.postprocess"):
+            return self._postprocess_sample_output(
+                reqs=reqs,
+                split_logits=split_logits,
+                temperatures=temperatures,
+                sample_output=sample_output,
+                attn_metadata=attn_metadata,
+                **kwargs,
+            )
 
     def _postprocess_sample_output(
         self,

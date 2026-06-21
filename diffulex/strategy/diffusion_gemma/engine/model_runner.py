@@ -4,7 +4,7 @@ from multiprocessing.synchronize import Event
 
 import torch
 
-from diffulex.attention.metadata import set_fetch_fn_for_attn_metadata
+from diffulex.attention.metadata import AttnMetaDataBase, set_fetch_fn_for_attn_metadata
 from diffulex.config import Config
 from diffulex.engine.model_runner import AutoModelRunner, ModelRunnerBase
 from diffulex.engine.request import DllmReq
@@ -64,18 +64,42 @@ class DiffusionGemmaModelRunner(ModelRunnerBase):
             padded_prefix_len=req.padded_prefix_len,
         )
 
+    def _prepare_decode_req(self, req: DllmReq):
+        prepared = super()._prepare_decode_req(req)
+        # DiffusionGemma pads the prompt to the 256-token canvas/page size but
+        # only writes real prompt tokens during prefill. Decode attention must
+        # keep the true prefix bounds so the Triton kernel masks those unwritten
+        # padding slots instead of reading stale KV from a reused page.
+        prepared["prefix_len"] = int(req.prefix_len)
+        prepared["padded_prefix_len"] = int(req.padded_prefix_len)
+        return prepared
+
     @torch.inference_mode()
     def run_model_multi_block(self, input_ids: torch.Tensor, positions: torch.Tensor):
         with record_function("diffulex.diffusion_gemma.model_forward"):
-            return self.model.compute_logits(self.model(input_ids, positions))
+            attn_metadata: AttnMetaDataBase = self.fetch_attn_metadata()
+            full_runner = self._full_static_runner()
+
+            if attn_metadata.has_prefill:
+                with record_function("diffulex.diffusion_gemma.eager_prefill"):
+                    return self.model.compute_logits(self.model(input_ids, positions))
+
+            if not full_runner.can_run_decode(input_ids):
+                with record_function("diffulex.diffusion_gemma.eager_decode"):
+                    return self.model.compute_logits(self.model(input_ids, positions))
+
+            with record_function("diffulex.diffusion_gemma.full_static_decode"):
+                return full_runner.run_decode(input_ids, positions, attn_metadata)
 
     def _before_multi_block_model_forward(self, local_reqs: list[DllmReq]) -> None:
         set_context = getattr(self.model, "set_self_conditioning_context", None)
         if set_context is None:
+            self._pending_self_conditioning_context = []
             return
 
         get_embeds = getattr(self.sampler, "get_self_conditioning_embeds", None)
         if get_embeds is None:
+            self._pending_self_conditioning_context = []
             set_context(None)
             return
 
@@ -100,7 +124,74 @@ class DiffusionGemmaModelRunner(ModelRunnerBase):
                     )
             token_offset += seq_len
 
+        self._pending_self_conditioning_context = context
         set_context(context or None)
+
+    def _init_graph_capture_extra_metadata(
+        self,
+        attn_metadata: AttnMetaDataBase,
+        graph_vars: dict[str, torch.Tensor],
+        num_tokens: int,
+    ) -> None:
+        del attn_metadata
+        if "self_conditioning_soft_embeds" not in graph_vars:
+            hf_config = getattr(self.config, "hf_config")
+            text_config = getattr(hf_config, "text_config", hf_config)
+            hidden_size = int(text_config.hidden_size)
+            device = self._cuda_graph_device()
+            graph_vars["self_conditioning_soft_embeds"] = torch.zeros(
+                int(graph_vars["input_ids"].numel()),
+                hidden_size,
+                dtype=torch.float32,
+                device=device,
+            )
+            graph_vars["self_conditioning_mask"] = torch.zeros(
+                int(graph_vars["input_ids"].numel()),
+                dtype=torch.bool,
+                device=device,
+            )
+
+        soft_embeds = graph_vars["self_conditioning_soft_embeds"][:num_tokens]
+        mask = graph_vars["self_conditioning_mask"][:num_tokens]
+        soft_embeds.zero_()
+        mask.zero_()
+        set_tensor_context = getattr(self.model, "set_self_conditioning_tensor_context", None)
+        if set_tensor_context is not None:
+            set_tensor_context(soft_embeds, mask, active=True)
+
+    def _bind_decode_graph_extra_metadata(
+        self,
+        attn_metadata: AttnMetaDataBase,
+        graph_vars: dict[str, torch.Tensor],
+        num_tokens: int,
+    ) -> None:
+        del attn_metadata
+        soft_buffer = graph_vars.get("self_conditioning_soft_embeds")
+        mask_buffer = graph_vars.get("self_conditioning_mask")
+        if soft_buffer is None or mask_buffer is None:
+            return
+
+        soft_buffer = soft_buffer[:num_tokens]
+        mask_buffer = mask_buffer[:num_tokens]
+        soft_buffer.zero_()
+        mask_buffer.zero_()
+
+        context = getattr(self, "_pending_self_conditioning_context", None) or []
+        for item in context:
+            start = max(0, int(item["start"]))
+            end = min(num_tokens, int(item["end"]))
+            if end <= start:
+                continue
+            soft_embeds = item.get("soft_embeds")
+            if soft_embeds is None:
+                continue
+            length = min(end - start, int(soft_embeds.shape[0]))
+            if length <= 0:
+                continue
+            soft_buffer[start : start + length].copy_(
+                soft_embeds[:length].to(device=soft_buffer.device, dtype=soft_buffer.dtype)
+            )
+            mask_buffer[start : start + length] = True
 
     def _sample_multi_block_outputs(
         self,
@@ -115,9 +206,9 @@ class DiffusionGemmaModelRunner(ModelRunnerBase):
 
     @torch.inference_mode()
     def capture_cudagraph_multi_block(self):
-        logger.info("Skipping CUDA graph capture for DiffusionGemma until self-conditioning graph buffers are wired.")
-        self.graphs = {}
-        self.prefill_graphs = {}
-        self.graph_bs = []
-        self.graph_vars = {}
-        self.graph_outputs_are_logits = False
+        try:
+            return super().capture_cudagraph_multi_block()
+        finally:
+            disable_tensor_context = getattr(self.model, "disable_self_conditioning_tensor_context", None)
+            if disable_tensor_context is not None:
+                disable_tensor_context()

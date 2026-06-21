@@ -9,28 +9,43 @@ import torch.nn.functional as F
 
 from diffulex.attention import Attention
 from diffulex.distributed.parallel_state import fetch_parallel_state
+from diffulex.logger import get_logger
 from diffulex.layer.activation import GeluAndMul, SiluAndMul
 from diffulex.layer.embed_head import ParallelLMHead, VocabParallelEmbedding
 from diffulex.layer.layernorm import RMSNorm
 from diffulex.layer.linear import ColumnParallelLinear, ReplicatedLinear, RowParallelLinear
 from diffulex.layer.rotary_embedding import get_gemma4_proportional_rope, get_rope
 from diffulex.model.auto_model import AutoModelForDiffusionLM
+from diffulex.moe.layer.base import (
+    _VLLM_MODULAR_LOAD_ERR,
+    _VllmModularMoELayerAdapter,
+    _build_vllm_expert_map,
+    _load_vllm_modular_moe,
+    _make_vllm_runtime_config,
+)
 from diffulex.layer.linear import divide, tp_all_reduce
 from diffulex.utils.checkpoint import LoadContext, ResolvedWeight
+from diffulex.vllm_compat import vllm_current_config
 from diffulex_kernel import fused_moe
 
+logger = get_logger(__name__)
+_VLLM_GEMMA4_ROUTING = None
+_VLLM_GEMMA4_ROUTING_ERR = None
 
-class RMSNormNoWeight(nn.Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.hidden_size = int(hidden_size)
-        self.eps = float(eps)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        orig_dtype = x.dtype
-        x_fp32 = x.to(torch.float32)
-        var = x_fp32.pow(2).mean(dim=-1, keepdim=True)
-        return (x_fp32 * torch.rsqrt(var + self.eps)).to(orig_dtype)
+def _load_vllm_gemma4_routing():
+    global _VLLM_GEMMA4_ROUTING, _VLLM_GEMMA4_ROUTING_ERR
+    if _VLLM_GEMMA4_ROUTING is not None:
+        return _VLLM_GEMMA4_ROUTING
+    if _VLLM_GEMMA4_ROUTING_ERR is not None:
+        return None
+    try:
+        from vllm.model_executor.models.gemma4 import gemma4_fused_routing_kernel_triton
+    except Exception as exc:
+        _VLLM_GEMMA4_ROUTING_ERR = exc
+        return None
+    _VLLM_GEMMA4_ROUTING = gemma4_fused_routing_kernel_triton
+    return _VLLM_GEMMA4_ROUTING
 
 
 def _text_config(config):
@@ -81,17 +96,29 @@ class DiffusionGemmaRouter(nn.Module):
         super().__init__()
         hidden_size = int(config.hidden_size)
         num_experts = int(getattr(config, "num_experts"))
-        self.norm = RMSNormNoWeight(hidden_size, eps=float(config.rms_norm_eps))
+        self.norm = RMSNorm(hidden_size, eps=float(config.rms_norm_eps), has_weight=False)
         self.scale = nn.Parameter(torch.ones(hidden_size))
         self.per_expert_scale = nn.Parameter(torch.ones(num_experts))
         self.register_buffer("root_size", torch.tensor(hidden_size**-0.5), persistent=False)
         self.proj = ReplicatedLinear(hidden_size, num_experts, bias=False)
 
+    def _proj_fp32(self, x: torch.Tensor) -> torch.Tensor:
+        weight = self.proj.weight
+        bias = self.proj.bias
+        if x.is_cuda and x.dtype in (torch.float16, torch.bfloat16) and weight.dtype == x.dtype:
+            orig_shape = x.shape[:-1]
+            x_2d = x.reshape(-1, x.shape[-1])
+            out = torch.mm(x_2d, weight.t(), out_dtype=torch.float32)
+            if bias is not None:
+                out = out + bias.to(out.dtype)
+            return out.view(*orig_shape, weight.shape[0])
+        return self.proj(x).to(torch.float32)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.norm(x)
         x = x * self.root_size.to(x.dtype)
         x = x * self.scale.to(x.dtype)
-        return self.proj(x)
+        return self._proj_fp32(x)
 
 
 class DiffusionGemmaMoE(nn.Module):
@@ -112,25 +139,164 @@ class DiffusionGemmaMoE(nn.Module):
         self.moe_gemm_impl = str(getattr(config, "moe_gemm_impl", "triton"))
         self.w13 = nn.Parameter(torch.empty(self.num_local_experts, self.intermediate_size * 2, self.hidden_size))
         self.w2 = nn.Parameter(torch.empty(self.num_local_experts, self.hidden_size, self.intermediate_size))
+        self._vllm_modular_kernel = None
+        self._vllm_modular_method = None
+        self._vllm_modular_layer = None
+        self._vllm_modular_failed = False
+        self._vllm_modular_logged = False
+        self._vllm_routing_failed = False
+
+    def _fallback_fused_moe(
+        self,
+        hidden_states: torch.Tensor,
+        topk_ids: torch.Tensor,
+        topk_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        return fused_moe(
+            hidden_states=hidden_states,
+            w13=self.w13,
+            w2=self.w2,
+            topk_ids=topk_ids.to(torch.int32),
+            topk_weights=topk_weights.to(hidden_states.dtype),
+            local_expert_start=self.local_expert_start,
+            hidden_act=self.hidden_act,
+        )
+
+    def _route(
+        self,
+        logits: torch.Tensor,
+        per_expert_scale: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        scale = per_expert_scale.to(device=logits.device)
+        if logits.is_cuda and not self._vllm_routing_failed:
+            routing_fn = _load_vllm_gemma4_routing()
+            if routing_fn is not None:
+                try:
+                    return routing_fn(logits, self.top_k, scale)
+                except Exception as exc:
+                    self._vllm_routing_failed = True
+                    logger.warning(
+                        "Falling back to torch DiffusionGemma MoE routing because vLLM Gemma4 routing failed: %s",
+                        exc,
+                    )
+
+        _, topk_ids = torch.topk(logits, k=self.top_k, dim=-1)
+        scores = torch.softmax(logits, dim=-1)
+        topk_weights = scores.gather(1, topk_ids)
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True).clamp_min(1e-20)
+        topk_weights = topk_weights * scale.to(dtype=topk_weights.dtype)[topk_ids]
+        return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
+
+    def _build_vllm_modular_kernel(
+        self,
+        hidden_states: torch.Tensor,
+    ):
+        api = _load_vllm_modular_moe()
+        if api is None:
+            raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
+
+        if not api["is_workspace_manager_initialized"]():
+            api["init_workspace_manager"](hidden_states.device)
+
+        activation = api["MoEActivation"].from_str(self.hidden_act)
+        parallel_config = api["FusedMoEParallelConfig"].make_no_parallel()
+        moe_config = api["FusedMoEConfig"](
+            num_experts=int(self.num_experts),
+            experts_per_token=int(self.top_k),
+            hidden_dim=int(self.hidden_size),
+            intermediate_size_per_partition=int(self.intermediate_size),
+            num_local_experts=int(self.w13.shape[0]),
+            num_logical_experts=int(self.num_experts),
+            activation=activation,
+            device=hidden_states.device,
+            routing_method=api["RoutingMethodType"].Renormalize,
+            moe_parallel_config=parallel_config,
+            in_dtype=hidden_states.dtype,
+            max_num_tokens=max(1, int(hidden_states.shape[0])),
+        )
+
+        with vllm_current_config(_make_vllm_runtime_config()):
+            method = api["UnquantizedFusedMoEMethod"](moe_config)
+
+        expert_map = _build_vllm_expert_map(
+            num_global_experts=int(self.num_experts),
+            num_local_experts=int(self.w13.shape[0]),
+            local_expert_start=int(self.local_expert_start),
+            device=hidden_states.device,
+        )
+        layer = _VllmModularMoELayerAdapter(
+            self.w13,
+            self.w2,
+            activation=activation,
+            moe_config=moe_config,
+            global_num_experts=int(self.num_experts),
+            expert_map=expert_map,
+            clone_weights=False,
+        )
+        method.process_weights_after_loading(layer)
+        if not self._vllm_modular_logged:
+            logger.info(
+                "Initialized DiffusionGemma vLLM modular MoE backend: hidden=%s intermediate=%s "
+                "local_experts=%s global_experts=%s top_k=%s activation=%s dtype=%s tokens=%s expert_map=%s",
+                self.hidden_size,
+                self.intermediate_size,
+                int(self.w13.shape[0]),
+                self.num_experts,
+                self.top_k,
+                activation.value,
+                hidden_states.dtype,
+                int(hidden_states.shape[0]),
+                expert_map is not None,
+            )
+            self._vllm_modular_logged = True
+        self._vllm_modular_method = method
+        self._vllm_modular_layer = layer
+        return method.moe_kernel
+
+    @torch.compiler.disable
+    def _try_vllm_modular_moe(
+        self,
+        hidden_states: torch.Tensor,
+        topk_ids: torch.Tensor,
+        topk_weights: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if self._vllm_modular_failed:
+            return None
+        try:
+            if self._vllm_modular_kernel is None:
+                self._vllm_modular_kernel = self._build_vllm_modular_kernel(hidden_states)
+            if self._vllm_modular_method is None or self._vllm_modular_layer is None:
+                raise RuntimeError("vLLM modular MoE backend was not initialized correctly.")
+
+            required_topk_dtype = getattr(self._vllm_modular_method, "topk_indices_dtype", None)
+            if required_topk_dtype is not None and topk_ids.dtype != required_topk_dtype:
+                topk_ids = topk_ids.to(required_topk_dtype)
+            return self._vllm_modular_method.forward_native(
+                layer=self._vllm_modular_layer,
+                x=hidden_states,
+                topk_weights=topk_weights.to(torch.float32),
+                topk_ids=topk_ids,
+                shared_experts=None,
+                shared_experts_input=None,
+            )
+        except Exception as exc:
+            self._vllm_modular_failed = True
+            logger.warning(
+                "Falling back to Diffulex DiffusionGemma MoE kernel because vLLM modular MoE failed: %s",
+                exc,
+            )
+            return None
 
     def forward(self, x: torch.Tensor, router_logits: torch.Tensor, per_expert_scale: torch.Tensor) -> torch.Tensor:
         original_shape = x.shape
         x_flat = x.reshape(-1, original_shape[-1])
         logits = router_logits.reshape(-1, router_logits.shape[-1]).to(torch.float32)
-        _, topk_ids = torch.topk(logits, k=self.top_k, dim=-1)
-        scores = torch.softmax(logits, dim=-1)
-        topk_weights = scores.gather(1, topk_ids)
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True).clamp_min(1e-20)
-        topk_weights = topk_weights * per_expert_scale.to(device=topk_weights.device, dtype=topk_weights.dtype)[topk_ids]
-        out = fused_moe(
-            hidden_states=x_flat,
-            w13=self.w13,
-            w2=self.w2,
-            topk_ids=topk_ids.to(torch.int32),
-            topk_weights=topk_weights.to(x_flat.dtype),
-            local_expert_start=self.local_expert_start,
-            hidden_act=self.hidden_act,
-        )
+        topk_weights, topk_ids = self._route(logits, per_expert_scale)
+        out = None
+        if self.moe_gemm_impl == "vllm_modular":
+            out = self._try_vllm_modular_moe(x_flat, topk_ids, topk_weights)
+        if out is None:
+            out = self._fallback_fused_moe(x_flat, topk_ids, topk_weights)
         if self.tp_size > 1:
             out = tp_all_reduce(out, self.tp_group)
         return out.reshape(original_shape)
@@ -193,6 +359,7 @@ class DiffusionGemmaAttention(nn.Module):
         tp_size = parallel_state.get_tp_world_size()
         layer_type = _layer_types(config)[layer_idx]
         self.is_full_attention = layer_type == "full_attention"
+        self.sliding_window = None if self.is_full_attention else int(getattr(config, "sliding_window", 0) or 0)
         self.use_k_eq_v = self.is_full_attention and bool(getattr(config, "attention_k_eq_v", True))
 
         self.total_num_heads = int(config.num_attention_heads)
@@ -228,7 +395,7 @@ class DiffusionGemmaAttention(nn.Module):
         self.o_proj = RowParallelLinear(self.total_num_heads * self.head_dim, config.hidden_size, bias=bias)
         self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.v_norm = RMSNormNoWeight(self.head_dim, eps=config.rms_norm_eps)
+        self.v_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps, has_weight=False)
 
         rope_theta = float(getattr(config, "rope_theta", 10000.0))
         rope_type = "default"
@@ -255,6 +422,7 @@ class DiffusionGemmaAttention(nn.Module):
                 rotary_dim=rotary_dim,
                 max_position=int(config.max_position_embeddings),
                 base=rope_theta,
+                rope_type=rope_type,
             )
         self.attn = Attention(
             self.num_heads,
@@ -262,6 +430,7 @@ class DiffusionGemmaAttention(nn.Module):
             1.0,
             self.num_kv_heads,
             attn_impl=getattr(config, "attn_impl", "triton"),
+            sliding_window=self.sliding_window,
         )
 
     def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -304,11 +473,17 @@ class DiffusionGemmaDecoderLayer(nn.Module):
             self.moe = None
         self.register_buffer("layer_scalar", torch.ones(1))
 
+    @staticmethod
+    def _post_norm_add(norm: RMSNorm, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
+        if torch.compiler.is_compiling():
+            return norm(hidden_states) + residual
+        return norm.rms_norm_add(hidden_states, residual)
+
     def forward(self, positions: torch.Tensor, hidden_states: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(residual)
         hidden_states = self.self_attn(positions, hidden_states, mask)
-        hidden_states = self.post_attention_layernorm(hidden_states) + residual
+        hidden_states = self._post_norm_add(self.post_attention_layernorm, hidden_states, residual)
         residual = hidden_states
 
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
@@ -319,7 +494,7 @@ class DiffusionGemmaDecoderLayer(nn.Module):
             router_input = hidden_states_2 if self.router_uses_prenormed_input else residual
             hidden_states_2 = self.moe(hidden_states_2, self.router(router_input), self.router.per_expert_scale)
             hidden_states = hidden_states_1 + self.post_feedforward_layernorm_2(hidden_states_2)
-        hidden_states = self.post_feedforward_layernorm(hidden_states) + residual
+        hidden_states = self._post_norm_add(self.post_feedforward_layernorm, hidden_states, residual)
         return hidden_states * self.layer_scalar
 
 
@@ -354,7 +529,7 @@ class DiffusionGemmaSelfConditioning(nn.Module):
     def __init__(self, hidden_size: int, self_conditioning_size: int, eps: float) -> None:
         super().__init__()
         self.pre_norm = RMSNorm(hidden_size, eps=eps)
-        self.post_norm = RMSNormNoWeight(hidden_size, eps=eps)
+        self.post_norm = RMSNorm(hidden_size, eps=eps, has_weight=False)
         self.gate_proj = nn.Linear(hidden_size, self_conditioning_size, bias=False)
         self.up_proj = nn.Linear(hidden_size, self_conditioning_size, bias=False)
         self.down_proj = nn.Linear(self_conditioning_size, hidden_size, bias=False)
@@ -389,6 +564,9 @@ class DiffusionGemmaForDiffusionLM(nn.Module):
             eps=float(getattr(text_config, "rms_norm_eps", 1e-6)),
         )
         self._self_conditioning_context: list[dict] | None = None
+        self._self_conditioning_tensor_context_active = False
+        self._self_conditioning_soft_embeds: torch.Tensor | None = None
+        self._self_conditioning_mask: torch.Tensor | None = None
 
     def set_self_conditioning_context(self, context: list[dict] | None) -> None:
         self._self_conditioning_context = context
@@ -396,10 +574,34 @@ class DiffusionGemmaForDiffusionLM(nn.Module):
     def clear_self_conditioning_context(self) -> None:
         self._self_conditioning_context = None
 
+    def set_self_conditioning_tensor_context(
+        self,
+        soft_embeds: torch.Tensor | None,
+        mask: torch.Tensor | None,
+        *,
+        active: bool = True,
+    ) -> None:
+        self._self_conditioning_soft_embeds = soft_embeds
+        self._self_conditioning_mask = mask
+        self._self_conditioning_tensor_context_active = bool(active and soft_embeds is not None and mask is not None)
+
+    def disable_self_conditioning_tensor_context(self) -> None:
+        self._self_conditioning_tensor_context_active = False
+
     def _apply_self_conditioning_context(self, inputs_embeds: torch.Tensor) -> torch.Tensor:
         context = self._self_conditioning_context
         if not context:
-            return inputs_embeds
+            if not self._self_conditioning_tensor_context_active:
+                return inputs_embeds
+            soft_embeds = self._self_conditioning_soft_embeds
+            mask = self._self_conditioning_mask
+            if soft_embeds is None or mask is None:
+                return inputs_embeds
+            n_tokens = int(inputs_embeds.shape[0])
+            soft_embeds = soft_embeds[:n_tokens].to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
+            mask = mask[:n_tokens].to(device=inputs_embeds.device, dtype=torch.bool).view(n_tokens, 1)
+            conditioned = self.self_conditioning(inputs_embeds, soft_embeds)
+            return torch.where(mask, conditioned, inputs_embeds)
         inputs_embeds = inputs_embeds.clone()
         for item in context:
             start = int(item["start"])

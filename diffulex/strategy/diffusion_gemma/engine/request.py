@@ -173,7 +173,11 @@ class DiffusionGemmaReq(DllmReq):
             context_len = min(self.contiguous_in_cache_prefix_len, self.prefix_len)
             return list(range(context_len, self.prefix_len))
         if self.is_decoding or self.is_completed:
-            return self.dllm_block_buffer.buffer_position_ids
+            # We keep generated canvases physically page-aligned in token_ids/KV
+            # storage, but DiffusionGemma's RoPE positions should follow the
+            # true sequence without the prompt-padding hole.
+            prefix_padding = int(self.padded_prefix_len) - int(self.prefix_len)
+            return [pos - prefix_padding for pos in self.dllm_block_buffer.buffer_position_ids]
 
     @property
     def truncated_response(self) -> list[int]:

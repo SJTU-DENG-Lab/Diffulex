@@ -438,7 +438,7 @@ Examples:
         "--enable-prefill-cudagraph",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable lazy CUDA graph capture for block-aligned prefill buckets",
+        help="Deprecated no-op; prefill CUDA graph replay is disabled",
     )
     parser.add_argument(
         "--enable-full-static-runner",
@@ -475,6 +475,44 @@ Examples:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Use optional vLLM layer backends for common non-attention modules when available",
+    )
+    parser.add_argument(
+        "--profiler",
+        default=None,
+        choices=["torch"],
+        help="Enable a profiler backend for Diffulex engine/model-runner traces",
+    )
+    parser.add_argument(
+        "--torch-profiler-dir",
+        default="",
+        help="Directory for torch profiler traces and summaries",
+    )
+    parser.add_argument(
+        "--profiler-record-shapes",
+        action="store_true",
+        help="Record tensor shapes in torch profiler traces",
+    )
+    parser.add_argument(
+        "--profiler-memory",
+        action="store_true",
+        help="Enable torch profiler memory tracking",
+    )
+    parser.add_argument(
+        "--profiler-with-stack",
+        action="store_true",
+        help="Record Python stack traces in torch profiler output",
+    )
+    parser.add_argument(
+        "--profiler-delay-iterations",
+        type=int,
+        default=0,
+        help="Number of profiler session steps to skip before starting collection",
+    )
+    parser.add_argument(
+        "--profiler-max-iterations",
+        type=int,
+        default=0,
+        help="Maximum profiler collection steps; 0 collects until stop",
     )
     parser.add_argument(
         "--auto-max-nfe-warmup-steps",

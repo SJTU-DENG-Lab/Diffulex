@@ -11,7 +11,7 @@ from diffulex.sampler.auto_sampler import AutoSampler
 from diffulex.sampler.base.shift import SamplerShiftLogits
 from diffulex.sampler.dream import DreamSampler
 from diffulex.sampler.llada import LLaDASampler
-from diffulex.sampler.llada2 import LLaDA2DMaxSampler, LLaDA2Sampler, LLaDA2dot1Sampler
+from diffulex.sampler.llada2 import LLaDA2DMaxSampler, LLaDA2Sampler, LLaDA2VectorizedSampler, LLaDA2dot1Sampler
 from diffulex.sampler.sdar import SDARSampler
 from diffulex.sampler.base import SampleOutputBase
 from diffulex.engine.model_runner import MultiBlockModelRunnerTemplate
@@ -162,21 +162,6 @@ def test_token_merge_graph_binding_copies_runtime_metadata_into_fixed_buffers() 
     )
 
 
-def test_prefill_graph_bucket_rounds_to_block_size() -> None:
-    runner = MultiBlockRunnerForTest()
-    runner.config = SimpleNamespace(
-        block_size=4,
-        max_model_len=20,
-        max_num_batched_tokens=20,
-        max_num_reqs=4,
-        enable_prefill_cudagraph=True,
-        prefill_cudagraph_max_len=0,
-    )
-
-    assert runner._prefill_graph_bucket_len(17) == 20
-    assert runner._prefill_graph_max_len() == 20
-
-
 def test_torch_compile_capture_patch_restores_forward(monkeypatch) -> None:
     runner = MultiBlockRunnerForTest()
     runner.config = SimpleNamespace(
@@ -203,59 +188,6 @@ def test_torch_compile_capture_patch_restores_forward(monkeypatch) -> None:
 
     assert model.forward.__func__ is original_forward_func
     assert not getattr(model.forward, "_compiled", False)
-
-
-def test_prefill_graph_gate_requires_all_prefill_and_padding_row_capacity() -> None:
-    runner = MultiBlockRunnerForTest()
-    runner.enforce_eager = False
-    runner.config = SimpleNamespace(
-        block_size=4,
-        max_model_len=20,
-        max_num_batched_tokens=20,
-        max_num_reqs=1,
-        enable_prefill_cudagraph=True,
-        prefill_cudagraph_max_len=0,
-    )
-
-    attn_metadata = TokenMergeAttnMetaDataTemplate()
-    attn_metadata.status_table = torch.tensor([0], dtype=torch.int32)
-    attn_metadata.all_prefill_static = True
-    assert runner._can_use_prefill_graph(attn_metadata, 17)
-
-    attn_metadata.status_table = torch.tensor([0, 0], dtype=torch.int32)
-    assert not runner._can_use_prefill_graph(attn_metadata, 17)
-
-    attn_metadata.status_table = torch.tensor([1], dtype=torch.int32)
-    attn_metadata.all_prefill_static = False
-    assert not runner._can_use_prefill_graph(attn_metadata, 16)
-
-
-def test_token_merge_prefill_graph_binding_leaves_padded_tail_inert() -> None:
-    runner = TokenMergeRunnerForTest()
-    attn_metadata = TokenMergeAttnMetaDataTemplate()
-    attn_metadata.init_token_merge(
-        merge_mask=torch.tensor([False, True, False], dtype=torch.bool),
-        topk_ids=torch.tensor([[99, 99], [7, 8], [99, 99]], dtype=torch.int64),
-        topk_probs=torch.tensor([[0.0, 0.0], [0.6, 0.4], [0.0, 0.0]], dtype=torch.float32),
-        residual_probs=torch.tensor([[0.0], [0.1], [0.0]], dtype=torch.float32),
-        mask_token_id=99,
-        renormalize=True,
-        mode="dmax_topk",
-        weight=1.0,
-    )
-    graph_vars = {
-        "token_merge_mask": torch.ones(4, dtype=torch.bool),
-        "token_merge_topk_ids": torch.zeros((4, 2), dtype=torch.int64),
-        "token_merge_topk_probs": torch.ones((4, 2), dtype=torch.float32),
-        "token_merge_residual_probs": torch.ones((4, 1), dtype=torch.float32),
-    }
-
-    runner._bind_prefill_graph_extra_metadata(attn_metadata, graph_vars, bucket_len=4, runtime_num_tokens=3)
-
-    assert graph_vars["token_merge_mask"].tolist() == [False, True, False, False]
-    assert graph_vars["token_merge_topk_ids"].tolist() == [[99, 99], [7, 8], [99, 99], [99, 99]]
-    assert torch.allclose(graph_vars["token_merge_topk_probs"][3], torch.zeros(2))
-    assert torch.allclose(graph_vars["token_merge_residual_probs"][3], torch.zeros(1))
 
 
 def test_token_merge_graph_binding_disables_merge_with_zero_mask_buffers() -> None:
@@ -498,6 +430,15 @@ def test_run_multi_block_keeps_prefill_batch_together() -> None:
 def test_llada_and_llada2_use_separate_sampler_classes() -> None:
     llada_cfg = SimpleNamespace(model_name="llada")
     llada2_cfg = SimpleNamespace(model_name="llada2", sampling_mode="naive", token_merge_top_k=1)
+    llada2_vectorized_cfg = SimpleNamespace(
+        model_name="llada2",
+        decoding_strategy="multi_bd",
+        sampling_mode="naive",
+        token_merge_top_k=1,
+        enable_vectorized_sampler=True,
+        enable_vectorized_sampler_compile=False,
+        tensor_parallel_size=1,
+    )
     llada2_moe_cfg = SimpleNamespace(model_name="llada2_moe", sampling_mode="naive", token_merge_top_k=1)
     llada2_mini_cfg = SimpleNamespace(model_name="llada2_mini", sampling_mode="naive", token_merge_top_k=1)
     edit_llada2_cfg = SimpleNamespace(model_name="llada2", sampling_mode="edit", token_merge_top_k=1)
@@ -510,6 +451,7 @@ def test_llada_and_llada2_use_separate_sampler_classes() -> None:
 
     llada_sampler = AutoSampler.from_config(llada_cfg)
     llada2_sampler = AutoSampler.from_config(llada2_cfg)
+    llada2_vectorized_sampler = AutoSampler.from_config(llada2_vectorized_cfg)
     llada2_moe_sampler = AutoSampler.from_config(llada2_moe_cfg)
     llada2_mini_sampler = AutoSampler.from_config(llada2_mini_cfg)
     edit_llada2_sampler = AutoSampler.from_config(edit_llada2_cfg)
@@ -517,6 +459,7 @@ def test_llada_and_llada2_use_separate_sampler_classes() -> None:
 
     assert isinstance(llada_sampler, LLaDASampler)
     assert isinstance(llada2_sampler, LLaDA2Sampler)
+    assert isinstance(llada2_vectorized_sampler, LLaDA2VectorizedSampler)
     assert isinstance(llada2_moe_sampler, LLaDA2Sampler)
     assert isinstance(llada2_mini_sampler, LLaDA2Sampler)
     assert isinstance(edit_llada2_sampler, LLaDA2dot1Sampler)
@@ -526,6 +469,7 @@ def test_llada_and_llada2_use_separate_sampler_classes() -> None:
     assert isinstance(dmax_llada2_sampler, TokenMergeSamplerMixin)
     assert type(llada_sampler) is not type(llada2_sampler)
     assert type(llada2_sampler) is LLaDA2Sampler
+    assert type(llada2_vectorized_sampler) is LLaDA2VectorizedSampler
     assert type(edit_llada2_sampler) is LLaDA2dot1Sampler
     assert type(dmax_llada2_sampler) is LLaDA2DMaxSampler
 
@@ -535,6 +479,202 @@ def test_auto_sampler_rejects_invalid_sampling_mode_combo() -> None:
         AutoSampler.from_config(
             SimpleNamespace(model_name="llada2dot1_mini", decoding_strategy=None, sampling_mode="naive")
         )
+
+
+class _VectorizedSamplerBlock:
+    def __init__(
+        self,
+        *,
+        block_id: int,
+        mask_relative_ids: list[int],
+        mask_global_ids: list[int],
+        start: int = 0,
+        prev_complete: bool = True,
+        accept_threshold: float = 0.95,
+        mask_token_id: int = 5,
+    ) -> None:
+        self.block_id = block_id
+        self.start = start
+        self.mask_token_id = mask_token_id
+        self.thresholds = SimpleNamespace(accept_threshold=accept_threshold)
+        self.prev_block = SimpleNamespace(is_semi_complete=prev_complete) if prev_complete is not None else None
+        self._mask_relative_ids = list(mask_relative_ids)
+        self._mask_global_ids = list(mask_global_ids)
+        self.is_active = True
+
+    @property
+    def num_mask_tokens(self) -> int:
+        return len(self._mask_relative_ids)
+
+    @property
+    def mask_token_relative_ids(self) -> list[int]:
+        return list(self._mask_relative_ids)
+
+    @property
+    def mask_token_global_ids(self) -> list[int]:
+        return list(self._mask_global_ids)
+
+
+def _sample_output_to_plain(output: SampleOutputBase) -> dict:
+    return {
+        "true_local_ids_map": dict(output.true_local_ids_map),
+        "accepted_ids_map": dict(output.accepted_ids_map),
+        "sampled_tokens_map": dict(output.sampled_tokens_map),
+        "mask_token_rel_ids_map": dict(output.mask_token_rel_ids_map),
+        "confidence_map": dict(output.confidence_map),
+        "initial_confidence_map": dict(output.initial_confidence_map),
+    }
+
+
+def test_llada2_vectorized_sampler_matches_legacy_decode_greedy() -> None:
+    old_sampler = LLaDA2Sampler(SimpleNamespace())
+    vectorized_sampler = LLaDA2VectorizedSampler(
+        SimpleNamespace(enable_vectorized_sampler_compile=False, tensor_parallel_size=1)
+    )
+    old_sampler.tokenizer_vocab_size = 6
+    vectorized_sampler.tokenizer_vocab_size = 6
+
+    block0 = _VectorizedSamplerBlock(
+        block_id=0,
+        mask_relative_ids=[0, 2],
+        mask_global_ids=[0, 2],
+        prev_complete=True,
+    )
+    block1 = _VectorizedSamplerBlock(
+        block_id=1,
+        start=4,
+        mask_relative_ids=[1],
+        mask_global_ids=[5],
+        prev_complete=False,
+        accept_threshold=0.5,
+    )
+    req = SimpleNamespace(
+        req_id=11,
+        dllm_blocks=[block0, block1],
+        dllm_block_buffer=SimpleNamespace(first_running_block=SimpleNamespace(start=0)),
+        chunk_size=8,
+        running_sequence=[0] * 8,
+    )
+    metadata = SimpleNamespace(
+        cu_seqlens_q=torch.tensor([0, 8], dtype=torch.int32),
+        is_prefill=[False],
+    )
+    old_sampler.fetch_attn_metadata = lambda: metadata
+    vectorized_sampler.fetch_attn_metadata = lambda: metadata
+
+    logits = torch.zeros(8, 8, dtype=torch.float32)
+    logits[0, 2] = 8.0
+    logits[2, 3] = 8.0
+    logits[5, 1] = 8.0
+    logits[:, 6:] = -1.0
+    # Tie between two valid tokens; both samplers should choose the highest id.
+    logits[0, 4] = 8.0
+
+    temperatures = torch.zeros(1, dtype=torch.float32)
+    legacy = old_sampler([req], logits, temperatures)
+    vectorized = vectorized_sampler([req], logits, temperatures)
+
+    assert _sample_output_to_plain(vectorized) == _sample_output_to_plain(legacy)
+    assert vectorized.sampled_tokens_map["11"]["0"][0] == 4
+
+
+def test_llada2_vectorized_sampler_shadow_validation(monkeypatch) -> None:
+    monkeypatch.setenv("DIFFULEX_VALIDATE_VECTORIZED_SAMPLER", "1")
+    vectorized_sampler = LLaDA2VectorizedSampler(
+        SimpleNamespace(enable_vectorized_sampler_compile=False, tensor_parallel_size=1)
+    )
+    vectorized_sampler.tokenizer_vocab_size = 6
+
+    block = _VectorizedSamplerBlock(
+        block_id=0,
+        mask_relative_ids=[0, 1],
+        mask_global_ids=[0, 1],
+        prev_complete=True,
+    )
+    req = SimpleNamespace(
+        req_id=13,
+        dllm_blocks=[block],
+        dllm_block_buffer=SimpleNamespace(first_running_block=SimpleNamespace(start=0)),
+        chunk_size=2,
+        running_sequence=[0] * 2,
+    )
+    metadata = SimpleNamespace(
+        cu_seqlens_q=torch.tensor([0, 2], dtype=torch.int32),
+        is_prefill=[False],
+    )
+    vectorized_sampler.fetch_attn_metadata = lambda: metadata
+
+    logits = torch.zeros(2, 8, dtype=torch.float32)
+    logits[0, 1] = 8.0
+    logits[1, 2] = 8.0
+
+    output = vectorized_sampler([req], logits, [0.0])
+
+    assert output.sampled_tokens_map["13"]["0"] == [1, 2]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_llada2_vectorized_greedy_uses_eager_by_default(monkeypatch) -> None:
+    import diffulex_kernel
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("experimental fused greedy should be opt-in")
+
+    monkeypatch.delenv("DIFFULEX_ENABLE_EXPERIMENTAL_FUSED_GREEDY_CONFIDENCE", raising=False)
+    monkeypatch.setattr(diffulex_kernel, "greedy_confidence", fail_if_called, raising=False)
+
+    vectorized_sampler = LLaDA2VectorizedSampler(
+        SimpleNamespace(enable_vectorized_sampler_compile=False, tensor_parallel_size=1)
+    )
+    vectorized_sampler.tokenizer_vocab_size = 6
+
+    logits = torch.zeros((2, 8), device="cuda", dtype=torch.bfloat16)
+    logits[0, 1] = 8.0
+    logits[1, 2] = 8.0
+
+    _, sampled_tokens, _ = vectorized_sampler._greedy_sample(logits, mask_token_id=5)
+
+    assert sampled_tokens.cpu().tolist() == [1, 2]
+
+
+def test_llada2_vectorized_sampler_matches_legacy_prefill_greedy() -> None:
+    old_sampler = LLaDA2Sampler(SimpleNamespace())
+    vectorized_sampler = LLaDA2VectorizedSampler(
+        SimpleNamespace(enable_vectorized_sampler_compile=False, tensor_parallel_size=1)
+    )
+    old_sampler.tokenizer_vocab_size = 6
+    vectorized_sampler.tokenizer_vocab_size = 6
+
+    block = _VectorizedSamplerBlock(
+        block_id=0,
+        mask_relative_ids=[0, 2],
+        mask_global_ids=[4, 6],
+        prev_complete=True,
+    )
+    req = SimpleNamespace(
+        req_id=12,
+        dllm_blocks=[block],
+        chunk_size=4,
+        running_sequence=[0] * 4,
+        contiguous_in_cache_prefix_len=4,
+    )
+    metadata = SimpleNamespace(
+        cu_seqlens_q=torch.tensor([0, 4], dtype=torch.int32),
+        is_prefill=[True],
+    )
+    old_sampler.fetch_attn_metadata = lambda: metadata
+    vectorized_sampler.fetch_attn_metadata = lambda: metadata
+
+    logits = torch.zeros(4, 8, dtype=torch.float32)
+    logits[0, 1] = 8.0
+    logits[2, 4] = 8.0
+    logits[:, 6:] = -1.0
+
+    temperatures = torch.zeros(1, dtype=torch.float32)
+    legacy = old_sampler([req], logits, temperatures)
+    vectorized = vectorized_sampler([req], logits, temperatures)
+
+    assert _sample_output_to_plain(vectorized) == _sample_output_to_plain(legacy)
 
 
 def test_llada2dot1_edit_sampler_emits_block_writes_map() -> None:

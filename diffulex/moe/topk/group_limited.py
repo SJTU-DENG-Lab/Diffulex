@@ -9,6 +9,48 @@ from diffulex.moe.topk.output import TopKOutput
 from diffulex_kernel import fused_group_limited_topk
 
 
+_VLLM_GROUPED_TOPK_UNAVAILABLE = False
+
+
+def _vllm_grouped_topk(
+    router_logits: torch.Tensor,
+    expert_bias: torch.Tensor,
+    *,
+    top_k: int,
+    n_group: int,
+    topk_group: int,
+    routed_scaling_factor: float,
+    renormalize: bool,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    global _VLLM_GROUPED_TOPK_UNAVAILABLE
+    if (
+        _VLLM_GROUPED_TOPK_UNAVAILABLE
+        or os.getenv("DIFFULEX_DISABLE_VLLM_GROUPED_TOPK", "0") == "1"
+        or not router_logits.is_cuda
+        or n_group <= 0
+        or topk_group <= 0
+        or n_group > 32
+        or top_k > 32
+    ):
+        return None
+    try:
+        from vllm import _custom_ops as ops
+
+        return ops.grouped_topk(
+            router_logits,
+            n_group,
+            topk_group,
+            top_k,
+            renormalize,
+            routed_scaling_factor,
+            expert_bias,
+            1,
+        )
+    except Exception:
+        _VLLM_GROUPED_TOPK_UNAVAILABLE = True
+        return None
+
+
 def _tile_kernels_group_limited_topk(
     scores: torch.Tensor,
     *,
@@ -136,13 +178,24 @@ class GroupLimitedTopKRouter(TopKRouter):
             return self._forward_naive(router_logits)
 
         expert_bias = self._expert_bias_getter().to(router_logits.device, dtype=router_logits.dtype)
-        topk_weights, topk_ids = fused_group_limited_topk(
-            router_logits=router_logits,
-            expert_bias=expert_bias,
+        topk_output = _vllm_grouped_topk(
+            router_logits,
+            expert_bias,
             top_k=self.top_k,
             n_group=self.n_group,
             topk_group=self.topk_group,
             routed_scaling_factor=self.routed_scaling_factor,
             renormalize=self.renormalize,
         )
+        if topk_output is None:
+            topk_output = fused_group_limited_topk(
+                router_logits=router_logits,
+                expert_bias=expert_bias,
+                top_k=self.top_k,
+                n_group=self.n_group,
+                topk_group=self.topk_group,
+                routed_scaling_factor=self.routed_scaling_factor,
+                renormalize=self.renormalize,
+            )
+        topk_weights, topk_ids = topk_output
         return TopKOutput(weights=topk_weights, ids=topk_ids, router_logits=router_logits)

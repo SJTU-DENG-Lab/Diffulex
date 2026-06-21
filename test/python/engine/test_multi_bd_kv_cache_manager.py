@@ -10,6 +10,8 @@ class FakeReq:
     def __init__(self, pages: list[list[int]], *, cache_len: int, to_cache_len: int):
         self._pages = pages
         self.page_table = [0, 1]
+        self.page_cache_missed = []
+        self.num_cached_tokens = 0
         self.cache_len = cache_len
         self.to_cache_len = to_cache_len
 
@@ -157,6 +159,39 @@ def test_apply_cached_prefix_pages_marks_prefix_blocks_in_cache() -> None:
     assert req2.in_cache_len == 64
     assert req2.page_cache_missed == [False, False]
     assert all(req2.dllm_blocks[i].status == DllmBlockStatus.IN_CACHE for i in range(2))
+
+
+def test_prefix_cache_rejects_stale_hash_mapping_with_same_page_tokens() -> None:
+    manager = _build_manager()
+    shared_page_tokens = [2000 + i for i in range(32)]
+
+    original_pages = [
+        [1000 + i for i in range(32)],
+        shared_page_tokens,
+    ]
+    original_req = FakeReq(original_pages, cache_len=64, to_cache_len=0)
+    original_req.page_table = []
+    manager.allocate(original_req)
+    original_hash = manager.pages[original_req.page_table[1]].hash
+    manager.free(original_req)
+
+    replacement_pages = [
+        [3000 + i for i in range(32)],
+        shared_page_tokens,
+    ]
+    replacement_req = FakeReq(replacement_pages, cache_len=64, to_cache_len=0)
+    replacement_req.page_table = []
+    manager.allocate(replacement_req)
+    replacement_second_page_id = replacement_req.page_table[1]
+    manager.free(replacement_req)
+
+    replay_req = FakeReq(original_pages, cache_len=64, to_cache_len=0)
+    replay_req.page_table = []
+    manager.hash_to_page_id[original_hash] = replacement_second_page_id
+    manager.allocate(replay_req)
+
+    assert replay_req.num_cached_tokens == 32
+    assert replay_req.page_cache_missed == [False, True]
 
 
 def test_apply_cached_prefix_page_marks_all_blocks_inside_cached_page() -> None:

@@ -11,7 +11,7 @@ from diffulex.attention import Attention
 from diffulex.layer.activation import SiluAndMul
 from diffulex.layer.embed_head import ParallelLMHead, VocabParallelEmbedding
 from diffulex.layer.layernorm import RMSNorm
-from diffulex.layer.linear import ColumnParallelLinear, RowParallelLinear, divide
+from diffulex.layer.linear import ColumnParallelLinear, MergedColumnParallelLinear, RowParallelLinear, divide
 from diffulex.layer.rotary_embedding import get_rope
 from diffulex.model.auto_model import AutoModelForDiffusionLM
 from diffulex.moe.config import get_norm_topk_prob, is_moe_layer
@@ -21,6 +21,7 @@ from diffulex.moe.layer.tp_impl import TPFusedMoE
 from diffulex.moe.layer.naive_impl import NaiveFusedMoE
 from diffulex.moe.topk import GroupLimitedTopKRouter
 from diffulex.distributed.parallel_state import fetch_parallel_state
+from diffulex.profiling import record_function
 from diffulex.utils.checkpoint import LoadContext, ResolvedWeight
 
 
@@ -35,6 +36,13 @@ def _llada2_use_legacy_qkv_path() -> bool:
 def _llada2_gate_use_fp32() -> bool:
     # Keep fp32 gate as default for alignment; allow explicit opt-out for perf probing.
     return os.getenv("DIFFULEX_LLADA2_GATE_FP32", "1") != "0"
+
+
+def _llada2_enable_fused_qk_norm_rope() -> bool:
+    explicit = os.getenv("DIFFULEX_ENABLE_FUSED_QK_NORM_ROPE")
+    if explicit is not None:
+        return explicit != "0"
+    return os.getenv("DIFFULEX_DISABLE_FUSED_QK_NORM_ROPE", "0") != "1"
 
 
 class LLaDA2QKVParallelLinear(nn.Module):
@@ -128,6 +136,7 @@ class LLaDA2Attention(nn.Module):
             self.num_kv_heads,
             attn_impl=getattr(config, "attn_impl", "triton"),
         )
+        self._fused_qk_norm_rope_unavailable = False
 
     def _split_qkv_reference(
         self,
@@ -150,38 +159,114 @@ class LLaDA2Attention(nn.Module):
         v = rearrange(v, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
         return q, k, v
 
+    def _try_fused_qk_norm_rope(self, qkv: torch.Tensor, positions: torch.Tensor) -> bool:
+        if (
+            self._fused_qk_norm_rope_unavailable
+            or not _llada2_enable_fused_qk_norm_rope()
+            or not qkv.is_cuda
+            or not qkv.is_contiguous()
+            or qkv.dim() != 2
+            or positions.dim() != 1
+        ):
+            return False
+        if (
+            self.query_layernorm.weight is None
+            or self.key_layernorm.weight is None
+            or self.query_layernorm.eps != self.key_layernorm.eps
+            or self.query_layernorm.weight.dtype != qkv.dtype
+            or self.key_layernorm.weight.dtype != qkv.dtype
+        ):
+            return False
+        inner_rope = getattr(self.rotary_emb, "rotary_emb", None)
+        cos_sin_cache = None
+        for rope in (self.rotary_emb, inner_rope):
+            if rope is None:
+                continue
+            match_cache_dtype = getattr(rope, "_match_cos_sin_cache_dtype", None)
+            if callable(match_cache_dtype):
+                cos_sin_cache = match_cache_dtype(qkv)
+                break
+            cos_sin_cache = getattr(rope, "cos_sin_cache", None)
+            if cos_sin_cache is not None:
+                break
+        if cos_sin_cache is None or not torch.is_tensor(cos_sin_cache):
+            return False
+        rotary_dim = int(cos_sin_cache.shape[-1])
+        if cos_sin_cache.dim() != 2 or rotary_dim <= 0 or rotary_dim > self.head_dim or rotary_dim % 2 != 0:
+            return False
+        if cos_sin_cache.device != qkv.device:
+            return False
+        try:
+            from vllm import _custom_ops as ops
+
+            ops.fused_qk_norm_rope(
+                qkv,
+                self.num_heads,
+                self.num_kv_heads,
+                self.num_kv_heads,
+                self.head_dim,
+                self.query_layernorm.eps,
+                self.query_layernorm.weight,
+                self.key_layernorm.weight,
+                cos_sin_cache,
+                True,
+                positions,
+            )
+            return True
+        except Exception:
+            self._fused_qk_norm_rope_unavailable = True
+            return False
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        qkv = self.query_key_value(hidden_states)
+        layer_prefix = f"diffulex.llada2.layer{self.layer_idx}.attention"
+        with record_function(f"{layer_prefix}.qkv_proj"):
+            qkv = self.query_key_value(hidden_states)
         if _llada2_use_legacy_qkv_path():
-            q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
-            q = rearrange(
-                self.query_layernorm(
-                    rearrange(q, "token (head head_dim) -> token head head_dim", head=self.num_heads)
-                ),
-                "token head head_dim -> token (head head_dim)",
-            )
-            k = rearrange(
-                self.key_layernorm(
-                    rearrange(k, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
-                ),
-                "token head head_dim -> token (head head_dim)",
-            )
-            q, k = self.rotary_emb(positions, q, k)
-            return self.dense(self.attn(q, k, v, mask))
-        if _llada2_use_reference_view_path():
-            q, k, v = self._split_qkv_reference(qkv)
-        else:
-            q, k, v = self._split_qkv_default(qkv)
-        q = self.query_layernorm(q)
-        k = self.key_layernorm(k)
-        q, k = self.rotary_emb(positions, q, k)
-        attn_out = self.attn(q, k, v, mask)
-        attn_out = self.dense(attn_out)
+            with record_function(f"{layer_prefix}.split_qkv"):
+                q, k, v = qkv.split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+            with record_function(f"{layer_prefix}.qk_norm"):
+                q = rearrange(
+                    self.query_layernorm(
+                        rearrange(q, "token (head head_dim) -> token head head_dim", head=self.num_heads)
+                    ),
+                    "token head head_dim -> token (head head_dim)",
+                )
+                k = rearrange(
+                    self.key_layernorm(
+                        rearrange(k, "token (head head_dim) -> token head head_dim", head=self.num_kv_heads)
+                    ),
+                    "token head head_dim -> token (head head_dim)",
+                )
+            with record_function(f"{layer_prefix}.rope"):
+                q, k = self.rotary_emb(positions, q, k)
+            with record_function(f"{layer_prefix}.attn_core"):
+                attn_out = self.attn(q, k, v, mask)
+            with record_function(f"{layer_prefix}.out_proj"):
+                return self.dense(attn_out)
+        with record_function(f"{layer_prefix}.split_qkv"):
+            if _llada2_use_reference_view_path():
+                q, k, v = self._split_qkv_reference(qkv)
+            else:
+                q, k, v = self._split_qkv_default(qkv)
+        with record_function(f"{layer_prefix}.qk_norm"):
+            fused_qk_norm_rope = self._try_fused_qk_norm_rope(qkv, positions)
+            if fused_qk_norm_rope:
+                q, k, v = self._split_qkv_default(qkv)
+            else:
+                q = self.query_layernorm(q)
+                k = self.key_layernorm(k)
+        if not fused_qk_norm_rope:
+            with record_function(f"{layer_prefix}.rope"):
+                q, k = self.rotary_emb(positions, q, k)
+        with record_function(f"{layer_prefix}.attn_core"):
+            attn_out = self.attn(q, k, v, mask)
+        with record_function(f"{layer_prefix}.out_proj"):
+            attn_out = self.dense(attn_out)
         return attn_out
 
 
@@ -189,15 +274,31 @@ class LLaDA2DenseMLP(nn.Module):
     def __init__(self, config, intermediate_size: int | None = None) -> None:
         super().__init__()
         intermediate_size = int(intermediate_size or config.intermediate_size)
-        self.gate_proj = ColumnParallelLinear(config.hidden_size, intermediate_size, bias=False)
-        self.up_proj = ColumnParallelLinear(config.hidden_size, intermediate_size, bias=False)
+        self.gate_up_proj = MergedColumnParallelLinear(
+            config.hidden_size,
+            [intermediate_size, intermediate_size],
+            bias=False,
+        )
         self.down_proj = RowParallelLinear(intermediate_size, config.hidden_size, bias=False)
         if getattr(config, "hidden_act", "silu") != "silu":
             raise NotImplementedError("LLaDA2 dense MLP currently supports only silu.")
         self.act_fn = SiluAndMul()
+        self._register_state_dict_hook(self._add_state_dict_aliases)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(self.act_fn(torch.cat((self.gate_proj(x), self.up_proj(x)), dim=-1)))
+        return self.down_proj(self.act_fn(self.gate_up_proj(x)))
+
+    def _add_state_dict_aliases(self, module, state_dict, prefix, local_metadata) -> None:
+        gate_weight, up_weight = self.gate_up_proj.weight.split(self.gate_up_proj.weight.shape[0] // 2, dim=0)
+        state_dict[prefix + "gate_proj.weight"] = gate_weight
+        state_dict[prefix + "up_proj.weight"] = up_weight
+
+    def resolve_checkpoint_weight(self, suffix: str, ctx: LoadContext) -> ResolvedWeight | None:
+        if suffix == "gate_proj.weight":
+            return ResolvedWeight(param=self.gate_up_proj.weight, shard_id=0)
+        if suffix == "up_proj.weight":
+            return ResolvedWeight(param=self.gate_up_proj.weight, shard_id=1)
+        return None
 
 
 class LLaDA2MoEMixin:
@@ -323,19 +424,31 @@ class LLaDA2DecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = residual + self.attention(positions, hidden_states, mask)
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        mlp_output = self.mlp(hidden_states)
+        residual: torch.Tensor | None = None,
+        *,
+        return_residual: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        layer_prefix = f"diffulex.llada2.layer{self.layer_idx}"
+        with record_function(f"{layer_prefix}.input_norm"):
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+        with record_function(f"{layer_prefix}.attention_total"):
+            hidden_states = self.attention(positions, hidden_states, mask)
+        with record_function(f"{layer_prefix}.post_attention_norm"):
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        with record_function(f"{layer_prefix}.mlp"):
+            mlp_output = self.mlp(hidden_states)
         if isinstance(mlp_output, tuple):
             hidden_states, _router_logits = mlp_output
         else:
             hidden_states = mlp_output
-        hidden_states = residual + hidden_states
-        return hidden_states
+        if return_residual:
+            return hidden_states, residual
+        return residual + hidden_states
 
 
 class LLaDA2Model(nn.Module):
@@ -364,9 +477,19 @@ class LLaDA2Model(nn.Module):
     ) -> torch.Tensor:
         hidden_states = self.word_embeddings(input_ids)
         hidden_states = self._maybe_apply_token_merge(hidden_states)
+        residual = None
         for layer in self.layers:
-            hidden_states = layer(positions, hidden_states, mask)
-        hidden_states = self.norm(hidden_states)
+            hidden_states, residual = layer(
+                positions,
+                hidden_states,
+                mask,
+                residual,
+                return_residual=True,
+            )
+        if residual is None:
+            hidden_states = self.norm(hidden_states)
+        else:
+            hidden_states, _residual = self.norm(hidden_states, residual)
         return hidden_states
 
     def _maybe_apply_token_merge(self, hidden_states: torch.Tensor) -> torch.Tensor:

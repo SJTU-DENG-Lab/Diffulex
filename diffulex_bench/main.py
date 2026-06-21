@@ -355,6 +355,19 @@ def load_config_from_args(args) -> BenchmarkConfig:
         argv = sys.argv[1:]
         return any(arg == flag or arg.startswith(f"{flag}=") for flag in flags for arg in argv)
 
+    def profiler_config_from_args() -> dict | None:
+        if getattr(args, "profiler", None) is None:
+            return None
+        return {
+            "profiler": args.profiler,
+            "torch_profiler_dir": getattr(args, "torch_profiler_dir", ""),
+            "record_shapes": bool(getattr(args, "profiler_record_shapes", False)),
+            "profile_memory": bool(getattr(args, "profiler_memory", False)),
+            "with_stack": bool(getattr(args, "profiler_with_stack", False)),
+            "delay_iterations": int(getattr(args, "profiler_delay_iterations", 0)),
+            "max_iterations": int(getattr(args, "profiler_max_iterations", 0)),
+        }
+
     if getattr(args, "max_num_reqs", None) is None and getattr(args, "max_num_seqs", None) is not None:
         logger.warning(
             "--max-num-seqs is deprecated and will be removed in a future release; please use --max-num-reqs instead."
@@ -465,7 +478,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
         ):
             config.engine.max_num_batched_tokens = args.max_num_batched_tokens
         if getattr(args, "enable_prefill_cudagraph", None) is not None:
-            config.engine.enable_prefill_cudagraph = bool(args.enable_prefill_cudagraph)
+            config.engine.enable_prefill_cudagraph = False
         if getattr(args, "enable_full_static_runner", None) is not None:
             config.engine.enable_full_static_runner = bool(args.enable_full_static_runner)
         if (
@@ -481,6 +494,9 @@ def load_config_from_args(args) -> BenchmarkConfig:
             config.engine.torch_compile_mode = args.torch_compile_mode
         if getattr(args, "enable_vllm_layers", None) is not None:
             config.engine.enable_vllm_layers = bool(args.enable_vllm_layers)
+        cli_profiler_config = profiler_config_from_args()
+        if cli_profiler_config is not None:
+            config.engine.apply_updates({"profiler_config": cli_profiler_config})
         if getattr(args, "auto_max_nfe_warmup_steps", None) is not None:
             config.engine.auto_max_nfe_warmup_steps = args.auto_max_nfe_warmup_steps
         if getattr(args, "auto_max_nfe_tpf_floor", None) is not None:
@@ -528,6 +544,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
         if was_provided("max_post_edit_steps") and getattr(args, "max_post_edit_steps", None) is not None:
             config.engine.max_post_edit_steps = args.max_post_edit_steps
 
+        config.engine.enable_prefill_cudagraph = False
         apply_engine_arg_overrides(config.engine)
     else:
         if not args.model_path:
@@ -554,11 +571,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
             max_model_len=args.max_model_len,
             max_num_batched_tokens=getattr(args, "max_num_batched_tokens", 4096),
             max_num_reqs=max_num_reqs if max_num_reqs is not None else 128,
-            enable_prefill_cudagraph=(
-                bool(getattr(args, "enable_prefill_cudagraph", True))
-                if getattr(args, "enable_prefill_cudagraph", None) is not None
-                else True
-            ),
+            enable_prefill_cudagraph=False,
             enable_full_static_runner=(
                 bool(getattr(args, "enable_full_static_runner", True))
                 if getattr(args, "enable_full_static_runner", None) is not None
@@ -659,6 +672,9 @@ def load_config_from_args(args) -> BenchmarkConfig:
             include_path=getattr(args, "include_path", None),
         )
 
+        cli_profiler_config = profiler_config_from_args()
+        if cli_profiler_config is not None:
+            engine.apply_updates({"profiler_config": cli_profiler_config})
         apply_engine_arg_overrides(engine)
         config = BenchmarkConfig(engine=engine, eval=eval_config)
 

@@ -9,8 +9,8 @@ class FullStaticRunner:
     """CUDA graph runner with stable replay buffers owned by the model runner.
 
     The model runner still owns capture and metadata construction because those
-    are strategy-specific. This class is the execution boundary: can-run checks,
-    prefill/decode graph replay, and logits projection after replay.
+    are strategy-specific. This class is the execution boundary for decode graph
+    replay and logits projection after replay.
     """
 
     def __init__(self, owner) -> None:
@@ -19,23 +19,11 @@ class FullStaticRunner:
     def enabled(self) -> bool:
         return bool(getattr(self.owner.config, "enable_full_static_runner", True))
 
-    def can_run_prefill(self, attn_metadata: AttnMetaDataBase, num_tokens: int) -> bool:
-        return self.enabled() and self.owner._can_use_prefill_graph(attn_metadata, num_tokens)
-
     def can_run_decode(self, input_ids: torch.Tensor) -> bool:
         if not self.enabled() or self.owner.enforce_eager:
             return False
         max_graph_tokens = 512 * (self.owner.config.buffer_size * self.owner.config.block_size)
         return int(input_ids.size(0)) <= max_graph_tokens
-
-    @torch.inference_mode()
-    def run_prefill(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        attn_metadata: AttnMetaDataBase,
-    ):
-        return self.owner._run_prefill_cudagraph(input_ids, positions, attn_metadata)
 
     @torch.inference_mode()
     def run_decode(

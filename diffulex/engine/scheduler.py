@@ -59,7 +59,11 @@ class SchedulerBase(BlockRewriteSchedulerMixin, ABC):
         num_reqs = 0
         num_batched_tokens = 0
 
-        while self.waiting_reqs and num_reqs < self.max_num_reqs:
+        while (
+            self.waiting_reqs
+            and num_reqs < self.max_num_reqs
+            and len(self.running_reqs) < self.max_num_reqs
+        ):
             req = self.waiting_reqs[0]
 
             projected = len(req) + self.block_size
@@ -196,7 +200,7 @@ class SchedulerBase(BlockRewriteSchedulerMixin, ABC):
             if req.is_completed:
                 if req.completion_reason is None:
                     req.completion_reason = "completed_without_reason"
-                self._logger.info(
+                self._logger.debug(
                     "Req %s marked FINISHED (reason=%s, eos=%s, max_new=%s, max_model_len=%s, max_nfe=%s, max_repeat=%s, nfe=%s, gen_tokens=%s, auto_max_nfe=%s, avg_tpf=%s)",
                     req.req_id,
                     req.completion_reason,

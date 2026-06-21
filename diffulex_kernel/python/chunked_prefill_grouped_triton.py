@@ -75,6 +75,7 @@ def _chunked_prefill_grouped_attn_unified_kernel(
     IS_PREFIX_FULL: tl.constexpr,
     MASK_PREFIX_HOLE: tl.constexpr,
     PREFIX_CAUSAL: tl.constexpr,
+    SLIDING_WINDOW: tl.constexpr,
 ):
     req_id = tl.program_id(0)
     kv_head_id = tl.program_id(1)
@@ -141,7 +142,10 @@ def _chunked_prefill_grouped_attn_unified_kernel(
         )
 
         scores = tl.dot(q, tl.trans(k)).to(tl.float32) * softmax_scale
-        scores = tl.where(mask_q[:, None] & page_token_valid[None, :], scores, float("-inf"))
+        score_mask = mask_q[:, None] & page_token_valid[None, :]
+        if SLIDING_WINDOW > 0:
+            score_mask = score_mask & ((abs_q[:, None] - offs_kv_cache[None, :]) < SLIDING_WINDOW)
+        scores = tl.where(score_mask, scores, float("-inf"))
 
         m_new = tl.maximum(m, tl.max(scores, axis=1))
         p = tl.exp(scores - m_new[:, None])
@@ -213,6 +217,8 @@ def _chunked_prefill_grouped_attn_unified_kernel(
                 score_mask = score_valid & block_mask
         else:
             score_mask = score_valid
+        if SLIDING_WINDOW > 0:
+            score_mask = score_mask & ((abs_q[:, None] - abs_kv[None, :]) < SLIDING_WINDOW)
         scores = tl.where(score_mask, scores, float("-inf"))
 
         m_new = tl.maximum(m, tl.max(scores, axis=1))
@@ -251,6 +257,7 @@ def chunked_prefill_attn_grouped_unified(
     *,
     block_q: int | None = None,
     block_n: int = 16,
+    sliding_window: int = 0,
 ) -> torch.Tensor:
     """Run the experimental grouped chunked prefill kernel.
 
@@ -306,5 +313,6 @@ def chunked_prefill_attn_grouped_unified(
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
         MASK_PREFIX_HOLE=bool(getattr(attn_metadata, "mask_prefix_hole", False)),
         PREFIX_CAUSAL=bool(getattr(attn_metadata, "prefix_causal", False)),
+        SLIDING_WINDOW=int(sliding_window or 0),
     )
     return out

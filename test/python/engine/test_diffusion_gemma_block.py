@@ -141,6 +141,62 @@ def test_gemma_block_prefill_uses_real_prefix_only(tmp_path):
     assert prepared["valid_slice"] == 3
 
 
+def test_gemma_block_decode_keeps_prefix_hole_bounds(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    _write_diffusion_gemma_config(model_dir)
+    cfg = Config(
+        str(model_dir),
+        model_name="diffusion_gemma",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+        max_num_batched_tokens=512,
+    )
+
+    req = DiffusionGemmaReq([11, 12, 13], SamplingParams(max_tokens=5))
+    req.page_size = cfg.page_size
+    req.init_multi_block(cfg)
+    req.page_table = [7, 8]
+    req.dllm_blocks[0].in_cache()
+    req.status = DllmReqStatus.DECODING
+
+    runner = object.__new__(DiffusionGemmaModelRunner)
+    runner.page_size = cfg.page_size
+    runner.block_size = cfg.block_size
+
+    prepared = runner._prepare_decode_req(req)
+
+    assert req.prefix_len == 3
+    assert req.padded_prefix_len == 256
+    assert prepared["context_len"] == 256
+    assert prepared["prefix_len"] == 3
+    assert prepared["padded_prefix_len"] == 256
+
+
+def test_gemma_block_decode_positions_ignore_prefix_padding(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    _write_diffusion_gemma_config(model_dir)
+    cfg = Config(
+        str(model_dir),
+        model_name="diffusion_gemma",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+        max_num_batched_tokens=512,
+    )
+
+    req = DiffusionGemmaReq([11, 12, 13], SamplingParams(max_tokens=5))
+    req.page_size = cfg.page_size
+    req.init_multi_block(cfg)
+    req.dllm_blocks[0].in_cache()
+    req.status = DllmReqStatus.DECODING
+
+    assert req.dllm_block_buffer.first_running_block.start == 256
+    assert req.running_position_ids[:5] == [3, 4, 5, 6, 7]
+
+
 def test_diffusion_gemma_rewrite_hook_defers_token_count_to_commit(tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()

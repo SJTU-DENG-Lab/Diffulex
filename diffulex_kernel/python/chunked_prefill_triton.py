@@ -27,6 +27,16 @@ def _prune_chunked_prefill_configs(configs, _nargs, **kwargs):
             and config.num_stages <= 2
         ] or configs
 
+    if head_dim >= 256 and dllm_block_size is not None and dllm_block_size >= 128:
+        configs = [
+            config
+            for config in configs
+            if config.kwargs.get("BLOCK_M") in (16, 32)
+            and config.kwargs.get("BLOCK_N") in (32, 64)
+            and config.num_warps == 4
+            and config.num_stages <= 2
+        ] or configs
+
     if dllm_block_size is None or dllm_block_size > 32 or not is_block_causal:
         return configs
 
@@ -56,6 +66,7 @@ def _autotune_chunked_prefill_kernel(fn):
             "IS_PREFIX_FULL",
             "MASK_PREFIX_HOLE",
             "PREFIX_CAUSAL",
+            "SLIDING_WINDOW",
         ],
         prune_configs_by={"early_config_prune": _prune_chunked_prefill_configs},
     )(fn)
@@ -111,6 +122,7 @@ def _chunked_prefill_attn_unified_kernel(
     IS_PREFIX_FULL: tl.constexpr,
     MASK_PREFIX_HOLE: tl.constexpr,
     PREFIX_CAUSAL: tl.constexpr,
+    SLIDING_WINDOW: tl.constexpr,
 ):
     req_id = tl.program_id(0)
     head_id = tl.program_id(1)
@@ -132,6 +144,7 @@ def _chunked_prefill_attn_unified_kernel(
     new_len = q_len
 
     offs_q_block = q_block_id * BLOCK_M + tl.arange(0, BLOCK_M)
+    abs_q_block = context_len + offs_q_block
     offs_d = tl.arange(0, HEAD_DIM_PADDED)
     mask_q_block = offs_q_block < valid_q_len
     mask_d = offs_d < HEAD_DIM
@@ -173,7 +186,10 @@ def _chunked_prefill_attn_unified_kernel(
         ).to(tl.bfloat16)
 
         scores = tl.dot(q, tl.trans(k)).to(tl.float32) * softmax_scale
-        scores = tl.where(mask_q_block[:, None] & page_token_valid_map[None, :], scores, float("-inf"))
+        score_mask = mask_q_block[:, None] & page_token_valid_map[None, :]
+        if SLIDING_WINDOW > 0:
+            score_mask = score_mask & ((abs_q_block[:, None] - offs_kv_cache_block[None, :]) < SLIDING_WINDOW)
+        scores = tl.where(score_mask, scores, float("-inf"))
 
         m_new = tl.maximum(m, tl.max(scores, axis=1))
         p = tl.exp(scores - m_new[:, None])
@@ -200,8 +216,6 @@ def _chunked_prefill_attn_unified_kernel(
     # Stage 2: Attention against new KV
     kv_start = q_start
     full_range = tl.cdiv(valid_kv_len, BLOCK_N)
-
-    abs_q_block = context_len + offs_q_block
 
     max_q_idx_in_chunk = tl.minimum(valid_q_len - 1, (q_block_id + 1) * BLOCK_M - 1)
     max_abs_q_idx = context_len + max_q_idx_in_chunk
@@ -268,6 +282,8 @@ def _chunked_prefill_attn_unified_kernel(
                 score_mask = score_valid_mask & score_block_mask
         else:
             score_mask = score_valid_mask
+        if SLIDING_WINDOW > 0:
+            score_mask = score_mask & ((abs_q_block[:, None] - abs_kv_block[None, :]) < SLIDING_WINDOW)
         scores = tl.where(score_mask, scores, float("-inf"))
 
         m_new = tl.maximum(m, tl.max(scores, axis=1))
@@ -311,6 +327,7 @@ def _run_chunked_prefill_attn_unified_kernel(
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
     softmax_scale: float | None = None,
+    sliding_window: int = 0,
 ):
     o = torch.empty_like(q).to(q.device)
     num_heads = q.shape[1]
@@ -355,6 +372,7 @@ def _run_chunked_prefill_attn_unified_kernel(
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
         MASK_PREFIX_HOLE=bool(getattr(attn_metadata, "mask_prefix_hole", False)),
         PREFIX_CAUSAL=bool(getattr(attn_metadata, "prefix_causal", False)),
+        SLIDING_WINDOW=int(sliding_window or 0),
     )
     return o
 
@@ -367,5 +385,15 @@ def chunked_prefill_attn_unified(
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
     softmax_scale: float | None = None,
+    sliding_window: int = 0,
 ):
-    return _run_chunked_prefill_attn_unified_kernel(q, k, v, k_cache, v_cache, attn_metadata, softmax_scale)
+    return _run_chunked_prefill_attn_unified_kernel(
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        attn_metadata,
+        softmax_scale,
+        sliding_window=sliding_window,
+    )
