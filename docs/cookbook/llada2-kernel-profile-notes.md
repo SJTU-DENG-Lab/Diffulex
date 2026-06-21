@@ -115,4 +115,3 @@ Current priority order from this profile:
    than communication, but it is now visible at 1-4 ms per step.
 5. Treat attention as a correctness-sensitive maintained kernel, not the next
    main performance target for this workload.
-

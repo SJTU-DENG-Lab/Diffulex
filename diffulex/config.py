@@ -33,7 +33,6 @@ EDIT_SAMPLING_MODEL_NAMES = {
 }
 DIFFUSION_GEMMA_MODEL_NAMES = {"diffusion_gemma"}
 
- 
 def _token_content(token) -> str | None:
     if isinstance(token, dict):
         return token.get("content")
