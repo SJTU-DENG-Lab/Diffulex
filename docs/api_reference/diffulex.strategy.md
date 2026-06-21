@@ -7,9 +7,9 @@ KV cache manager, model runner, sampler, and attention metadata registries.
 
 | Strategy | Template family | Registered components |
 | --- | --- | --- |
-| `d2f` | Multi-block diffusion | `D2fReq`, `D2fScheduler`, `D2fKVCacheManager`, `D2fModelRunner`, `D2fAttnMetaData` |
+| `d2f` | Full-prefix block diffusion | `D2fReq`, `D2fScheduler`, `D2fKVCacheManager`, `D2fModelRunner`, `D2fAttnMetaData` |
 | `dmax` | Token-merging multi-block diffusion | `DMaxReq`, `DMaxScheduler`, `DMaxKVCacheManager`, `DMaxModelRunner`, `DMaxAttnMetaData` |
-| `multi_bd` | Multi-block diffusion | `MultiBDReq`, `MultiBDScheduler`, `MultiBDKVCacheManager`, `MultiBDModelRunner`, `MultiBDAttnMetaData` |
+| `multi_bd` | Multi-Block Diffusion | `MultiBDReq`, `MultiBDScheduler`, `MultiBDKVCacheManager`, `MultiBDModelRunner`, `MultiBDAttnMetaData` |
 | `diffusion_gemma` | DiffusionGemma canvas/block decoding | `DiffusionGemmaReq`, `DiffusionGemmaScheduler`, `DiffusionGemmaKVCacheManager`, `DiffusionGemmaModelRunner`, `DiffusionGemmaAttnMetaData` |
 
 The package-level helpers keep the currently selected strategy name:
@@ -67,9 +67,9 @@ when comparing against reference DMax behavior.
 
 ## diffulex.strategy.multi_bd
 
-`multi_bd` is another multi-block diffusion strategy. It shares most of the
-same template surface as `d2f`, but follows the configurable
-`multi_block_prefix_full` behavior from `Config`.
+`multi_bd` is the built-in Multi-Block Diffusion strategy. It shares most of
+the same template surface as `d2f`, but uses block-causal prefix behavior so
+prefix caching can remain enabled.
 
 | Symbol | How to use it | What it does |
 | --- | --- | --- |

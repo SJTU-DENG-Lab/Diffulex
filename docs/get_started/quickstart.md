@@ -8,8 +8,12 @@ This page gives the shortest working path for the current codebase:
 - start the HTTP server;
 - optionally run the vLLM DiffusionGemma baseline.
 
-For reproducing the MBD LMS experiments, use the `mbd-lms` branch. The current
-main branch contains ongoing runtime and model-specific optimizations.
+For reproducing the MBD-LMs experiments, use the Diffulex
+[`mbd-lms`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/mbd-lms) branch. For
+engine development, open-source contributions, or exploring new decoding
+algorithms and turning them into runnable systems, use the
+[`main`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/main) branch. The
+current main branch contains ongoing runtime and model-specific optimizations.
 
 ## Prerequisites
 
@@ -178,7 +182,7 @@ Use the `*_full.yml` config only after the smoke run succeeds.
 | Strategy | Typical models | Notes |
 | --- | --- | --- |
 | `d2f` | D2F LoRA-style LLaDA, Dream, DiffuCoder paths | Full-prefix block decoding; disables prefix caching. |
-| `multi_bd` | LLaDA2-mini, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Block-causal multi-block decoding; supports prefix caching. |
+| `multi_bd` | LLaDA2-mini, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Multi-Block Diffusion: block-causal multi-block decoding with prefix caching. |
 | `dmax` | Supported LLaDA2 edit-sampling experiments | Requires `sampling_mode="edit"`. |
 | `diffusion_gemma` | DiffusionGemma | Native DiffusionGemma canvas/block decoder. |
 

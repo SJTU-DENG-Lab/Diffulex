@@ -10,9 +10,11 @@
 
 Diffulex is a Paged-Attention-based inference framework for block-wise diffusion language models. It provides a unified engine for KV cache management, block scheduling, prefix reuse, MoE execution, CUDA graph replay, and model-specific diffusion samplers, while keeping decoding strategies configurable from a small set of runtime options.
 
-For reproducing the MBD LMS experiments, please use the `mbd-lms` branch. This branch contains ongoing runtime and model-specific optimizations, so its behavior and performance profile may differ from the experiment reproduction branch.
+Diffulex is also the runtime engine behind the **Multi-Block Diffusion Language Models (MBD-LMs)** line of work. In that context, **Multi-Block Diffusion (MultiBD)** means decoding a bounded running-set of consecutive diffusion blocks concurrently, instead of finishing one block at a time as in Single-Block Diffusion (SingleBD). In Diffulex, the runtime option for this method is `decoding_strategy=multi_bd`.
 
-The current codebase supports several dLLM model families and multiple decoding strategies, including D2F-style decoding, block-causal multi-block diffusion, DMax token-merge decoding, and DiffusionGemma's entropy-bound canvas decoder.
+For reproducing the MBD-LMs experiments, use the Diffulex [`mbd-lms`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/mbd-lms) branch. For engine development, open-source contributions, or exploring new decoding algorithms and turning them into runnable systems, use the [`main`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/main) branch. `main` contains ongoing runtime and model-specific optimizations, so its behavior and performance profile may differ from the experiment reproduction branch.
+
+The current codebase supports several dLLM model families and multiple decoding strategies, including D2F-style decoding, block-causal Multi-Block Diffusion, DMax token-merge decoding, and DiffusionGemma's entropy-bound canvas decoder.
 
 ## Supported Models
 
@@ -55,7 +57,7 @@ Set `decoding_strategy` in the engine config:
 | Strategy | Status | Main use | Important behavior |
 |---|---|---|---|
 | `d2f` | Supported | D2F / full-prefix block decoding | Forces `multi_block_prefix_full=true` and disables prefix caching. |
-| `multi_bd` | Supported | Block-causal multi-block diffusion | Uses block-causal decoding and supports prefix caching. This is the default high-throughput path for LLaDA2/SDAR-style models. |
+| `multi_bd` | Supported | Multi-Block Diffusion (MultiBD) | Uses block-causal multi-block decoding, keeps a bounded active block set, and supports prefix caching. This is the default high-throughput path for LLaDA2/SDAR-style models. |
 | `dmax` | Supported | LLaDA2 token-merge decoding | Requires `sampling_mode=edit`; supports `dmax_topk` and `iter_smooth_topk` token merge modes. |
 | `diffusion_gemma` | Supported | DiffusionGemma block/canvas decoding | Automatically selected for `model_name=diffusion_gemma`; uses 256-token canvas blocks and DiffusionGemma entropy-bound sampling. |
 

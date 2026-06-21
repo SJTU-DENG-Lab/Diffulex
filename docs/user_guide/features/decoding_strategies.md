@@ -17,7 +17,7 @@ The choice changes more than the sampler name:
 | Strategy | Behavior |
 | --- | --- |
 | `d2f` | Forces full-prefix multi-block behavior and disables prefix caching. |
-| `multi_bd` | Uses multi-block behavior with prefix caching enabled when compatible. |
+| `multi_bd` | Implements Multi-Block Diffusion (MultiBD): a bounded active block set with block-causal visibility and prefix caching enabled when compatible. |
 | `dmax` | Enables DMax-style token merging on supported edit-sampling models. |
 | `diffusion_gemma` | Uses the native DiffusionGemma canvas/block runtime. |
 

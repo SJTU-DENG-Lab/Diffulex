@@ -22,15 +22,26 @@ language models. It provides a unified engine for KV cache management, block
 scheduling, prefix reuse, MoE execution, CUDA graph replay, and model-specific
 diffusion samplers.
 
-For reproducing the MBD LMS experiments, use the `mbd-lms` branch. The current
-main branch contains ongoing runtime and model-specific optimizations, so its
-behavior and performance profile may differ from the experiment reproduction
-branch.
+Diffulex is also the runtime engine behind the **Multi-Block Diffusion Language
+Models (MBD-LMs)** line of work. In that terminology, **Multi-Block Diffusion
+(MultiBD)** decodes a bounded running-set of consecutive diffusion blocks
+concurrently, instead of completing one noisy block at a time as in
+Single-Block Diffusion (SingleBD). In Diffulex, this method is exposed as
+`decoding_strategy=multi_bd`.
+
+For reproducing the MBD-LMs experiments, use the Diffulex
+[`mbd-lms`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/mbd-lms) branch. For
+engine development, open-source contributions, or exploring new decoding
+algorithms and turning them into runnable systems, use the
+[`main`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/main) branch. `main`
+contains ongoing runtime and model-specific optimizations, so its behavior and
+performance profile may differ from the experiment reproduction branch.
 
 ## Where to Start
 
 | Goal | Start here |
 | --- | --- |
+| Understand MultiBD in the engine | [Multi-Block Diffusion](user_guide/features/multi_block_decoding.md) |
 | Install Diffulex and run one command | [Quickstart](get_started/quickstart.md) |
 | Set up Python, CUDA, and vLLM dependencies | [Installation](get_started/installation.md) |
 | Run GSM8K or other lm-eval benchmarks | [Benchmark](user_guide/benchmark.md) |
@@ -45,7 +56,7 @@ runtime pieces are:
 
 - PagedAttention-style KV cache management for diffusion decoding.
 - Strategy-specific schedulers and request state.
-- Prefix caching for block-causal multi-block decoding.
+- Prefix caching for block-causal Multi-Block Diffusion.
 - Tensor and data parallel inference paths.
 - Optional vLLM-backed common layers and MoE kernels.
 - Benchmark and HTTP serving entry points.

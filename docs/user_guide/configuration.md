@@ -66,7 +66,7 @@ Some settings are normalized based on the selected strategy:
 | Strategy | Normalized behavior |
 | --- | --- |
 | `d2f` | Forces `multi_block_prefix_full=True` and disables prefix caching. |
-| `multi_bd` | Forces `multi_block_prefix_full=False`. |
+| `multi_bd` | Enables block-causal Multi-Block Diffusion and forces `multi_block_prefix_full=False`. |
 | `dmax` | Forces `multi_block_prefix_full=False` and requires edit sampling. |
 | `diffusion_gemma` | Uses DiffusionGemma request/sampler/runtime defaults. |
 

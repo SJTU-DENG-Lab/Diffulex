@@ -16,10 +16,10 @@ known invalid combinations.
 | --- | --- | --- | --- |
 | Dream / D2F-Dream | `dream` | `d2f` | D2F-style full-prefix block decoding. |
 | DiffuCoder / D2F-DiffuCoder | `diffucoder` | `d2f` | Uses shifted sampler behavior. |
-| Dream reasoner | `dream_reasoner` | `multi_bd` | Block-causal multi-block path. |
-| Stable-DiffCoder | `stable_diffcoder` | `multi_bd` | Block-causal multi-block path. |
+| Dream reasoner | `dream_reasoner` | `multi_bd` | Block-causal MultiBD path. |
+| Stable-DiffCoder | `stable_diffcoder` | `multi_bd` | Block-causal MultiBD path. |
 | LLaDA / D2F-LLaDA | `llada` | `d2f` | Use D2F LoRA-style configs when applicable. |
-| Fast-dLLM-v2 | `fast_dllm_v2` | `multi_bd` | Multi-block diffusion path. |
+| Fast-dLLM-v2 | `fast_dllm_v2` | `multi_bd` | Multi-Block Diffusion path. |
 | SDAR | `sdar` | `multi_bd` | Dense SDAR path. |
 | SDAR-MoE | `sdar_moe` | `multi_bd` | MoE path; keep expert parallel at `1` unless extending the runtime. |
 | LLaDA2 family | `llada2`, `llada2_mini`, `llada2_moe`, `llada2dot1_mini` | `multi_bd` or `dmax` | LLaDA2-mini GSM8K is the primary maintained benchmark path. |
@@ -34,7 +34,7 @@ through block-wise adapters, samplers, and strategy registrations.
 | Strategy | Use it for | Important behavior |
 | --- | --- | --- |
 | `d2f` | D2F-style LLaDA, Dream, and DiffuCoder paths | Forces full-prefix multi-block behavior and disables prefix caching. |
-| `multi_bd` | LLaDA2, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Uses block-causal decoding and supports prefix caching. |
+| `multi_bd` | LLaDA2, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Implements Multi-Block Diffusion with block-causal visibility and prefix caching. |
 | `dmax` | Supported LLaDA2 edit-sampling experiments | Requires `sampling_mode="edit"`. |
 | `diffusion_gemma` | DiffusionGemma | Uses DiffusionGemma request, sampler, block/page size, and canvas defaults. |
 
