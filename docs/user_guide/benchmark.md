@@ -1,8 +1,15 @@
+---
+orphan: true
+---
+
 # Benchmark
 
-Use the benchmark entry point when you want to run evaluation workloads such as GSM8K, HumanEval, or MBPP through `diffulex_bench`.
+Use the benchmark entry point for evaluation workloads such as GSM8K, HumanEval,
+or MBPP. The command wraps Diffulex with lm-eval task loading, sampling, scoring,
+and result writing.
 
-Generic form:
+Most benchmark runs start from a YAML config and then override paths or limits
+from the command line:
 
 ```bash
 python -m diffulex_bench.main \
@@ -11,12 +18,15 @@ python -m diffulex_bench.main \
   --log-level DEBUG
 ```
 
-The config file provides the engine and evaluation settings. In the repository, the common pattern is:
+The config file carries stable engine and evaluation settings. In this
+repository, the usual pattern is:
 
-- `--config diffulex_bench/configs/<name>.yml`
-- optional overrides like `--model-path`, `--tokenizer-path`, `--model-name`, `--decoding-strategy`, `--tensor-parallel-size`, `--data-parallel-size`, `--dataset`, `--dataset-limit`, `--temperature`, `--max-tokens`, and `--output-dir`
+| Command part | How to set it | What it does |
+| --- | --- | --- |
+| `--config diffulex_bench/configs/<name>.yml` | Point to the benchmark YAML for the model or task. | Provides stable engine and evaluation defaults. |
+| Common overrides | Use flags such as `--model-path`, `--tokenizer-path`, `--model-name`, `--decoding-strategy`, `--tensor-parallel-size`, `--data-parallel-size`, `--dataset`, `--dataset-limit`, `--temperature`, `--max-tokens`, and `--output-dir`. | Adjusts paths, limits, model identity, and output location for one run without editing the YAML. |
 
-## Supported models
+## Supported Models
 
 ### D2F-LLaDA
 
@@ -90,4 +100,7 @@ python -m diffulex_bench.main \
 
 ### SDAR-MoE
 
-Use the same benchmark entry point and a matching `sdar_moe` config. The repository already treats `sdar_moe` as a supported model family; keep the same benchmark structure as SDAR and set the model path to your SDAR-MoE checkpoint.
+Use the same benchmark entry point with a matching `sdar_moe` config. The
+repository already treats `sdar_moe` as a supported model family, so the command
+structure is the same as SDAR; only the model path and config need to point to
+the SDAR-MoE checkpoint.

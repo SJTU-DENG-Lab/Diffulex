@@ -1,38 +1,33 @@
-# Get Started
+---
+orphan: true
+---
 
-Start here if you want the shortest path to using Diffulex.
+# Getting Started
 
-## Engine
+Start here if you want the shortest path to installing and running Diffulex.
+This section is intentionally practical: it covers installation, a first local
+generation run, serving, and a minimal benchmark command.
 
-The core engine is constructed from a local model directory:
+## Recommended Path
 
-```python
-from diffulex import Diffulex
+- [Quickstart](quickstart.md)
+- [Installation](installation.md)
 
-llm = Diffulex(
-    model_path="/YOUR-CKPT-PATH/your-model",
-    model_name="your_model_name",
-    decoding_strategy="d2f",
-    mask_token_id=151666,
-)
-```
+Read [Installation](installation.md) first if the Python environment or CUDA
+runtime is not ready. Read [Quickstart](quickstart.md) first if Diffulex is
+already installed and you want a working command path.
 
-## Benchmark
+## What You Need
 
-Use `diffulex_bench` to run evaluation jobs:
+Before running the examples, prepare:
 
-```bash
-python -m diffulex_bench.main --config diffulex_bench/configs/example.yml
-```
+- a Python environment with Diffulex installed from this repository;
+- CUDA-visible NVIDIA GPUs;
+- a local model checkpoint directory;
+- a tokenizer path, if it differs from the model path;
+- an optional LoRA checkpoint for D2F examples.
 
-For model-specific benchmark launch patterns, see the [Cookbook](../cookbook/index.md).
+Start with low request and token limits until the model loads and one request
+completes.
 
-## Server
-
-Use the HTTP server when you want to serve requests interactively:
-
-```bash
-python -m diffulex.server.launch --model /YOUR-CKPT-PATH/your-model --model-name your_model_name
-```
-
-For server launch patterns and the Streamlit sample frontend, see the [Cookbook](../cookbook/index.md).
+For deeper workflow explanations, see the [Tutorials](../tutorials/index.md).
