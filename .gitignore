@@ -53,6 +53,8 @@ GITHUB_ISSUE.md
 Tilelang-failed_test_cases/
 sglang/
 sglang
+vllm/
+vllm
 # Benchmark results
 benchmark_results/
 benchmark_results_tmp/
