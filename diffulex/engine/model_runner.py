@@ -5,11 +5,12 @@ import pickle
 import torch.distributed as dist
 
 from typing import Callable
-from abc import ABC, abstractmethod
+from abc import ABC
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
 
 from diffulex.config import Config
+from diffulex.mixin.multi_block.model_runner import MultiBlockModelRunnerMixin
 from diffulex.distributed.parallel_state import fetch_parallel_state, init_parallel_state, init_process_group, reset_parallel_state
 from diffulex.sampler.base import merge_sample_outputs
 from diffulex.sampler import AutoSampler
@@ -25,9 +26,7 @@ from diffulex.vllm_compat import reset_vllm_compat_state, vllm_current_config
 logger = get_logger(__name__)
 
 
-class ModelRunnerBase(
-    ABC,
-):
+class ModelRunnerBase(MultiBlockModelRunnerMixin, ABC):
     """Base class for model runners supporting different model types."""
 
     def __init__(self, config: Config, rank: int, event: Event | list[Event]):
@@ -56,7 +55,7 @@ class ModelRunnerBase(
             rank=rank,
             init_method=init_method,
             device_id=device_id,
-            backend="nccl",
+            backend=config.distributed_backend,
             timeout_seconds=config.distributed_timeout_seconds,
         )
         parallel_state = init_parallel_state(
@@ -85,7 +84,7 @@ class ModelRunnerBase(
             config.enforce_eager = True
         self.world_size = parallel_state.world_size
         self.rank = parallel_state.global_rank
-        self.profile_session = TorchProfileSession("model_runner", rank=self.rank)
+        self.profile_session = TorchProfileSession("model_runner", rank=self.rank, config=config.profiler_config)
         self.dp_rank = parallel_state.dp_rank
         self.dp_world_size = parallel_state.dp_size
         self.cross_dp_ep = parallel_state.is_cross_dp_ep
@@ -106,6 +105,9 @@ class ModelRunnerBase(
         with vllm_current_config(config):
             self.model = self.load_model(config)
         self.sampler = self.load_sampler(config)
+        bind_model = getattr(self.sampler, "bind_model", None)
+        if bind_model is not None:
+            bind_model(self.model)
         self.allocate_kv_cache()
         self.warmup_model()
 
@@ -123,7 +125,7 @@ class ModelRunnerBase(
             return
 
         if not self.enforce_eager:
-            for name in ("graphs", "graph_vars", "prefill_graphs", "graph_pool", "graph_capture_stream"):
+            for name in ("graphs", "graph_vars", "graph_pool", "graph_capture_stream"):
                 if hasattr(self, name):
                     try:
                         delattr(self, name)
@@ -218,13 +220,18 @@ class ModelRunnerBase(
             self.write_shm(method_name, *args)
         method = getattr(self, method_name, None)
         if method_name == "run":
-            self.profile_session.start()
             with record_function(f"diffulex.model_runner.rank{self.rank}.run"):
                 result = method(*args)
             self.profile_session.step()
             return result
         with record_function(f"diffulex.model_runner.rank{self.rank}.{method_name}"):
             return method(*args)
+
+    def start_profile(self, profile_prefix: str | None = None) -> None:
+        self.profile_session.start(profile_prefix)
+
+    def stop_profile(self) -> None:
+        self.profile_session.stop()
 
     def load_model(self, config: Config):
         """Instantiate the underlying model; override to customize."""
@@ -262,15 +269,14 @@ class ModelRunnerBase(
             return None
         return merge_sample_outputs(gathered_outputs)
 
-    @abstractmethod
     def _prefill_warmup(self):
         """Run template-specific prefill warmup."""
-        pass
+        return MultiBlockModelRunnerMixin._prefill_warmup(self)
 
     def warmup_model(self):
         # TODO: attention metadata needs optimize for strategy awareness in warm-up
-        if os.getenv("DIFFULEX_SKIP_WARMUP", "0") == "1":
-            logger.warning("Skipping model warmup because DIFFULEX_SKIP_WARMUP=1.")
+        if bool(getattr(self.config, "skip_warmup", False)):
+            logger.warning("Skipping model warmup because config.skip_warmup=True.")
             return
         logger.info("Warming up model...")
         set_warming_up(True)
@@ -306,23 +312,26 @@ class ModelRunnerBase(
         storage_dtype = torch.bfloat16
         itemsize = torch.empty(1, dtype=storage_dtype).element_size()
         page_bytes = 2 * hf_config.num_hidden_layers * self.page_size * num_kv_heads * head_dim * itemsize
-        get_num_pages = lambda gpu_memory_utilization: (
-            int(total * gpu_memory_utilization - used - peak + current) // page_bytes
-        )
-        try:
-            num_pages = get_num_pages(config.gpu_memory_utilization)
-            assert num_pages > 0
-        except Exception:
-            gpu_memory_utilization = config.gpu_memory_utilization
-            while num_pages <= 200:
-                logger.warning(
-                    f"GPU memory utilization {gpu_memory_utilization} is too low to allocate kv cache. "
-                    "Automatically adding 0.05."
-                )
-                gpu_memory_utilization += 0.05
-                num_pages = get_num_pages(gpu_memory_utilization)
-            logger.info(f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} to allocate kv cache.")
-            config.gpu_memory_utilization = gpu_memory_utilization
+        if config.num_pages > 0:
+            num_pages = config.num_pages
+        else:
+            get_num_pages = lambda gpu_memory_utilization: (
+                int(total * gpu_memory_utilization - used - peak + current) // page_bytes
+            )
+            try:
+                num_pages = get_num_pages(config.gpu_memory_utilization)
+                assert num_pages > 0
+            except Exception:
+                gpu_memory_utilization = config.gpu_memory_utilization
+                while num_pages <= 200:
+                    logger.warning(
+                        f"GPU memory utilization {gpu_memory_utilization} is too low to allocate kv cache. "
+                        "Automatically adding 0.05."
+                    )
+                    gpu_memory_utilization += 0.05
+                    num_pages = get_num_pages(gpu_memory_utilization)
+                logger.info(f"Set gpu_memory_utilization to {gpu_memory_utilization:.2f} to allocate kv cache.")
+                config.gpu_memory_utilization = gpu_memory_utilization
 
         config.num_pages = num_pages
         logger.info(f"Allocated {config.num_pages} pages of size {self.page_size} for kv cache on rank {self.rank}.")
@@ -388,39 +397,34 @@ class ModelRunnerBase(
         self.reset_attn_metadata = reset_fn
         self.fetch_attn_metadata = fetch_fn
 
-    @abstractmethod
     def prepare_prefill(self, reqs: list[DllmReq]):
         """Model-specific prefill preparation."""
-        pass
+        return self.prepare_chunked_prefill_multi_block(reqs)
 
-    @abstractmethod
     def prepare_decode(self, reqs: list[DllmReq]):
         """Model-specific decode preparation."""
-        pass
+        return self.prepare_decode_multi_block(reqs)
 
     def prepare_sample(self, reqs: list[DllmReq]):
-        temperatures = []
-        for req in reqs:
-            temperatures.append(req.temperature)
-        temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        return temperatures
+        return [float(req.temperature) for req in reqs]
 
-    @abstractmethod
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor):
         """Model-specific forward pass."""
-        pass
+        return self.run_model_multi_block(input_ids, positions)
 
-    @abstractmethod
     def run(self, reqs: list[DllmReq]) -> list[int]:
         """Main inference pipeline."""
-        pass
+        return self.run_multi_block(reqs)
 
-    @abstractmethod
     @torch.inference_mode()
     def capture_cudagraph(self):
         """Model-specific CUDA graph capture."""
-        pass
+        return self.capture_cudagraph_multi_block()
+
+
+class MultiBlockModelRunnerTemplate(ModelRunnerBase):
+    """Compatibility alias for the core block-aware model runner base."""
 
 
 RunnerFactory = Callable[[Config, int, Event | list[Event]], "ModelRunnerBase"]

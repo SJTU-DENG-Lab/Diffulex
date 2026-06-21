@@ -1,0 +1,29 @@
+tag:
+  - math_word_problems
+task: gsm8k_diffusion_gemma
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files: diffulex_bench/data/GSM8K.json
+test_split: train
+output_type: generate_until
+doc_to_text: !function diffusion_gemma_utils.doc_to_text_math
+doc_to_target: "{{ground_truth_answer}}"
+process_results: !function diffusion_gemma_utils.process_results_math
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "<turn|>"
+    - "<|turn>"
+    - "<eos>"
+  do_sample: false
+  temperature: 0.0
+  max_gen_toks: 8192
+repeats: 1
+num_fewshot: 0
+metadata:
+  version: 1.0
+  description: "GSM8K with DiffusionGemma chat template over bundled offline JSON."

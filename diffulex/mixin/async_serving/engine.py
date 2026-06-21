@@ -13,6 +13,8 @@ from diffulex.server.protocol import (
     ServingError,
     ServingEvent,
     ServingGenerate,
+    ServingProfileStart,
+    ServingProfileStop,
     ServingReply,
 )
 from diffulex.utils.output import decode_token_ids_robust
@@ -60,6 +62,10 @@ class DiffulexAsyncEngineMixin:
                     events.append(event)
             elif isinstance(command, ServingAbort):
                 self.abort_serving_request(command)
+            elif isinstance(command, ServingProfileStart):
+                self.start_profile(command.profile_prefix)
+            elif isinstance(command, ServingProfileStop):
+                self.stop_profile()
             else:
                 raise TypeError(f"Unsupported serving command: {type(command)!r}")
 

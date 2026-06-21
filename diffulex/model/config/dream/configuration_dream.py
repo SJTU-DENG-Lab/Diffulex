@@ -18,6 +18,7 @@ from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_rope_utils import rope_config_validation
 
 from diffulex.logger import get_logger
+from diffulex.hf_config_registry import HFConfigRegistry
 
 logger = get_logger(__name__)
 
@@ -40,8 +41,10 @@ class DreamConfig(PretrainedConfig):
         rms_norm_eps=1e-6,
         use_cache=False,  # cache not used in diffusion
         tie_word_embeddings=False,
+        head_dim=None,
         rope_theta=10000.0,
         rope_scaling=None,
+        attention_bias=False,
         use_sliding_window=False,
         sliding_window=4096,
         max_window_layers=28,
@@ -65,12 +68,14 @@ class DreamConfig(PretrainedConfig):
             num_key_value_heads = num_attention_heads
 
         self.num_key_value_heads = num_key_value_heads
+        self.head_dim = head_dim
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
+        self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
@@ -84,3 +89,9 @@ class DreamConfig(PretrainedConfig):
         )
         self.mask_token_id = mask_token_id
         self.pad_token_id = pad_token_id
+
+
+@HFConfigRegistry.register_model_type(DreamConfig.model_type)
+def load_dream_config(model: str, config_dict: dict):
+    del config_dict
+    return DreamConfig.from_pretrained(model)

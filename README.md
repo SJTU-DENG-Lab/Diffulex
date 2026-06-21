@@ -1,109 +1,150 @@
+<img src=./assets/imgs/diffulex_design.png />
+
+<div align="center">
+
 # Diffulex
 
-## Run Experiments
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/NSa9WH4EKu)
 
-Experiment configs live in:
+</div>
 
-```bash
-diffulex_bench/configs/experiment/
-```
+Diffulex is a Paged-Attention-based inference framework for block-wise diffusion language models. It provides a unified engine for KV cache management, block scheduling, prefix reuse, MoE execution, CUDA graph replay, and model-specific diffusion samplers, while keeping decoding strategies configurable from a small set of runtime options.
 
-Core hyperparameters are mirrored in those config files. Common values for all rows:
+For reproducing the MBD LMS experiments, please use the `mbd-lms` branch. This branch contains ongoing runtime and model-specific optimizations, so its behavior and performance profile may differ from the experiment reproduction branch.
 
-```text
-max_model_len=4096, max_new_tokens=4096, max_nfe=1024
-```
+The current codebase supports several dLLM model families and multiple decoding strategies, including D2F-style decoding, block-causal multi-block diffusion, DMax token-merge decoding, and DiffusionGemma's entropy-bound canvas decoder.
 
-| Configuration | Variant | Task | Buffer | Block | tau_add | tau_semi | tau_stable | tau_M2T | tau_T2T |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| LLaDA2-Mini-DMax | SingleBD Native | Math | 1 | 32 | - | - | - | 0.50 | - |
-| LLaDA2-Mini-DMax | SingleBD Native | Code | 1 | 32 | - | - | - | 0.65 | - |
-| LLaDA2-Mini-DMax | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | 0.50 | 0.50 | - |
-| LLaDA2-Mini-DMax | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | 0.50 | 0.65 | - |
-| MBD-LLaDA2-Mini-DMax | MBD | Math | 2 | 32 | 0.10 | 0.90 | 0.50 | 0.50 | - |
-| MBD-LLaDA2-Mini-DMax | MBD | Code | 2 | 32 | 0.90 | 0.90 | 0.50 | 0.65 | - |
-| LLaDA2-Mini | SingleBD Native | Math | 1 | 32 | - | - | - | 0.95 | - |
-| LLaDA2-Mini | SingleBD Native | Code | 1 | 32 | - | - | - | 0.95 | - |
-| LLaDA2-Mini | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | - | 0.95 | - |
-| LLaDA2-Mini | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | - | 0.95 | - |
-| MBD-LLaDA2-Mini | MBD | Math | 2 | 32 | 0.10 | 0.90 | - | 0.95 | - |
-| MBD-LLaDA2-Mini | MBD | Code | 2 | 32 | 0.90 | 0.90 | - | 0.95 | - |
-| SDAR-8B-Chat-b32 | SingleBD Native | Math | 1 | 32 | - | - | - | 0.95 | - |
-| SDAR-8B-Chat-b32 | SingleBD Native | Code | 1 | 32 | - | - | - | 0.95 | - |
-| SDAR-8B-Chat-b32 | MultiBD training-free | Math | 4 | 32 | 0.10 | 0.90 | - | 0.95 | - |
-| SDAR-8B-Chat-b32 | MultiBD training-free | Code | 4 | 32 | 0.90 | 0.90 | - | 0.95 | - |
-| MBD-SDAR-8B-Chat-b32 | MBD | Math | 4 | 32 | 0.10 | 0.90 | - | 0.95 | - |
-| MBD-SDAR-8B-Chat-b32 | MBD | Code | 4 | 32 | 0.90 | 0.90 | - | 0.95 | - |
-| SDAR-8B-Chat-b4 | SingleBD Native | Math | 1 | 4 | - | - | - | 0.95 | - |
-| SDAR-8B-Chat-b4 | SingleBD Native | Code | 1 | 4 | - | - | - | 0.95 | - |
-| SDAR-8B-Chat-b4 | MultiBD training-free | Math | 4 | 4 | 0.10 | 0.25 | - | 0.95 | - |
-| SDAR-8B-Chat-b4 | MultiBD training-free | Code | 4 | 4 | 0.75 | 0.75 | - | 0.95 | - |
-| MBD-SDAR-8B-Chat-b4 | MBD | Math | 4 | 4 | 0.10 | 0.25 | - | 0.95 | - |
-| MBD-SDAR-8B-Chat-b4 | MBD | Code | 4 | 4 | 0.75 | 0.75 | - | 0.95 | - |
-| LLaDA2-Mini-CAP | SingleBD Native | Math | 1 | 32 | - | - | - | 0.95 | - |
-| LLaDA2-Mini-CAP | SingleBD Native | Code | 1 | 32 | - | - | - | 0.95 | - |
-| LLaDA2-Mini-CAP | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | - | 0.95 | - |
-| LLaDA2-Mini-CAP | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | - | 0.95 | - |
-| LLaDA2.1-Mini | SingleBD Native | Math | 1 | 32 | - | - | - | 0.70 | 0.50 |
-| LLaDA2.1-Mini | SingleBD Native | Code | 1 | 32 | - | - | - | 0.70 | 0.50 |
-| LLaDA2.1-Mini | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | - | 0.70 | 0.50 |
-| LLaDA2.1-Mini | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | - | 0.70 | 0.50 |
+## Supported Models
 
-The only experiment entrypoint is:
+The following `model_name` values are registered by the engine today:
 
-```bash
-./script/run_batch_experiments.sh
-```
+| Model family | `model_name` values | Typical strategy |
+|---|---|---|
+| Dream / DiffuCoder style dense dLLMs | `dream`, `diffucoder` | `d2f` |
+| Dream reasoner / Stable-DiffCoder | `dream_reasoner`, `stable_diffcoder` | `multi_bd` |
+| LLaDA style dense dLLMs | `llada` | `d2f` |
+| Fast-dLLM-v2 | `fast_dllm_v2` | `multi_bd` |
+| SDAR | `sdar` | `multi_bd` |
+| SDAR-MoE | `sdar_moe` | `multi_bd` |
+| LLaDA2 family | `llada2`, `llada2_mini`, `llada2_moe`, `llada2dot1_mini` | `multi_bd` or `dmax` |
+| DiffusionGemma | `diffusion_gemma` | `diffusion_gemma` |
 
-Preview the run plan without launching models:
+Runnable benchmark configs live under `diffulex_bench/configs/`. The most actively used configs currently cover LLaDA2-mini, DiffusionGemma, SDAR, SDAR-MoE, Fast-dLLM-v2, Dream, LLaDA, and DiffuCoder-style GSM8K runs.
 
-```bash
-DRY_RUN=1 ./script/run_batch_experiments.sh
-```
+## Sampling Modes
 
-Run all experiment configs:
+`sampling_mode` currently accepts:
 
-```bash
-./script/run_batch_experiments.sh
-```
+| Sampling mode | Status | Notes |
+|---|---|---|
+| `naive` | Supported | Default confidence/threshold sampler for dense and MoE dLLMs. Also used by DiffusionGemma, whose sampler is model-specific internally. |
+| `edit` | Supported for LLaDA2 family | Enables edit/remask refinement after initial fill. Required by `decoding_strategy=dmax`. `llada2dot1_mini` requires this mode. |
 
-Run selected config files:
+Additional sampler controls:
 
-```bash
-CONFIG_FILES=llada2_mini.yml ./script/run_batch_experiments.sh
-CONFIG_FILES=llada2_mini.yml,sdar_8b_chat_b32.yml ./script/run_batch_experiments.sh
-```
+| Option | Values | Notes |
+|---|---|---|
+| `token_merge_mode` | `dmax_topk`, `iter_smooth_topk` | Used by DMax/token-merge decoding. |
+| `enable_vectorized_sampler` | `true`, `false` | Enables the vectorized LLaDA2 sampler path when available. |
+| DiffusionGemma sampler controls | `diffusion_gemma_*` options | Configure denoising steps, stability threshold, temperature range, confidence threshold, and entropy bound. |
 
-Filter selected experiments by name/group/task/model:
+## Decoding Strategies
 
-```bash
-FILTER=multibd_math ./script/run_batch_experiments.sh
-FILTER=llada2_mini DATASET_LIMIT=10 ./script/run_batch_experiments.sh
-```
+Set `decoding_strategy` in the engine config:
 
-Override capacity or checkpoint paths:
+| Strategy | Status | Main use | Important behavior |
+|---|---|---|---|
+| `d2f` | Supported | D2F / full-prefix block decoding | Forces `multi_block_prefix_full=true` and disables prefix caching. |
+| `multi_bd` | Supported | Block-causal multi-block diffusion | Uses block-causal decoding and supports prefix caching. This is the default high-throughput path for LLaDA2/SDAR-style models. |
+| `dmax` | Supported | LLaDA2 token-merge decoding | Requires `sampling_mode=edit`; supports `dmax_topk` and `iter_smooth_topk` token merge modes. |
+| `diffusion_gemma` | Supported | DiffusionGemma block/canvas decoding | Automatically selected for `model_name=diffusion_gemma`; uses 256-token canvas blocks and DiffusionGemma entropy-bound sampling. |
 
-```bash
-MAX_NUM_REQS=256 ./script/run_batch_experiments.sh
-LLADA2_MINI_MODEL=/data/ckpts/inclusionAI/LLaDA2.0-mini ./script/run_batch_experiments.sh
-SDAR_B32_MODEL=/path/to/SDAR-8B-Chat-b32 ./script/run_batch_experiments.sh
-```
+## Strategy Compatibility
 
-If some configured checkpoints are unavailable and you want to run only the available ones:
+Recommended combinations:
+
+| Model family | Recommended config |
+|---|---|
+| Dream / DiffuCoder / LLaDA | `decoding_strategy=d2f`, `sampling_mode=naive` |
+| Dream reasoner / Stable-DiffCoder | `decoding_strategy=multi_bd`, `sampling_mode=naive` |
+| Fast-dLLM-v2 / SDAR / SDAR-MoE | `decoding_strategy=multi_bd`, `sampling_mode=naive` |
+| LLaDA2 / LLaDA2-mini / LLaDA2-MoE | `decoding_strategy=multi_bd`, `sampling_mode=naive` |
+| LLaDA2 DMax experiments | `decoding_strategy=dmax`, `sampling_mode=edit`, `token_merge_mode=dmax_topk` |
+| LLaDA2.1-mini | `decoding_strategy=multi_bd`, `sampling_mode=edit` |
+| DiffusionGemma | `model_name=diffusion_gemma`; the engine forces `decoding_strategy=diffusion_gemma` |
+
+## Roadmap
+
+Current planned work is focused on two areas:
+
+| Area | Goal |
+|---|---|
+| Dual Cache | Implement a Dual Cache mechanism for strategies that need separate cache views or cache lifecycles. |
+| Performance | Further optimize runtime overhead, sampler kernels, CUDA graph coverage, and model-specific hot paths. |
+
+## Installation
+
+Install from source:
 
 ```bash
-SKIP_MISSING_MODELS=1 ./script/run_batch_experiments.sh
+uv pip install -e .
 ```
 
-Outputs are written to:
+Install a compatible vLLM build separately when using vLLM-backed layers, attention kernels, or MoE kernels:
 
 ```bash
-benchmark_results/experiment/<run_id>/
-logs/experiment/<run_id>/
+uv pip install vllm
 ```
 
-Each run also writes resolved per-experiment benchmark YAMLs under:
+## Quick Start
+
+Run the current LLaDA2-mini GSM8K preset:
 
 ```bash
-benchmark_results/experiment/<run_id>/resolved_configs/
+CUDA_VISIBLE_DEVICES=0 script/run_llada2_mini_gsm8k.sh
 ```
+
+Run the vLLM DiffusionGemma GSM8K preset:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+CONFIG_PATH=examples/engine_lm_eval/configs/vllm_diffusion_gemma_gsm8k_full.yml \
+script/run_vllm_diffusion_gemma_gsm8k.sh
+```
+
+Run through the benchmark entrypoint with a config:
+
+```bash
+python -m diffulex_bench.main --config diffulex_bench/configs/llada2_mini_gsm8k.yml
+```
+
+Useful config examples:
+
+| Config | Purpose |
+|---|---|
+| `diffulex_bench/configs/llada2_mini_gsm8k.yml` | LLaDA2-mini with `multi_bd` and `naive` sampling. |
+| `diffulex_bench/configs/llada2_mini_dmax_gsm8k.yml` | LLaDA2-mini with `dmax` and `edit` sampling. |
+| `diffulex_bench/configs/diffusion_gemma_gsm8k.yml` | DiffusionGemma with the dedicated `diffusion_gemma` strategy. |
+| `diffulex_bench/configs/sdar_chat_gsm8k.yml` | SDAR with `multi_bd`. |
+| `diffulex_bench/configs/sdar_moe_chat_gsm8k.yml` | SDAR-MoE with `multi_bd`. |
+| `diffulex_bench/configs/fast_dllm_v2_gsm8k.yml` | Fast-dLLM-v2 with `multi_bd`. |
+
+More runtime and serving notes are in `docs/cookbook/`.
+
+## Tested Devices
+
+Diffulex has been tested on NVIDIA H200, A100, RTX 4090, and RTX 3090 GPUs. Kernel availability and performance depend on the selected model, tensor parallel size, MoE backend, and vLLM/Triton build.
+
+## Project Notes
+
+Diffulex targets block-wise and cache-aware diffusion decoding. It does not aim to be a generic full-attention dLLM serving stack for every original checkpoint; support is added model by model through the model, sampler, and strategy registries.
+
+## Join the Discussion
+
+Welcome to join our Discord community for discussions, support, and collaboration.
+
+[![Join our Discord](https://img.shields.io/badge/Discord-Join%20Us-blue?logo=discord&style=for-the-badge)](https://discord.gg/NSa9WH4EKu)
+
+## Acknowledgments
+
+We would like to thank [Nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), [vLLM](https://github.com/vllm-project/vllm), [mini-sglang](https://github.com/sgl-project/mini-sglang), [SGLang](https://github.com/sgl-project/sglang), and [dInfer](https://github.com/inclusionAI/dInfer), whose designs informed parts of Diffulex's early backend, paged attention, serving architecture, and dLLM inference optimizations. Diffulex is developed by the DENG Lab at Shanghai Jiao Tong University.

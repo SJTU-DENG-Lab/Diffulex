@@ -1,4 +1,7 @@
+import json
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 
 import yaml
 
@@ -9,7 +12,23 @@ from diffulex_bench.arg_parser import create_argument_parser
 from diffulex_bench.main import load_config_from_args
 
 
-MODEL_PATH = "/data1/ckpts/JetLM/SDAR-1.7B-Chat-b32"
+_MODEL_DIR = tempfile.TemporaryDirectory()
+Path(_MODEL_DIR.name, "config.json").write_text(
+    json.dumps(
+        {
+            "model_type": "llama",
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_attention_heads": 2,
+            "num_hidden_layers": 1,
+            "num_key_value_heads": 2,
+            "vocab_size": 128,
+            "max_position_embeddings": 4096,
+        }
+    ),
+    encoding="utf-8",
+)
+MODEL_PATH = _MODEL_DIR.name
 
 
 def test_runtime_forces_d2f_prefix_settings():
@@ -24,6 +43,10 @@ def test_runtime_forces_d2f_prefix_settings():
 
     assert cfg.multi_block_prefix_full is True
     assert cfg.enable_prefix_caching is False
+    assert type(cfg.strategy).__name__ == "D2FStrategyConfig"
+    assert cfg.runtime.decoding.strategy == "d2f"
+    assert cfg.runtime.decoding.multi_block_prefix_full is True
+    assert cfg.runtime.cache.enable_prefix_caching is False
 
 
 def test_runtime_forces_multi_bd_prefix_full_off():
@@ -38,6 +61,10 @@ def test_runtime_forces_multi_bd_prefix_full_off():
 
     assert cfg.multi_block_prefix_full is False
     assert cfg.enable_prefix_caching is True
+    assert type(cfg.strategy).__name__ == "MultiBDStrategyConfig"
+    assert cfg.runtime.decoding.strategy == "multi_bd"
+    assert cfg.runtime.decoding.multi_block_prefix_full is False
+    assert cfg.runtime.cache.enable_prefix_caching is True
 
 
 def test_config_file_dataset_not_overridden_by_cli_defaults(tmp_path):
@@ -178,6 +205,118 @@ def test_bench_cli_forwards_explicit_engine_fields():
     assert config.engine.deepep_num_max_dispatch_tokens_per_rank == 512
     assert config.engine.auto_max_nfe_warmup_steps == 4
     assert config.engine.auto_max_nfe_tpf_floor == 2.5
+
+
+def test_bench_cli_forwards_profiler_config():
+    parser = create_argument_parser()
+    args = parser.parse_args(
+        [
+            "--model-path",
+            MODEL_PATH,
+            "--profiler",
+            "torch",
+            "--torch-profiler-dir",
+            "/tmp/diffulex-profile",
+            "--profiler-record-shapes",
+            "--profiler-memory",
+            "--profiler-with-stack",
+            "--profiler-delay-iterations",
+            "2",
+            "--profiler-max-iterations",
+            "7",
+        ]
+    )
+
+    config = load_config_from_args(args)
+    kwargs = config.engine.get_diffulex_kwargs()
+
+    assert kwargs["profiler_config"] == {
+        "profiler": "torch",
+        "torch_profiler_dir": "/tmp/diffulex-profile",
+        "record_shapes": True,
+        "profile_memory": True,
+        "with_stack": True,
+        "delay_iterations": 2,
+        "max_iterations": 7,
+    }
+
+
+def test_config_file_profiler_config_is_preserved(tmp_path):
+    config_path = Path(tmp_path) / "bench.yml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model_path": MODEL_PATH,
+                    "model_name": "llada2_mini",
+                    "decoding_strategy": "multi_bd",
+                    "profiler_config": {
+                        "profiler": "torch",
+                        "torch_profiler_dir": "/tmp/from-yaml",
+                        "max_iterations": 5,
+                    },
+                },
+                "eval": {"dataset_name": "gsm8k_diffulex"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parser = create_argument_parser()
+    args = parser.parse_args(["--config", str(config_path)])
+    config = load_config_from_args(args)
+    kwargs = config.engine.get_diffulex_kwargs()
+
+    assert kwargs["profiler_config"]["torch_profiler_dir"] == "/tmp/from-yaml"
+    assert kwargs["profiler_config"]["max_iterations"] == 5
+
+
+def test_bench_cli_profiler_overrides_config_file_profiler(tmp_path):
+    config_path = Path(tmp_path) / "bench.yml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model_path": MODEL_PATH,
+                    "model_name": "llada2_mini",
+                    "decoding_strategy": "multi_bd",
+                    "profiler_config": {
+                        "profiler": "torch",
+                        "torch_profiler_dir": "/tmp/from-yaml",
+                        "max_iterations": 5,
+                    },
+                },
+                "eval": {"dataset_name": "gsm8k_diffulex"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parser = create_argument_parser()
+    args = parser.parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--profiler",
+            "torch",
+            "--torch-profiler-dir",
+            "/tmp/from-cli",
+            "--profiler-max-iterations",
+            "9",
+        ]
+    )
+    config = load_config_from_args(args)
+    kwargs = config.engine.get_diffulex_kwargs()
+
+    assert kwargs["profiler_config"] == {
+        "profiler": "torch",
+        "torch_profiler_dir": "/tmp/from-cli",
+        "record_shapes": False,
+        "profile_memory": False,
+        "with_stack": False,
+        "delay_iterations": 0,
+        "max_iterations": 9,
+    }
 
 
 def test_config_file_engine_values_not_overridden_by_cli_defaults(tmp_path):
@@ -361,12 +500,32 @@ def test_config_rejects_unknown_attn_impl(config_no_model_load):
 def config_no_model_load(monkeypatch, tmp_path):
     model_dir = tmp_path / "model"
     model_dir.mkdir()
-    monkeypatch.setattr("diffulex.config.AutoConfig.from_pretrained", lambda *args, **kwargs: type(
+    monkeypatch.setattr("diffulex.hf_config_registry.AutoConfig.from_pretrained", lambda *args, **kwargs: type(
         "FakeHFConfig",
         (),
         {"max_position_embeddings": 4096},
     )())
     return model_dir
+
+
+def test_config_preserves_explicit_hf_config(monkeypatch, tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    monkeypatch.setattr(
+        "diffulex.hf_config_registry.AutoConfig.from_pretrained",
+        lambda *args, **kwargs: pytest.fail("explicit hf_config should not trigger AutoConfig loading"),
+    )
+    hf_config = SimpleNamespace(max_position_embeddings=1024)
+    cfg = Config(
+        str(model_dir),
+        hf_config=hf_config,
+        model_name="sdar",
+        tensor_parallel_size=1,
+        data_parallel_size=1,
+        device_ids=[0],
+    )
+
+    assert cfg.hf_config is hf_config
 
 
 @pytest.mark.parametrize(

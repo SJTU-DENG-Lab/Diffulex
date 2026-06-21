@@ -227,10 +227,13 @@ def init_process_group(
         world_size=get_world_size(tp_size=tp_size, ep_size=ep_size, dp_size=dp_size, sp_size=sp_size),
         timeout=timedelta(seconds=timeout_seconds),
     )
-    try:
-        dist.init_process_group(device_id=device_id, **kwargs)
-    except TypeError:
-        dist.init_process_group(**kwargs)
+    if backend == "nccl":
+        try:
+            dist.init_process_group(device_id=device_id, **kwargs)
+            return
+        except TypeError:
+            pass
+    dist.init_process_group(**kwargs)
 
 
 def _build_group(

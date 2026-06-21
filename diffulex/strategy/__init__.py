@@ -6,25 +6,25 @@ from pathlib import Path
 
 # Import built-in strategies so their registrations run at import time.
 # Automatically import all subdirectory packages in the current directory
-_excluded_dirs = {"__pycache__", "__init__"}
-_strategy_modules = []
+excluded_dirs = {"__pycache__", "__init__", "templates"}
+strategy_modules = []
 
-_current_dir = Path(__file__).parent
-for item in _current_dir.iterdir():
-    if item.is_dir() and not item.name.startswith("_") and item.name not in _excluded_dirs:
+current_dir = Path(__file__).parent
+for item in current_dir.iterdir():
+    if item.is_dir() and not item.name.startswith("_") and item.name not in excluded_dirs:
         # Check if it's a Python package (has __init__.py)
         init_file = item / "__init__.py"
         if init_file.exists():
             try:
                 importlib.import_module(f".{item.name}", __name__)
-                _strategy_modules.append(item.name)
+                strategy_modules.append(item.name)
             except Exception as e:
                 # Skip packages that fail to import
                 import warnings
 
                 warnings.warn(f"Failed to import strategy {item.name}: {e}", ImportWarning)
 
-__all__ = _strategy_modules.copy()
+__all__ = strategy_modules.copy()
 
 DECODING_STRATEGY = None
 

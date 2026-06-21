@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from diffulex.engine.status import DllmReqStatus
-from diffulex.strategy_template.multi_block.engine.request import MultiBlockReqTemplate
-from diffulex.strategy_template.multi_block.engine.scheduler import MultiBlockSchedulerTemplate
+from diffulex.engine.request import MultiBlockReqTemplate
+from diffulex.engine.scheduler import MultiBlockSchedulerTemplate
 
 
 class _Scheduler(MultiBlockSchedulerTemplate):
@@ -24,9 +24,6 @@ class _Scheduler(MultiBlockSchedulerTemplate):
         pass
 
     def preempt(self, req):
-        pass
-
-    def postprocess(self, reqs, sample_output):
         pass
 
 
@@ -68,6 +65,11 @@ class _Req:
     def reset_new_tokens(self):
         self.new_tokens = 0
 
+    def on_block_token_rewrite(self, block, rel_idx: int, old_token: int, new_token: int):
+        del rel_idx
+        if old_token == block.mask_token_id and new_token != block.mask_token_id:
+            self.new_tokens += 1
+
     def postprocess(self):
         pass
 
@@ -97,15 +99,15 @@ def test_scheduler_postprocess_kills_req_when_max_nfe_is_reached() -> None:
         true_local_ids_map={"7": {}},
         accepted_ids_map={"7": {}},
         sampled_tokens_map={"7": {}},
-        edit_writes_map={"7": {}},
+        block_writes_map={"7": {}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
     assert req.nfe == 1
     assert req.status == DllmReqStatus.DECODING
     assert scheduler.freed_req_ids == []
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
     assert req.nfe == 2
     assert req.status == DllmReqStatus.FINISHED
     assert scheduler.freed_req_ids == [7]
@@ -121,14 +123,14 @@ def test_scheduler_derives_max_nfe_from_request_average_tpf_when_unset() -> None
         true_local_ids_map={"8": {"0": [0, 1, 2, 3]}},
         accepted_ids_map={"8": {"0": [0, 1, 2, 3]}},
         sampled_tokens_map={"8": {"0": [10, 11, 12, 13]}},
-        edit_writes_map={"8": {}},
+        block_writes_map={"8": {}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
     assert req.max_nfe is None
     assert req.status == DllmReqStatus.DECODING
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert req.auto_max_nfe_value == 2
     assert req.max_nfe == 2
@@ -145,10 +147,10 @@ def test_scheduler_does_not_override_explicit_max_nfe() -> None:
         true_local_ids_map={"18": {}},
         accepted_ids_map={"18": {}},
         sampled_tokens_map={"18": {}},
-        edit_writes_map={"18": {}},
+        block_writes_map={"18": {}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert req.max_nfe == 10
     assert req.auto_max_nfe_value is None
@@ -164,10 +166,10 @@ def test_scheduler_postprocess_kills_req_when_repetition_run_is_too_long() -> No
         true_local_ids_map={"9": {}},
         accepted_ids_map={"9": {}},
         sampled_tokens_map={"9": {}},
-        edit_writes_map={"9": {}},
+        block_writes_map={"9": {}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert req.nfe == 1
     assert req.status == DllmReqStatus.FINISHED
@@ -184,10 +186,10 @@ def test_scheduler_postprocess_kills_req_when_max_new_tokens_is_reached() -> Non
         true_local_ids_map={"10": {}},
         accepted_ids_map={"10": {}},
         sampled_tokens_map={"10": {}},
-        edit_writes_map={"10": {}},
+        block_writes_map={"10": {}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert req.nfe == 1
     assert req.status == DllmReqStatus.FINISHED
@@ -205,10 +207,10 @@ def test_scheduler_postprocess_kills_req_when_max_model_len_is_reached() -> None
         true_local_ids_map={"12": {}},
         accepted_ids_map={"12": {}},
         sampled_tokens_map={"12": {}},
-        edit_writes_map={"12": {}},
+        block_writes_map={"12": {}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert req.nfe == 1
     assert req.status == DllmReqStatus.FINISHED
@@ -225,7 +227,7 @@ def test_repetition_run_length_counts_trailing_identical_tokens() -> None:
     assert run_length == 3
 
 
-def test_scheduler_postprocess_applies_edit_writes_map() -> None:
+def test_scheduler_postprocess_applies_block_writes_map() -> None:
     scheduler = _Scheduler()
     req = _Req(req_id=11)
     req.token_ids = [9, 0, 0]
@@ -248,10 +250,10 @@ def test_scheduler_postprocess_applies_edit_writes_map() -> None:
         true_local_ids_map={"11": {}},
         accepted_ids_map={"11": {}},
         sampled_tokens_map={"11": {}},
-        edit_writes_map={"11": {"0": {0: 0, 1: 5, 2: 6}}},
+        block_writes_map={"11": {"0": {0: 0, 1: 5, 2: 6}}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert req.token_ids == [0, 5, 6]
     assert req.new_tokens == 2
@@ -265,11 +267,11 @@ def test_scheduler_postprocess_raises_when_req_id_map_is_missing() -> None:
         true_local_ids_map={},
         accepted_ids_map={},
         sampled_tokens_map={},
-        edit_writes_map={},
+        block_writes_map={},
     )
 
     with pytest.raises(KeyError, match="13"):
-        scheduler.postprocess_multi_block([req], sample_output)
+        scheduler.postprocess([req], sample_output)
 
 
 def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -> None:
@@ -309,11 +311,11 @@ def test_scheduler_postprocess_updates_block_commit_flags_from_sample_output() -
         true_local_ids_map={"19": {}},
         accepted_ids_map={"19": {}},
         sampled_tokens_map={"19": {}},
-        edit_writes_map={"19": {}},
+        block_writes_map={"19": {}},
         block_state_map={"19": {"0": {"committable": True, "same_as_previous": False, "all_confident": True}}},
     )
 
-    scheduler.postprocess_multi_block([req], sample_output)
+    scheduler.postprocess([req], sample_output)
 
     assert block.commit_ready is True
     assert block.same_as_previous is False

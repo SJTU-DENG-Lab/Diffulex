@@ -5,7 +5,7 @@ import numpy as np
 
 from typing import Callable
 from collections import deque
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, field
 
 from diffulex.config import Config
@@ -62,6 +62,8 @@ class KVCacheManagerBase(ABC):
     def _allocate_page(self, page_id: int) -> Page:
         page = self.pages[page_id]
         assert page.ref_count == 0
+        if page.hash != -1 and self.hash_to_page_id.get(page.hash) == page_id:
+            del self.hash_to_page_id[page.hash]
         page.reset()
         self.free_page_ids.remove(page_id)
         self.used_page_ids.add(page_id)
@@ -87,7 +89,7 @@ class KVCacheManagerBase(ABC):
             h = self.compute_hash(token_ids, h) if len(token_ids) == self.page_size else -1
             page_id = self.hash_to_page_id.get(h, -1) if self.enable_prefix_caching else -1
 
-            if page_id == -1 or self.pages[page_id].token_ids != token_ids:
+            if page_id == -1 or self.pages[page_id].hash != h or self.pages[page_id].token_ids != token_ids:
                 cache_miss = True
 
             req.page_cache_missed.append(cache_miss)
@@ -121,13 +123,56 @@ class KVCacheManagerBase(ABC):
         req.page_cache_missed.clear()
         req.page_table.clear()
 
-    @abstractmethod
-    def can_append(self, req: DllmReq) -> bool:
-        pass
+    def _missing_cache_pages(self, req: DllmReq) -> int:
+        total_cache_pages = req.num_pages_with_seq_len(req.cache_len)
+        return max(0, total_cache_pages - len(req.page_table))
 
-    @abstractmethod
+    def can_append(self, req: DllmReq) -> bool:
+        return len(self.free_page_ids) >= self._missing_cache_pages(req)
+
+    def _finalize_last_unhashed_page(self, req: DllmReq) -> None:
+        page_table = req.page_table
+        if not page_table:
+            return
+
+        last_page = self.pages[page_table[-1]]
+        if last_page.hash != -1:
+            return
+
+        last_rel_page_id = len(page_table) - 1
+        if not (0 <= last_rel_page_id < req.num_pages):
+            return
+
+        token_ids: list[int] = req.page(last_rel_page_id)
+        prefix = self.pages[page_table[-2]].hash if len(page_table) > 1 else -1
+        h = self.compute_hash(token_ids, prefix)
+        last_page.update(h, token_ids)
+        if self.enable_prefix_caching:
+            self.hash_to_page_id[h] = last_page.page_id
+
     def may_append(self, req: DllmReq) -> None:
-        pass
+        if req.cache_len == 0:
+            return
+
+        page_table = req.page_table
+        missing_pages = self._missing_cache_pages(req)
+        if missing_pages > len(self.free_page_ids):
+            raise RuntimeError(
+                "Insufficient free KV cache pages for may_append: "
+                f"missing_pages={missing_pages}, free_pages={len(self.free_page_ids)}, "
+                f"cache_len={req.cache_len}, to_cache_len={req.to_cache_len}, "
+                f"page_table_len={len(page_table)}, req_id={req.req_id}"
+            )
+
+        for _ in range(missing_pages):
+            self._finalize_last_unhashed_page(req)
+            page_id = self.free_page_ids[0]
+            self._allocate_page(page_id)
+            page_table.append(page_id)
+
+
+class MultiBlockKVCacheManagerTemplate(KVCacheManagerBase):
+    """Compatibility alias for the core block-aware KV cache manager."""
 
 
 KVCacheManagerFactory = Callable[[Config], "KVCacheManagerBase"]

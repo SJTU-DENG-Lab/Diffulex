@@ -152,6 +152,8 @@ def call_chunked_prefill_kernel(
         DLLM_BLOCK_SIZE=dllm_block_size,
         IS_BLOCK_CAUSAL=is_block_causal,
         IS_PREFIX_FULL=is_prefix_full,
+        MASK_PREFIX_HOLE=False,
+        PREFIX_CAUSAL=False,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
     )

@@ -16,11 +16,12 @@ MODEL_NAME_CHOICES = [
     "llada2_mini",
     "llada2dot1_mini",
     "llada2_mini_dmax",
+    "diffusion_gemma",
 ]
 
 DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
 TOKEN_MERGE_MODE_CHOICES = ["dmax_topk", "iter_smooth_topk"]
-ATTN_IMPL_CHOICES = ["triton", "naive"]
+ATTN_IMPL_CHOICES = ["triton", "triton_grouped", "naive"]
 MOE_GEMM_IMPL_CHOICES = ["triton", "vllm", "vllm_modular", "naive"]
 MOE_DISPATCHER_BACKEND_CHOICES = ["standard", "naive", "deepep"]
 DEEP_EP_MODE_CHOICES = ["normal", "low_latency", "auto"]
@@ -437,7 +438,7 @@ Examples:
         "--enable-prefill-cudagraph",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable lazy CUDA graph capture for block-aligned prefill buckets",
+        help="Deprecated no-op; prefill CUDA graph replay is disabled",
     )
     parser.add_argument(
         "--enable-full-static-runner",
@@ -468,6 +469,50 @@ Examples:
         type=str,
         default=None,
         help="torch.compile mode",
+    )
+    parser.add_argument(
+        "--enable-vllm-layers",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use optional vLLM layer backends for common non-attention modules when available",
+    )
+    parser.add_argument(
+        "--profiler",
+        default=None,
+        choices=["torch"],
+        help="Enable a profiler backend for Diffulex engine/model-runner traces",
+    )
+    parser.add_argument(
+        "--torch-profiler-dir",
+        default="",
+        help="Directory for torch profiler traces and summaries",
+    )
+    parser.add_argument(
+        "--profiler-record-shapes",
+        action="store_true",
+        help="Record tensor shapes in torch profiler traces",
+    )
+    parser.add_argument(
+        "--profiler-memory",
+        action="store_true",
+        help="Enable torch profiler memory tracking",
+    )
+    parser.add_argument(
+        "--profiler-with-stack",
+        action="store_true",
+        help="Record Python stack traces in torch profiler output",
+    )
+    parser.add_argument(
+        "--profiler-delay-iterations",
+        type=int,
+        default=0,
+        help="Number of profiler session steps to skip before starting collection",
+    )
+    parser.add_argument(
+        "--profiler-max-iterations",
+        type=int,
+        default=0,
+        help="Maximum profiler collection steps; 0 collects until stop",
     )
     parser.add_argument(
         "--auto-max-nfe-warmup-steps",

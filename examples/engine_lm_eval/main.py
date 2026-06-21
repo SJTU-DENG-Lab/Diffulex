@@ -101,7 +101,7 @@ def config_to_model_args(config: BenchmarkConfig, save_dir: Path) -> str:
         "model": config.endpoint.model,
         "api_key": config.endpoint.api_key,
         "tokenizer_path": config.endpoint.tokenizer_path or config.endpoint.model,
-        "batch_size": 1,
+        "batch_size": config.endpoint.batch_size,
         "max_new_tokens": config.eval.max_tokens,
         "temperature": config.eval.temperature,
         "ignore_eos": config.eval.ignore_eos,
@@ -116,15 +116,39 @@ def config_to_model_args(config: BenchmarkConfig, save_dir: Path) -> str:
     return ",".join(f"{k}={v}" for k, v in args.items() if v is not None)
 
 
+def _parse_optional_limit(value: str | None) -> int | None:
+    if value is None:
+        return None
+    lowered = str(value).strip().lower()
+    if lowered in {"", "none", "null", "full"}:
+        return None
+    return int(value)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Minimal lm-eval runner backed by an OpenAI-compatible API engine")
     parser.add_argument("--config", required=True, help="Path to YAML config.")
+    parser.add_argument("--dataset-limit", default=None, help="Override eval.dataset_limit; use null/full for all.")
+    parser.add_argument("--max-tokens", type=int, default=None, help="Override eval.max_tokens.")
+    parser.add_argument("--output-dir", default=None, help="Override eval.output_dir.")
+    parser.add_argument("--base-url", default=None, help="Override endpoint.base_url.")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override endpoint.batch_size.")
     args = parser.parse_args()
 
     if cli_evaluate is None:
         raise RuntimeError("lm-evaluation-harness is not installed.")
 
     config = BenchmarkConfig.from_yaml(args.config)
+    if args.dataset_limit is not None:
+        config.eval.dataset_limit = _parse_optional_limit(args.dataset_limit)
+    if args.max_tokens is not None:
+        config.eval.max_tokens = args.max_tokens
+    if args.output_dir is not None:
+        config.eval.output_dir = args.output_dir
+    if args.base_url is not None:
+        config.endpoint.base_url = args.base_url
+    if args.batch_size is not None:
+        config.endpoint.batch_size = args.batch_size
     output_dir = _run_output_dir(config)
     include_path, cleanup_root = _resolve_include_path_with_override(config)
     model_args = config_to_model_args(config, output_dir)

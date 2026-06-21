@@ -1,0 +1,24 @@
+endpoint:
+  engine_name: "sglang_llada2_mini_gsm8k_smoke"
+  base_url: "http://127.0.0.1:29998"
+  model: "/data/ckpts/inclusionAI/LLaDA2.0-mini"
+  api_key: "EMPTY"
+  tokenizer_path: "/data/ckpts/inclusionAI/LLaDA2.0-mini"
+  trust_remote_code: true
+  apply_chat_template: false
+  chat_completions: false
+  timeout: 600.0
+  verify: true
+
+eval:
+  dataset_name: "gsm8k_llada2"
+  dataset_limit: 3
+  include_path: null
+  dataset_data_files: null
+  temperature: 0.0
+  max_tokens: 4096
+  ignore_eos: false
+  add_bos_token: false
+  output_dir: "benchmark_results/sglang_llada2_mini_gsm8k_smoke"
+  use_run_subdirectory: true
+  save_results: true

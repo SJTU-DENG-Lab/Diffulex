@@ -52,6 +52,44 @@ def _strip_at_until_terms(response: str, until_terms: list[str]) -> str:
     return out
 
 
+def _get_generation_arg(gen_kw: object, *names: str, default=None):
+    if gen_kw is None:
+        return default
+    for name in names:
+        if isinstance(gen_kw, dict):
+            if name in gen_kw:
+                return gen_kw[name]
+        elif hasattr(gen_kw, name):
+            return getattr(gen_kw, name)
+    return default
+
+
+def _sampling_params_from_generation_kwargs(default: SamplingParams, gen_kw: object) -> SamplingParams:
+    max_tokens = _get_generation_arg(
+        gen_kw,
+        "max_gen_toks",
+        "max_tokens",
+        "max_new_tokens",
+        default=default.max_tokens,
+    )
+    temperature = _get_generation_arg(gen_kw, "temperature", default=default.temperature)
+    max_nfe = _get_generation_arg(gen_kw, "max_nfe", default=default.max_nfe)
+    max_repetition_run = _get_generation_arg(
+        gen_kw,
+        "max_repetition_run",
+        default=default.max_repetition_run,
+    )
+    ignore_eos = _get_generation_arg(gen_kw, "ignore_eos", default=default.ignore_eos)
+
+    return SamplingParams(
+        temperature=float(temperature),
+        max_tokens=int(max_tokens),
+        max_nfe=None if max_nfe is None else int(max_nfe),
+        max_repetition_run=None if max_repetition_run is None else int(max_repetition_run),
+        ignore_eos=_coerce_bool(ignore_eos, default=default.ignore_eos),
+    )
+
+
 def _coerce_bool(v: Union[bool, str, int, None], default: bool = False) -> bool:
     if v is None:
         return default
@@ -81,6 +119,7 @@ class DiffulexLM(LM):
         max_repetition_run: Optional[int] = None,
         max_length: Optional[int] = 2048,
         add_bos_token: Optional[bool] = False,
+        ignore_eos: Optional[bool] = False,
         trust_remote_code: Optional[bool] = True,
         temperature: Optional[float] = 0.0,
         model_name: Optional[str] = "dream",
@@ -157,6 +196,8 @@ class DiffulexLM(LM):
         self.all_generation_times = []
         self.all_nfe = []
         self.all_tokens = []
+        self.tpf_weighted_sum = 0.0
+        self.tpf_weight = 0
         self.last_ttft = 0.0
         self.last_tpot = 0.0
         self.last_e2e_total_time = 0.0
@@ -188,6 +229,7 @@ class DiffulexLM(LM):
             max_tokens=max_new_tokens,
             max_nfe=max_nfe,
             max_repetition_run=max_repetition_run,
+            ignore_eos=_coerce_bool(ignore_eos, default=False),
         )
 
         self.logger.success("Diffulex engine initialized successfully")
@@ -278,7 +320,7 @@ class DiffulexLM(LM):
     def tokenizer_name(self) -> str:
         return self.tokenizer.name_or_path.replace("/", "__")
 
-    def generate_until(self, requests: List[Instance], disable_tqdm: bool = False):
+    def generate_until(self, requests: List[Instance], disable_tqdm: bool = True):
         """
         Generate text until stopping conditions are met.
 
@@ -304,9 +346,13 @@ class DiffulexLM(LM):
 
         # Run generation
         start_time = time.time()
+        sampling_params = [
+            _sampling_params_from_generation_kwargs(self.sampling_params, gen_kw)
+            for gen_kw in gen_args
+        ]
         outputs = self.runner.generate(
             prompts,
-            self.sampling_params,
+            sampling_params,
             use_tqdm=not disable_tqdm,
         )
         end_time = time.time()
@@ -320,6 +366,8 @@ class DiffulexLM(LM):
             self.last_prefill_throughput = float(outputs[0].get("prefill_throughput_tok_s", 0.0) or 0.0)
             self.last_decode_throughput = float(outputs[0].get("decode_throughput_tok_s", 0.0) or 0.0)
             self.last_tpf = float(outputs[0].get("tpf", 0.0) or 0.0)
+            self.tpf_weighted_sum += self.last_tpf * len(outputs)
+            self.tpf_weight += len(outputs)
             self.last_avg_e2e_tps = float(outputs[0].get("avg_e2e_tps", 0.0) or 0.0)
             self.last_avg_decode_tps = float(outputs[0].get("avg_decode_tps", 0.0) or 0.0)
 
@@ -383,6 +431,8 @@ class DiffulexLM(LM):
     def _save_statistics(self):
         """Save statistics to file"""
         os.makedirs(self.save_dir, exist_ok=True)
+        mean_tpf = self.tpf_weighted_sum / self.tpf_weight if self.tpf_weight > 0 else 0.0
+        aggregate_tpf = self.total_generated_tokens / self.total_nfe if self.total_nfe > 0 else 0.0
 
         stats = {
             "total_samples": self.total_samples,
@@ -398,7 +448,8 @@ class DiffulexLM(LM):
             "tpot_s": self.last_tpot,
             "prefill_throughput_tok_s": self.last_prefill_throughput,
             "decode_throughput_tok_s": self.last_decode_throughput,
-            "tpf": self.total_generated_tokens / self.total_nfe if self.total_nfe > 0 else 0,
+            "tpf": mean_tpf,
+            "aggregate_tpf": aggregate_tpf,
             "last_batch_tpf": self.last_tpf,
             "avg_e2e_tps": self.last_avg_e2e_tps,
             "avg_decode_tps": self.last_avg_decode_tps,

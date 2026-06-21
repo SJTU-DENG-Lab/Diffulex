@@ -76,8 +76,8 @@ def _validate_fused_moe_inputs(
     topk_weights: torch.Tensor,
     hidden_act: str,
 ) -> None:
-    if hidden_act != "silu":
-        raise ValueError(f"Only silu experts are supported right now, got {hidden_act!r}.")
+    if hidden_act not in {"silu", "gelu", "gelu_tanh", "gelu_pytorch_tanh"}:
+        raise ValueError(f"Unsupported fused_moe expert activation: {hidden_act!r}.")
     if not hidden_states.is_cuda:
         raise ValueError("fused_moe requires CUDA tensors.")
     if hidden_states.dim() != 2 or topk_ids.dim() != 2 or topk_weights.dim() != 2:
@@ -842,8 +842,11 @@ def _launch_fused_moe_kernels(
 
     gate = gate_up[:, :intermediate_size]
     up = gate_up[:, intermediate_size:]
-    F.silu(gate, inplace=True)
-    gate.mul_(up)
+    if hidden_act == "silu":
+        F.silu(gate, inplace=True)
+        gate.mul_(up)
+    else:
+        gate = F.gelu(gate, approximate="tanh") * up
     packed_slot_outputs = _launch_grouped_expert_gemm_packed(
         gate,
         w2,
@@ -936,8 +939,11 @@ def fused_expert_packed(
     )
     gate = gate_up[:, :intermediate_size]
     up = gate_up[:, intermediate_size:]
-    F.silu(gate, inplace=True)
-    gate.mul_(up)
+    if hidden_act == "silu":
+        F.silu(gate, inplace=True)
+        gate.mul_(up)
+    else:
+        gate = F.gelu(gate, approximate="tanh") * up
     return _launch_grouped_expert_gemm_packed(
         gate,
         w2,

@@ -10,17 +10,20 @@ from diffulex.strategy.multi_bd.engine.request import MultiBDReq
 from diffulex.strategy.multi_bd.engine.scheduler import MultiBDScheduler
 
 
-def test_multi_block_methods_live_on_strategy_template_not_base() -> None:
-    assert not hasattr(DllmReq, "init_multi_block")
+def test_block_runtime_methods_are_core_contracts() -> None:
+    assert hasattr(DllmReq, "init_multi_block")
     assert hasattr(MultiBDReq, "init_multi_block")
 
+    assert hasattr(SchedulerBase, "schedule")
     assert not hasattr(SchedulerBase, "schedule_multi_block")
-    assert hasattr(MultiBDScheduler, "schedule_multi_block")
+    assert not hasattr(MultiBDScheduler, "schedule_multi_block")
 
+    assert hasattr(KVCacheManagerBase, "can_append")
+    assert hasattr(KVCacheManagerBase, "may_append")
     assert not hasattr(KVCacheManagerBase, "can_append_multi_block")
-    assert hasattr(MultiBDKVCacheManager, "can_append_multi_block")
+    assert not hasattr(MultiBDKVCacheManager, "can_append_multi_block")
 
-    assert not hasattr(ModelRunnerBase, "run_multi_block")
+    assert hasattr(ModelRunnerBase, "run_multi_block")
     assert hasattr(MultiBDModelRunner, "run_multi_block")
 
     assert not hasattr(AttnMetaDataBase, "init_multi_block")

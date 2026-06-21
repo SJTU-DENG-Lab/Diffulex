@@ -6,6 +6,8 @@ from diffulex.server.protocol import (
     PromptInput,
     ServingDelta,
     ServingGenerate,
+    ServingProfileStart,
+    ServingProfileStop,
     ServingReply,
     serving_command_from_dict,
     serving_command_to_dict,
@@ -50,7 +52,17 @@ def test_serving_generate_protocol_round_trips_prompt_ids():
     assert isinstance(decoded.input, PromptInput)
     assert decoded.input.prompt == [1, 2, 3]
     assert decoded.stream_mode == "denoise"
-    assert decoded.sampling_params.max_nfe == 512
+    assert decoded.sampling_params.max_nfe is None
+
+
+def test_serving_profile_commands_round_trip():
+    decoded_start = serving_command_from_dict(
+        serving_command_to_dict(ServingProfileStart(profile_prefix="debug-run"))
+    )
+    decoded_stop = serving_command_from_dict(serving_command_to_dict(ServingProfileStop()))
+
+    assert decoded_start == ServingProfileStart(profile_prefix="debug-run")
+    assert decoded_stop == ServingProfileStop()
 
 
 def test_serving_event_protocol_round_trips_reply_and_delta():

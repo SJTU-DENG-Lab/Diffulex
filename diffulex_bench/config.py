@@ -109,7 +109,7 @@ class EngineConfig:
     model_path: str
     tokenizer_path: Optional[str] = None
     model_name: str = "dream"  # Options: dream, sdar, fast_dllm_v2, llada
-    decoding_strategy: str = "d2f"  # Options: d2f, multi_bd
+    decoding_strategy: str = "d2f"  # Options: d2f, multi_bd, dmax, diffusion_gemma
     sampling_mode: str = "naive"  # Options: naive, edit
     max_post_edit_steps: int = 16  # max refinement steps after all masks filled
     mask_token_id: int = 151666
@@ -129,12 +129,14 @@ class EngineConfig:
     max_model_len: int = 2048
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
-    enable_prefill_cudagraph: bool = True
+    skip_warmup: bool = False
+    enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
     enable_torch_compile: bool = True
     enable_cudagraph_torch_compile: bool = False
     torch_compile_mode: str = "reduce-overhead"
+    enable_vllm_layers: bool = True
 
     # Scheduler / truncation configuration
     auto_max_nfe_warmup_steps: int = 8
@@ -150,6 +152,10 @@ class EngineConfig:
     token_merge_top_k: int = 1
     token_merge_renormalize: bool = True
     token_merge_weight: float = 1.0
+    dmax_sampler_fast_path: bool = True
+    dmax_force_prefill_active: bool = False
+    enable_vectorized_sampler: bool = False
+    enable_vectorized_sampler_compile: bool = False
 
     # MoE configuration
     moe_dispatcher_backend: str = "standard"
@@ -245,7 +251,7 @@ class EvalConfig:
     # If True, lm-eval outputs + diffulex stats/trajectory go under output_dir/run_<time>_<task>/
     use_run_subdirectory: bool = True
     save_results: bool = True
-    use_tqdm: bool = True
+    use_tqdm: bool = False
     # lm-eval requires explicit confirmation for code tasks that execute generated code.
     confirm_run_unsafe_code: bool = True
 

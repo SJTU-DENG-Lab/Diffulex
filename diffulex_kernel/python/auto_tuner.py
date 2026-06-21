@@ -1,16 +1,25 @@
 import itertools
 
 
-
 def build_chunked_prefill_configs():
     """Autotune configs for chunked prefill unified kernel.
 
     Note: The autotune key is
-    ["NUM_GROUPS", "HEAD_DIM", "PAGE_SIZE", "DLLM_BLOCK_SIZE", "IS_BLOCK_CAUSAL", "IS_PREFIX_FULL"],
+    [
+        "NUM_GROUPS",
+        "HEAD_DIM",
+        "PAGE_SIZE",
+        "DLLM_BLOCK_SIZE",
+        "IS_BLOCK_CAUSAL",
+        "IS_PREFIX_FULL",
+        "MASK_PREFIX_HOLE",
+        "PREFIX_CAUSAL",
+        "SLIDING_WINDOW",
+    ],
     so configs are selected based on those runtime parameters.
     """
-    BLOCK_M_LIST = [64, 128]
-    BLOCK_N_LIST = [64, 128]
+    BLOCK_M_LIST = [8, 16, 32, 64, 128]
+    BLOCK_N_LIST = [16, 32, 64, 128]
     NUM_STAGES_LIST = [1, 2, 3]
     NUM_WARPS_LIST = [4, 8]
 

@@ -61,4 +61,4 @@ eval:
   # Output configuration
   output_dir: "benchmark_results"
   save_results: true
-  use_tqdm: true
+  use_tqdm: false

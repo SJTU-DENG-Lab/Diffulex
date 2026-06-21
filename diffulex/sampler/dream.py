@@ -5,6 +5,7 @@ from diffulex.sampler.base import DllmSamplerShiftBase
 
 
 @AutoSampler.register("dream")
+@AutoSampler.register("diffucoder")
 class DreamSampler(DllmSamplerShiftBase):
     def _compute_accepted_ids(
         self,

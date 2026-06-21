@@ -57,8 +57,16 @@ line-length = 120  # Avoid excessive line breaks (default 88 too aggressive)
 max-line-length = 120  # Align with formatter
 
 [tool.pytest.ini_options]
+testpaths = [
+    "test/python",
+]
+python_files = [
+    "test_*.py",
+]
 markers = [
     "diffulex_dry_run: Diffulex engine dry-run tests (GPU, spawns TP workers; run with --forked)",
+    "vllm_layer_perf: optional vLLM layer operator microbenchmarks",
+    "vllm_attention_perf: optional vLLM attention operator microbenchmarks",
 ]
 
 [tool.setuptools.packages.find]

@@ -1,0 +1,24 @@
+endpoint:
+  engine_name: "vllm_diffusion_gemma_gsm8k"
+  base_url: "http://127.0.0.1:29998"
+  model: "/data/ckpts/google/diffusiongemma-26B-A4B-it"
+  api_key: "EMPTY"
+  tokenizer_path: "/data/ckpts/google/diffusiongemma-26B-A4B-it"
+  trust_remote_code: true
+  apply_chat_template: false
+  chat_completions: false
+  timeout: 1200.0
+  verify: true
+
+eval:
+  dataset_name: "gsm8k_diffusion_gemma"
+  dataset_limit: null
+  include_path: null
+  dataset_data_files: null
+  temperature: 0.0
+  max_tokens: 8192
+  ignore_eos: false
+  add_bos_token: false
+  output_dir: "benchmark_results/vllm_diffusion_gemma_gsm8k"
+  use_run_subdirectory: true
+  save_results: true

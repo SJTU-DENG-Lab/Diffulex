@@ -21,7 +21,7 @@ engine:
 
   enforce_eager: false
   attn_impl: "triton"
-  enable_prefill_cudagraph: true
+  enable_prefill_cudagraph: false
   prefill_cudagraph_max_len: 0
   enable_torch_compile: true
   enable_cudagraph_torch_compile: false

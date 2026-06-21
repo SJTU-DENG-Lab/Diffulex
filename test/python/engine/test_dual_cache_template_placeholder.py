@@ -1,4 +1,4 @@
-from diffulex.strategy_template.dual_cache import (
+from diffulex.strategy.templates.dual_cache import (
     DualCacheKVCacheManagerTemplate,
     DualCacheModelRunnerTemplate,
     DualCacheReqTemplate,

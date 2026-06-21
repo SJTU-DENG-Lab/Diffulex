@@ -1,10 +1,13 @@
 from abc import ABC
+import os
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from diffulex.attention import fetch_attn_metadata
+from diffulex.distributed.parallel_state import fetch_parallel_state
 from diffulex.logger import get_logger
 from diffulex.moe.config import (
     get_moe_intermediate_size,
@@ -15,7 +18,9 @@ from diffulex.moe.config import (
 from diffulex.moe.topk import build_topk_router
 from diffulex_kernel import fused_moe
 from diffulex.layer.activation import SiluAndMul
-from diffulex.layer.linear import ColumnParallelLinear, RowParallelLinear
+from diffulex.layer.linear import MergedColumnParallelLinear, RowParallelLinear
+from diffulex.utils.checkpoint import LoadContext, ResolvedWeight
+from diffulex.vllm_compat import vllm_current_config
 
 _VLLM_FUSED_MOE = None
 _VLLM_FUSED_MOE_LOAD_ERR: Exception | None = None
@@ -53,15 +58,12 @@ def _load_vllm_modular_moe():
     try:
         from vllm.model_executor.layers.fused_moe.activation import MoEActivation
         from vllm.model_executor.layers.fused_moe.config import (
-            FUSED_MOE_UNQUANTIZED_CONFIG,
             FusedMoEConfig,
             FusedMoEParallelConfig,
             RoutingMethodType,
         )
-        from vllm.model_executor.layers.fused_moe.fused_moe import TritonExperts
-        from vllm.model_executor.layers.fused_moe.modular_kernel import FusedMoEKernel
-        from vllm.model_executor.layers.fused_moe.prepare_finalize import (
-            make_moe_prepare_and_finalize_no_dp_ep,
+        from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+            UnquantizedFusedMoEMethod,
         )
         from vllm.v1.worker.workspace import (
             init_workspace_manager,
@@ -69,20 +71,83 @@ def _load_vllm_modular_moe():
         )
 
         return {
-            "FUSED_MOE_UNQUANTIZED_CONFIG": FUSED_MOE_UNQUANTIZED_CONFIG,
             "FusedMoEConfig": FusedMoEConfig,
-            "FusedMoEKernel": FusedMoEKernel,
             "FusedMoEParallelConfig": FusedMoEParallelConfig,
             "MoEActivation": MoEActivation,
             "RoutingMethodType": RoutingMethodType,
-            "TritonExperts": TritonExperts,
+            "UnquantizedFusedMoEMethod": UnquantizedFusedMoEMethod,
             "init_workspace_manager": init_workspace_manager,
             "is_workspace_manager_initialized": is_workspace_manager_initialized,
-            "make_moe_prepare_and_finalize_no_dp_ep": make_moe_prepare_and_finalize_no_dp_ep,
         }
     except Exception as exc:
         _VLLM_MODULAR_LOAD_ERR = exc
         return None
+
+
+class _VllmModularMoELayerAdapter(nn.Module):
+    """Small RoutedExperts-shaped adapter for vLLM modular MoE kernels."""
+
+    def __init__(
+        self,
+        w13: torch.Tensor,
+        w2: torch.Tensor,
+        *,
+        activation,
+        moe_config=None,
+        global_num_experts: int,
+        expert_map: torch.Tensor | None,
+        clone_weights: bool = True,
+    ) -> None:
+        super().__init__()
+        if clone_weights:
+            self.w13_weight = nn.Parameter(w13.detach().clone(), requires_grad=False)
+            self.w2_weight = nn.Parameter(w2.detach().clone(), requires_grad=False)
+        else:
+            self.w13_weight = w13 if isinstance(w13, nn.Parameter) else nn.Parameter(w13, requires_grad=False)
+            self.w2_weight = w2 if isinstance(w2, nn.Parameter) else nn.Parameter(w2, requires_grad=False)
+        self.activation = activation
+        self.moe_config = moe_config
+        self.global_num_experts = int(global_num_experts)
+        self.apply_router_weight_on_input = False
+        self.expert_map = expert_map
+
+    def _expert_routing_tables(self):
+        return None
+
+
+def _make_vllm_runtime_config() -> SimpleNamespace:
+    state = fetch_parallel_state()
+    return SimpleNamespace(
+        tensor_parallel_size=int(state.tp_size),
+        data_parallel_size=int(state.dp_size),
+        expert_parallel_size=int(state.ep_size),
+        distributed_timeout_seconds=600,
+    )
+
+
+def _build_vllm_expert_map(
+    *,
+    num_global_experts: int,
+    num_local_experts: int,
+    local_expert_start: int,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if int(num_local_experts) == int(num_global_experts) and int(local_expert_start) == 0:
+        return None
+
+    expert_map = torch.full(
+        (int(num_global_experts),),
+        -1,
+        dtype=torch.int32,
+        device=device,
+    )
+    local_end = int(local_expert_start) + int(num_local_experts)
+    expert_map[int(local_expert_start):local_end] = torch.arange(
+        int(num_local_experts),
+        dtype=torch.int32,
+        device=device,
+    )
+    return expert_map
 
 
 class SharedExpertMLP(nn.Module):
@@ -90,15 +155,26 @@ class SharedExpertMLP(nn.Module):
         super().__init__()
         if hidden_act != "silu":
             raise NotImplementedError("SharedExpertMLP currently supports only silu.")
-        self.gate_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = ColumnParallelLinear(hidden_size, intermediate_size, bias=False)
+        self.gate_up_proj = MergedColumnParallelLinear(hidden_size, [intermediate_size, intermediate_size], bias=False)
         self.down_proj = RowParallelLinear(intermediate_size, hidden_size, bias=False)
         self.act_fn = SiluAndMul()
+        self._register_state_dict_hook(self._add_state_dict_aliases)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(
-            self.act_fn(torch.cat((self.gate_proj(hidden_states), self.up_proj(hidden_states)), dim=-1))
-        )
+        return self.down_proj(self.act_fn(self.gate_up_proj(hidden_states)))
+
+    def _add_state_dict_aliases(self, module, state_dict, prefix, local_metadata) -> None:
+        gate_weight, up_weight = self.gate_up_proj.weight.split(self.gate_up_proj.weight.shape[0] // 2, dim=0)
+        state_dict[prefix + "gate_proj.weight"] = gate_weight
+        state_dict[prefix + "up_proj.weight"] = up_weight
+
+    def resolve_checkpoint_weight(self, suffix: str, ctx: LoadContext) -> ResolvedWeight | None:
+        if suffix == "gate_proj.weight":
+            return ResolvedWeight(param=self.gate_up_proj.weight, shard_id=0)
+        if suffix == "up_proj.weight":
+            return ResolvedWeight(param=self.gate_up_proj.weight, shard_id=1)
+        return None
+
 
 class FusedMoE(nn.Module, ABC):
 
@@ -119,7 +195,7 @@ class FusedMoE(nn.Module, ABC):
 
         if hidden_act != "silu":
             raise NotImplementedError("only silu is supported currently")
-        
+
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.num_experts = num_experts
@@ -129,7 +205,11 @@ class FusedMoE(nn.Module, ABC):
         self.moe_gemm_impl = str(moe_gemm_impl)
         self.num_shared_experts = num_shared_experts
         self._vllm_modular_kernel = None
+        self._vllm_modular_method = None
+        self._vllm_modular_layer = None
         self._vllm_modular_logged = False
+        self._shared_experts_stream = None
+        self._shared_experts_stream_device = None
 
         self.router = build_topk_router(
             "triton",
@@ -171,17 +251,49 @@ class FusedMoE(nn.Module, ABC):
         shared_states = self.shared_experts(hidden_states)
         return routed_states + shared_states
 
+    def start_shared_experts_async(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.cuda.Stream] | None:
+        if self.shared_experts is None:
+            return None
+        if os.getenv("DIFFULEX_DISABLE_MOE_SHARED_EXPERT_OVERLAP", "0") == "1":
+            return None
+        if not hidden_states.is_cuda or not torch.cuda.is_available():
+            return None
+
+        device = hidden_states.device
+        stream = self._shared_experts_stream
+        if stream is None or self._shared_experts_stream_device != device:
+            if torch.cuda.is_current_stream_capturing():
+                return None
+            with torch.cuda.device(device):
+                stream = torch.cuda.Stream()
+            self._shared_experts_stream = stream
+            self._shared_experts_stream_device = device
+
+        current_stream = torch.cuda.current_stream(device)
+        stream.wait_stream(current_stream)
+        with torch.cuda.stream(stream):
+            shared_states = self.shared_experts(hidden_states)
+        return shared_states, stream
+
+    def finish_shared_experts_async(
+        self,
+        routed_states: torch.Tensor,
+        shared_work: tuple[torch.Tensor, torch.cuda.Stream],
+    ) -> torch.Tensor:
+        shared_states, stream = shared_work
+        torch.cuda.current_stream(routed_states.device).wait_stream(stream)
+        return routed_states + shared_states
+
     @staticmethod
     def _phase_from_prefill_flags(is_prefill) -> str:
         if isinstance(is_prefill, bool):
             return "prefill" if is_prefill else "decode"
 
         if torch.is_tensor(is_prefill):
-            if is_prefill.numel() == 0:
-                return "unknown"
-            flags = is_prefill.to(dtype=torch.bool)
-            all_prefill = bool(flags.all().item())
-            any_prefill = bool(flags.any().item())
+            return "unknown"
         else:
             try:
                 flags = [bool(flag) for flag in is_prefill]
@@ -208,6 +320,15 @@ class FusedMoE(nn.Module, ABC):
         if attn_metadata is None:
             return "unknown"
 
+        has_prefill = getattr(attn_metadata, "has_prefill_static", None)
+        all_prefill = getattr(attn_metadata, "all_prefill_static", None)
+        if has_prefill is not None and all_prefill is not None:
+            if bool(all_prefill):
+                return "prefill"
+            if not bool(has_prefill):
+                return "decode"
+            return "mixed"
+
         phase = self._phase_from_prefill_flags(attn_metadata.is_prefill)
         if phase != "unknown":
             return phase
@@ -224,7 +345,13 @@ class FusedMoE(nn.Module, ABC):
         except TypeError:
             return self._phase_from_prefill_flags(int(status_table) == 0)
 
-    def _build_vllm_modular_kernel(self, hidden_states: torch.Tensor, w13: torch.Tensor):
+    def _build_vllm_modular_kernel(
+        self,
+        hidden_states: torch.Tensor,
+        w13: torch.Tensor,
+        w2: torch.Tensor,
+        local_expert_start: int,
+    ):
         api = _load_vllm_modular_moe()
         if api is None:
             raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
@@ -236,12 +363,12 @@ class FusedMoE(nn.Module, ABC):
 
         parallel_config = api["FusedMoEParallelConfig"].make_no_parallel()
         moe_config = api["FusedMoEConfig"](
-            num_experts=int(w13.shape[0]),
+            num_experts=int(self.num_experts),
             experts_per_token=int(self.top_k),
             hidden_dim=int(self.hidden_size),
             intermediate_size_per_partition=int(self.intermediate_size),
             num_local_experts=int(w13.shape[0]),
-            num_logical_experts=int(w13.shape[0]),
+            num_logical_experts=int(self.num_experts),
             activation=api["MoEActivation"].SILU,
             device=hidden_states.device,
             routing_method=(
@@ -253,28 +380,51 @@ class FusedMoE(nn.Module, ABC):
             in_dtype=hidden_states.dtype,
             max_num_tokens=max(1, int(hidden_states.shape[0])),
         )
-        quant_config = api["FUSED_MOE_UNQUANTIZED_CONFIG"]
-        prepare_finalize = api["make_moe_prepare_and_finalize_no_dp_ep"](use_monolithic=False)
-        fused_experts = api["TritonExperts"](moe_config=moe_config, quant_config=quant_config)
-        if not self._vllm_modular_logged:
-            logger.info(
-                "Initialized vLLM modular MoE backend: hidden=%s intermediate=%s local_experts=%s "
-                "top_k=%s dtype=%s tokens=%s",
-                self.hidden_size,
-                self.intermediate_size,
-                int(w13.shape[0]),
-                self.top_k,
-                hidden_states.dtype,
-                int(hidden_states.shape[0]),
-            )
-            self._vllm_modular_logged = True
-        return api["FusedMoEKernel"](
-            prepare_finalize,
-            fused_experts,
-            shared_experts=None,
-            moe_parallel_config=parallel_config,
-            inplace=False,
+
+        with vllm_current_config(_make_vllm_runtime_config()):
+            method = api["UnquantizedFusedMoEMethod"](moe_config)
+
+        expert_map = _build_vllm_expert_map(
+            num_global_experts=int(self.num_experts),
+            num_local_experts=int(w13.shape[0]),
+            local_expert_start=int(local_expert_start),
+            device=hidden_states.device,
         )
+        layer = _VllmModularMoELayerAdapter(
+            w13,
+            w2,
+            activation=api["MoEActivation"].SILU,
+            moe_config=moe_config,
+            global_num_experts=int(self.num_experts),
+            expert_map=expert_map,
+        )
+        method.process_weights_after_loading(layer)
+        self._log_vllm_modular_init(hidden_states, w13, expert_map)
+        self._vllm_modular_method = method
+        self._vllm_modular_layer = layer
+        return method.moe_kernel
+
+    def _log_vllm_modular_init(
+        self,
+        hidden_states: torch.Tensor,
+        w13: torch.Tensor,
+        expert_map: torch.Tensor | None,
+    ) -> None:
+        if self._vllm_modular_logged:
+            return
+        logger.info(
+            "Initialized vLLM modular MoE backend: hidden=%s intermediate=%s local_experts=%s "
+            "global_experts=%s top_k=%s dtype=%s tokens=%s expert_map=%s",
+            self.hidden_size,
+            self.intermediate_size,
+            int(w13.shape[0]),
+            self.num_experts,
+            self.top_k,
+            hidden_states.dtype,
+            int(hidden_states.shape[0]),
+            expert_map is not None,
+        )
+        self._vllm_modular_logged = True
 
     def _vllm_modular_expert_gemm(
         self,
@@ -289,22 +439,24 @@ class FusedMoE(nn.Module, ABC):
         if api is None:
             raise RuntimeError(f"vLLM modular MoE backend is unavailable: {_VLLM_MODULAR_LOAD_ERR!r}")
         if self._vllm_modular_kernel is None:
-            self._vllm_modular_kernel = self._build_vllm_modular_kernel(hidden_states, w13)
+            self._vllm_modular_kernel = self._build_vllm_modular_kernel(
+                hidden_states,
+                w13,
+                w2,
+                local_expert_start,
+            )
+        if self._vllm_modular_method is None or self._vllm_modular_layer is None:
+            raise RuntimeError("vLLM modular MoE backend was not initialized correctly.")
+        required_topk_dtype = getattr(self._vllm_modular_method, "topk_indices_dtype", None)
+        if required_topk_dtype is not None and topk_ids.dtype != required_topk_dtype:
+            topk_ids = topk_ids.to(required_topk_dtype)
 
-        local_topk_ids = topk_ids.to(torch.int64) - int(local_expert_start)
-        valid = (local_topk_ids >= 0) & (local_topk_ids < w13.shape[0])
-        safe_topk_ids = torch.where(valid, local_topk_ids, torch.zeros_like(local_topk_ids))
-        safe_topk_weights = torch.where(valid, topk_weights, torch.zeros_like(topk_weights))
-        return self._vllm_modular_kernel.apply(
-            hidden_states=hidden_states,
-            w1=w13,
-            w2=w2,
-            topk_weights=safe_topk_weights,
-            topk_ids=safe_topk_ids,
-            activation=api["MoEActivation"].SILU,
-            global_num_experts=int(w13.shape[0]),
-            expert_map=None,
-            apply_router_weight_on_input=False,
+        return self._vllm_modular_method.forward_native(
+            layer=self._vllm_modular_layer,
+            x=hidden_states,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            shared_experts=None,
             shared_experts_input=None,
         )
 
@@ -318,7 +470,7 @@ class FusedMoE(nn.Module, ABC):
         topk_ids: torch.Tensor,
         topk_weights: torch.Tensor,
         local_expert_start: int = 0,
-        hidden_act: str = "silu"
+        hidden_act: str = "silu",
     ) -> torch.Tensor:
         if impl == "triton":
             out = fused_moe(

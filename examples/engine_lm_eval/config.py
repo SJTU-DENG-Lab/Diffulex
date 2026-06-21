@@ -14,6 +14,7 @@ class EndpointConfig:
     engine_name: str = "sglang"
     api_key: str = "EMPTY"
     tokenizer_path: Optional[str] = None
+    batch_size: int = 1
     trust_remote_code: bool = True
     apply_chat_template: bool = False
     chat_completions: bool = False

@@ -7,8 +7,8 @@ import time
 from typing import List, Dict, Any, Optional
 
 from diffulex import Diffulex, SamplingParams
-from transformers import AutoTokenizer
 from diffulex.logger import get_logger
+from diffulex.utils.tokenizer import auto_tokenizer_from_pretrained
 
 
 class BenchmarkRunner:
@@ -35,6 +35,8 @@ class BenchmarkRunner:
         self.model_path = model_path
         self.tokenizer_path = tokenizer_path or model_path
         self.logger = get_logger(__name__)
+        self.profiler_config = diffulex_kwargs.get("profiler_config")
+        self._profile_started = False
 
         # Initialize Diffulex engine
         self.logger.info("Initializing Diffulex engine...")
@@ -46,7 +48,7 @@ class BenchmarkRunner:
 
         # Load tokenizer
         self.logger.info("Loading tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path, trust_remote_code=True)
+        self.tokenizer = auto_tokenizer_from_pretrained(self.tokenizer_path, trust_remote_code=True)
         self.logger.success("Tokenizer loaded successfully")
 
     def _wait_for_ready(self, timeout: float = 300.0, check_interval: float = 0.5):
@@ -84,11 +86,23 @@ class BenchmarkRunner:
         self.logger.success("Engine is ready")
         return
 
+    def _maybe_start_profile(self) -> None:
+        if self._profile_started or not self.profiler_config:
+            return
+        start_profile = getattr(self.llm, "start_profile", None)
+        if not callable(start_profile):
+            return
+        profile_prefix = None
+        if isinstance(self.profiler_config, dict):
+            profile_prefix = self.profiler_config.get("run_id")
+        start_profile(profile_prefix)
+        self._profile_started = True
+
     def generate(
         self,
         prompts: List[str],
         sampling_params: SamplingParams,
-        use_tqdm: bool = True,
+        use_tqdm: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Generate text
@@ -100,6 +114,7 @@ class BenchmarkRunner:
         Returns:
             List of generation results, each containing text, token_ids, nfe
         """
+        self._maybe_start_profile()
         start_time = time.time()
 
         raw_outputs = self.llm.generate(prompts, sampling_params, use_tqdm=use_tqdm)
@@ -137,7 +152,7 @@ class BenchmarkRunner:
         self,
         prompts: List[str],
         sampling_params: SamplingParams,
-        use_tqdm: bool = True,
+        use_tqdm: bool = False,
     ) -> Dict[str, Any]:
         """
         Evaluate a batch of prompts
@@ -157,6 +172,15 @@ class BenchmarkRunner:
         total_time = sum(o.get("generation_time", 0) for o in outputs)
         avg_nfe = sum(o.get("nfe", o.get("num_nfes", o.get("n_diff_steps", 0))) for o in outputs) / len(outputs) if outputs else 0
         total_nfe = sum(o.get("nfe", o.get("num_nfes", o.get("n_diff_steps", 0))) for o in outputs)
+        per_sample_tpf = []
+        for output in outputs:
+            nfe = output.get("nfe", output.get("num_nfes", output.get("n_diff_steps", 0)))
+            if nfe > 0:
+                per_sample_tpf.append(len(output["token_ids"]) / nfe)
+        mean_tpf = outputs[0].get("tpf", 0.0) if outputs else 0.0
+        if not mean_tpf and per_sample_tpf:
+            mean_tpf = sum(per_sample_tpf) / len(per_sample_tpf)
+        aggregate_tpf = total_tokens / total_nfe if total_nfe > 0 else 0
 
         return {
             "outputs": outputs,
@@ -166,7 +190,8 @@ class BenchmarkRunner:
             "total_time": total_time,
             "avg_tokens_per_sample": total_tokens / len(outputs) if outputs else 0,
             "avg_nfe": avg_nfe,
-            "tpf": total_tokens / total_nfe if total_nfe > 0 else 0,
+            "tpf": mean_tpf,
+            "aggregate_tpf": aggregate_tpf,
             "e2e_total_time_s": outputs[0].get("e2e_total_time_s", 0.0) if outputs else 0.0,
             "ttft_s": outputs[0].get("ttft_s", 0.0) if outputs else 0.0,
             "tpot_s": outputs[0].get("tpot_s", 0.0) if outputs else 0.0,

@@ -1,2 +1,0 @@
-"""Reusable strategy templates."""
-

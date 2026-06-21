@@ -16,6 +16,10 @@ pytestmark = [
     pytest.mark.forked,
     pytest.mark.diffulex_dry_run,
     pytest.mark.skipif(
+        os.environ.get("DIFFULEX_RUN_DRY_RUN") != "1",
+        reason="Set DIFFULEX_RUN_DRY_RUN=1 to run GPU/checkpoint Diffulex dry-run tests",
+    ),
+    pytest.mark.skipif(
         os.environ.get("CI") == "true",
         reason="Skip diffulex dry-run in CI (GPU + checkpoints required)",
     ),

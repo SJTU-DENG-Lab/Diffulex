@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from typing import Iterator
 
+import os
 import torch
 import torch.distributed as dist
 
@@ -38,6 +39,8 @@ def get_vllm_tp_group():
     group and fall back silently when vLLM is unavailable.
     """
     global _VLLM_TP_GROUP, _VLLM_TP_GROUP_FAILED
+    if os.environ.get("DIFFULEX_DISABLE_VLLM_TP_GROUP", "0") == "1":
+        return None
     if _VLLM_TP_GROUP is not None:
         return _VLLM_TP_GROUP
     if _VLLM_TP_GROUP_FAILED:
@@ -75,10 +78,12 @@ def vllm_current_config(config: Config) -> Iterator[None]:
             disable_custom_all_reduce=False,
             distributed_timeout_seconds=int(config.distributed_timeout_seconds),
         )
-        with set_current_vllm_config(VllmConfig(parallel_config=parallel_config)):
-            yield
     except Exception:
         logger.debug("Using Diffulex model init without vLLM current config.", exc_info=True)
+        yield
+        return
+
+    with set_current_vllm_config(VllmConfig(parallel_config=parallel_config)):
         yield
 
 
@@ -118,4 +123,3 @@ def reset_vllm_compat_state() -> None:
             group.destroy()
         except Exception:
             logger.debug("Failed to destroy vLLM TP coordinator.", exc_info=True)
-

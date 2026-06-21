@@ -16,6 +16,27 @@ def _prune_chunked_prefill_configs(configs, _nargs, **kwargs):
     """
     dllm_block_size = kwargs.get("DLLM_BLOCK_SIZE")
     is_block_causal = bool(kwargs.get("IS_BLOCK_CAUSAL", False))
+    head_dim = int(kwargs.get("HEAD_DIM") or 0)
+
+    if head_dim >= 512:
+        configs = [
+            config
+            for config in configs
+            if config.kwargs.get("BLOCK_M") == 8
+            and config.kwargs.get("BLOCK_N") in (16, 32)
+            and config.num_stages <= 2
+        ] or configs
+
+    if head_dim >= 256 and dllm_block_size is not None and dllm_block_size >= 128:
+        configs = [
+            config
+            for config in configs
+            if config.kwargs.get("BLOCK_M") in (16, 32)
+            and config.kwargs.get("BLOCK_N") in (32, 64)
+            and config.num_warps == 4
+            and config.num_stages <= 2
+        ] or configs
+
     if dllm_block_size is None or dllm_block_size > 32 or not is_block_causal:
         return configs
 
@@ -43,6 +64,9 @@ def _autotune_chunked_prefill_kernel(fn):
             "DLLM_BLOCK_SIZE",
             "IS_BLOCK_CAUSAL",
             "IS_PREFIX_FULL",
+            "MASK_PREFIX_HOLE",
+            "PREFIX_CAUSAL",
+            "SLIDING_WINDOW",
         ],
         prune_configs_by={"early_config_prune": _prune_chunked_prefill_configs},
     )(fn)
@@ -96,6 +120,9 @@ def _chunked_prefill_attn_unified_kernel(
     DLLM_BLOCK_SIZE: tl.constexpr,
     IS_BLOCK_CAUSAL: tl.constexpr,
     IS_PREFIX_FULL: tl.constexpr,
+    MASK_PREFIX_HOLE: tl.constexpr,
+    PREFIX_CAUSAL: tl.constexpr,
+    SLIDING_WINDOW: tl.constexpr,
 ):
     req_id = tl.program_id(0)
     head_id = tl.program_id(1)
@@ -117,6 +144,7 @@ def _chunked_prefill_attn_unified_kernel(
     new_len = q_len
 
     offs_q_block = q_block_id * BLOCK_M + tl.arange(0, BLOCK_M)
+    abs_q_block = context_len + offs_q_block
     offs_d = tl.arange(0, HEAD_DIM_PADDED)
     mask_q_block = offs_q_block < valid_q_len
     mask_d = offs_d < HEAD_DIM
@@ -141,6 +169,9 @@ def _chunked_prefill_attn_unified_kernel(
         ).to(tl.int32)
         page_offs = offs_kv_cache_block % PAGE_SIZE
         page_token_valid_map = kv_cache_valid_map & (page_abs_ids >= 0)
+        if MASK_PREFIX_HOLE:
+            prefix_hole_map = (offs_kv_cache_block >= prefix_len) & (offs_kv_cache_block < padded_prefix_len)
+            page_token_valid_map = page_token_valid_map & ~prefix_hole_map
 
         k_offs = (
             page_abs_ids[:, None] * k_cache_stride_npages
@@ -155,7 +186,10 @@ def _chunked_prefill_attn_unified_kernel(
         ).to(tl.bfloat16)
 
         scores = tl.dot(q, tl.trans(k)).to(tl.float32) * softmax_scale
-        scores = tl.where(mask_q_block[:, None] & page_token_valid_map[None, :], scores, float("-inf"))
+        score_mask = mask_q_block[:, None] & page_token_valid_map[None, :]
+        if SLIDING_WINDOW > 0:
+            score_mask = score_mask & ((abs_q_block[:, None] - offs_kv_cache_block[None, :]) < SLIDING_WINDOW)
+        scores = tl.where(score_mask, scores, float("-inf"))
 
         m_new = tl.maximum(m, tl.max(scores, axis=1))
         p = tl.exp(scores - m_new[:, None])
@@ -183,8 +217,6 @@ def _chunked_prefill_attn_unified_kernel(
     kv_start = q_start
     full_range = tl.cdiv(valid_kv_len, BLOCK_N)
 
-    abs_q_block = context_len + offs_q_block
-
     max_q_idx_in_chunk = tl.minimum(valid_q_len - 1, (q_block_id + 1) * BLOCK_M - 1)
     max_abs_q_idx = context_len + max_q_idx_in_chunk
     max_abs_kv_idx = ((max_abs_q_idx // DLLM_BLOCK_SIZE) + 1) * DLLM_BLOCK_SIZE
@@ -195,7 +227,9 @@ def _chunked_prefill_attn_unified_kernel(
         full_range,
     )
 
-    if IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
+    if PREFIX_CAUSAL and status == 0:
+        loop_range = full_range
+    elif IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
         loop_range = block_causal_range
     elif IS_BLOCK_CAUSAL and IS_PREFIX_FULL:
         is_prefilling = status == 0
@@ -223,7 +257,9 @@ def _chunked_prefill_attn_unified_kernel(
 
         scores = tl.dot(q, k).to(tl.float32) * softmax_scale
         score_valid_mask = mask_q_block[:, None] & kv_token_valid_map[None, :]
-        if IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
+        if PREFIX_CAUSAL and status == 0:
+            score_mask = score_valid_mask & (abs_kv_block[None, :] <= abs_q_block[:, None])
+        elif IS_BLOCK_CAUSAL and not IS_PREFIX_FULL:
             score_block_mask = ((abs_q_block // DLLM_BLOCK_SIZE + 1) * DLLM_BLOCK_SIZE)[:, None] > abs_kv_block[
                 None, :
             ]
@@ -246,6 +282,8 @@ def _chunked_prefill_attn_unified_kernel(
                 score_mask = score_valid_mask & score_block_mask
         else:
             score_mask = score_valid_mask
+        if SLIDING_WINDOW > 0:
+            score_mask = score_mask & ((abs_q_block[:, None] - abs_kv_block[None, :]) < SLIDING_WINDOW)
         scores = tl.where(score_mask, scores, float("-inf"))
 
         m_new = tl.maximum(m, tl.max(scores, axis=1))
@@ -288,6 +326,8 @@ def _run_chunked_prefill_attn_unified_kernel(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
+    softmax_scale: float | None = None,
+    sliding_window: int = 0,
 ):
     o = torch.empty_like(q).to(q.device)
     num_heads = q.shape[1]
@@ -296,7 +336,7 @@ def _run_chunked_prefill_attn_unified_kernel(
 
     head_dim = q.shape[-1]
     head_dim_padded = 1 << (head_dim - 1).bit_length()
-    softmax_scale = 1.0 / head_dim**0.5
+    softmax_scale = float(softmax_scale if softmax_scale is not None else 1.0 / head_dim**0.5)
     page_size = k_cache.shape[1]
     num_reqs = attn_metadata.cu_seqlens_q.shape[0] - 1
 
@@ -330,6 +370,9 @@ def _run_chunked_prefill_attn_unified_kernel(
         DLLM_BLOCK_SIZE=attn_metadata.block_size,
         IS_BLOCK_CAUSAL=attn_metadata.is_block_causal,
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
+        MASK_PREFIX_HOLE=bool(getattr(attn_metadata, "mask_prefix_hole", False)),
+        PREFIX_CAUSAL=bool(getattr(attn_metadata, "prefix_causal", False)),
+        SLIDING_WINDOW=int(sliding_window or 0),
     )
     return o
 
@@ -341,5 +384,16 @@ def chunked_prefill_attn_unified(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
     attn_metadata: AttnMetaDataBase,
+    softmax_scale: float | None = None,
+    sliding_window: int = 0,
 ):
-    return _run_chunked_prefill_attn_unified_kernel(q, k, v, k_cache, v_cache, attn_metadata)
+    return _run_chunked_prefill_attn_unified_kernel(
+        q,
+        k,
+        v,
+        k_cache,
+        v_cache,
+        attn_metadata,
+        softmax_scale,
+        sliding_window=sliding_window,
+    )

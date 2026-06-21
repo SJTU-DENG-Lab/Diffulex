@@ -36,7 +36,7 @@ class ServerArgs:
     max_num_batched_tokens: int = 4096
     max_num_reqs: int = 128
     max_model_len: int = 2048
-    enable_prefill_cudagraph: bool = True
+    enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0
     enable_torch_compile: bool = True
@@ -62,9 +62,16 @@ class ServerArgs:
     use_lora: bool = False
     lora_path: str = ""
     pre_merge_lora: bool = False
+    profiler: str | None = None
+    torch_profiler_dir: str = ""
+    profiler_record_shapes: bool = False
+    profiler_memory: bool = False
+    profiler_with_stack: bool = False
+    profiler_delay_iterations: int = 0
+    profiler_max_iterations: int = 0
 
     def engine_kwargs(self) -> dict:
-        return {
+        kwargs = {
             "model_name": self.model_name,
             "decoding_strategy": self.decoding_strategy,
             "sampling_mode": self.sampling_mode,
@@ -112,6 +119,17 @@ class ServerArgs:
             "lora_path": self.lora_path,
             "pre_merge_lora": self.pre_merge_lora,
         }
+        if self.profiler is not None:
+            kwargs["profiler_config"] = {
+                "profiler": self.profiler,
+                "torch_profiler_dir": self.torch_profiler_dir,
+                "record_shapes": self.profiler_record_shapes,
+                "profile_memory": self.profiler_memory,
+                "with_stack": self.profiler_with_stack,
+                "delay_iterations": self.profiler_delay_iterations,
+                "max_iterations": self.profiler_max_iterations,
+            }
+        return kwargs
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -139,7 +157,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
     parser.add_argument("--max-num-reqs", type=int, default=128)
     parser.add_argument("--max-model-len", type=int, default=2048)
-    parser.add_argument("--disable-prefill-cudagraph", action="store_true")
+    parser.add_argument("--disable-prefill-cudagraph", action="store_true", help="Deprecated no-op")
     parser.add_argument("--disable-full-static-runner", action="store_true")
     parser.add_argument("--prefill-cudagraph-max-len", type=int, default=0)
     parser.add_argument("--disable-torch-compile", action="store_true")
@@ -165,6 +183,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--use-lora", action="store_true")
     parser.add_argument("--lora-path", default="")
     parser.add_argument("--pre-merge-lora", action="store_true")
+    parser.add_argument("--profiler", default=None, choices=["torch"], help="Enable a profiler backend")
+    parser.add_argument("--torch-profiler-dir", default="", help="Directory for torch profiler traces")
+    parser.add_argument("--profiler-record-shapes", action="store_true")
+    parser.add_argument("--profiler-memory", action="store_true")
+    parser.add_argument("--profiler-with-stack", action="store_true")
+    parser.add_argument("--profiler-delay-iterations", type=int, default=0)
+    parser.add_argument("--profiler-max-iterations", type=int, default=0)
     return parser
 
 
@@ -192,7 +217,7 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         max_num_batched_tokens=ns.max_num_batched_tokens,
         max_num_reqs=ns.max_num_reqs,
         max_model_len=ns.max_model_len,
-        enable_prefill_cudagraph=not ns.disable_prefill_cudagraph,
+        enable_prefill_cudagraph=False,
         enable_full_static_runner=not ns.disable_full_static_runner,
         prefill_cudagraph_max_len=ns.prefill_cudagraph_max_len,
         enable_torch_compile=not ns.disable_torch_compile,
@@ -217,4 +242,11 @@ def parse_args(argv: Sequence[str] | None = None) -> ServerArgs:
         use_lora=ns.use_lora,
         lora_path=ns.lora_path,
         pre_merge_lora=ns.pre_merge_lora,
+        profiler=ns.profiler,
+        torch_profiler_dir=ns.torch_profiler_dir,
+        profiler_record_shapes=ns.profiler_record_shapes,
+        profiler_memory=ns.profiler_memory,
+        profiler_with_stack=ns.profiler_with_stack,
+        profiler_delay_iterations=ns.profiler_delay_iterations,
+        profiler_max_iterations=ns.profiler_max_iterations,
     )

@@ -107,6 +107,10 @@ class GenerationOutputs:
         self._prefill_batch_tokens = 0
         self._decode_batch_time = 0.0
         self._decode_batch_tokens = 0
+        self._req_decode_steps = [0 for _ in range(num_prompts)]
+        self._req_generated_tokens = [0 for _ in range(num_prompts)]
+        self._req_tpf_sum = 0.0
+        self._req_tpf_count = 0
 
     @property
     def batch_step_count(self) -> int:
@@ -118,13 +122,7 @@ class GenerationOutputs:
     
     @property
     def tpf(self) -> float:
-        per_req_tpf = []
-        for trajectory in self.trajectories:
-            if not trajectory.trajectory:
-                continue
-            num_generated_tokens = sum(step.num_generated_tokens for step in trajectory.trajectory)
-            per_req_tpf.append(num_generated_tokens / len(trajectory.trajectory))
-        return self._mean(per_req_tpf)
+        return self._req_tpf_sum / self._req_tpf_count if self._req_tpf_count > 0 else 0.0
 
     @property
     def ttft(self) -> float:
@@ -181,6 +179,22 @@ class GenerationOutputs:
         return self._decode_batch_tokens / self._decode_batch_time if self._decode_batch_time > 0 else 0
 
     @property
+    def prefill_time(self) -> float:
+        return self._prefill_batch_time
+
+    @property
+    def prefill_tokens(self) -> int:
+        return self._prefill_batch_tokens
+
+    @property
+    def decode_time(self) -> float:
+        return self._decode_batch_time
+
+    @property
+    def decode_tokens(self) -> int:
+        return self._decode_batch_tokens
+
+    @property
     def avg_e2e_tps(self) -> float:
         """Mean of per-sample TPS (tokens/total_time), matching dInfer's np.mean(tpss)."""
         per_sample = []
@@ -206,6 +220,26 @@ class GenerationOutputs:
     def total_time(self) -> float:
         return self._batch_total_time
 
+    @property
+    def total_generated_tokens(self) -> int:
+        return self._batch_generated_tokens
+
+    def request_metrics(self, prompt_idx: int) -> dict:
+        trajectory = self.trajectories[prompt_idx]
+        total_time = sum(step.step_time for step in trajectory.trajectory)
+        total_tokens = len(trajectory.token_ids)
+        decode_time = sum(step.step_time for step in trajectory.trajectory if not step.is_prefill)
+        decode_tokens = sum(step.num_generated_tokens for step in trajectory.trajectory if not step.is_prefill)
+        decode_steps = self._req_decode_steps[prompt_idx]
+        return {
+            "tokens": total_tokens,
+            "decode_tokens": decode_tokens,
+            "decode_steps": decode_steps,
+            "tpf": self._req_generated_tokens[prompt_idx] / decode_steps if decode_steps > 0 else 0.0,
+            "e2e_tps": total_tokens / total_time if total_time > 0 and total_tokens > 0 else 0.0,
+            "decode_tps": decode_tokens / decode_time if decode_time > 0 and decode_tokens > 0 else 0.0,
+        }
+
     def record_step(self, reqs: list[DllmReq], step_time: float, req_id_to_prompt_id: dict[int, int] | None = None):
         if reqs:
             self._batch_step_count += 1
@@ -219,10 +253,14 @@ class GenerationOutputs:
 
             for req in reqs:
                 generated_tokens_this_step += req.new_tokens
-                running_sequence = req.running_sequence
-                if req.is_prefilling:
+                execution_is_prefill = bool(
+                    getattr(req, "_last_execution_is_prefill", req.is_prefilling)
+                )
+                if execution_is_prefill:
                     has_prefill = True
-                    prefill_tokens_this_step += len(running_sequence or [])
+                    prefill_tokens_this_step += int(
+                        getattr(req, "_last_execution_prefill_tokens", 0) or 0
+                    )
                 else:
                     has_decode = True
                     decode_tokens_this_step += req.new_tokens
@@ -239,6 +277,19 @@ class GenerationOutputs:
             prompt_idx = (req_id_to_prompt_id or {}).get(req.req_id, req.req_id)
             if prompt_idx >= len(self.trajectories):
                 continue
+            execution_is_prefill = bool(
+                getattr(req, "_last_execution_is_prefill", req.is_prefilling)
+            )
+            if not execution_is_prefill:
+                old_steps = self._req_decode_steps[prompt_idx]
+                old_tokens = self._req_generated_tokens[prompt_idx]
+                old_tpf = old_tokens / old_steps if old_steps > 0 else 0.0
+                if old_steps == 0:
+                    self._req_tpf_count += 1
+                self._req_decode_steps[prompt_idx] = old_steps + 1
+                self._req_generated_tokens[prompt_idx] = old_tokens + req.new_tokens
+                new_tpf = self._req_generated_tokens[prompt_idx] / self._req_decode_steps[prompt_idx]
+                self._req_tpf_sum += new_tpf - old_tpf
             cur_trajectory = self.trajectories[prompt_idx]
             step_id = len(cur_trajectory.trajectory)
 
@@ -260,7 +311,7 @@ class GenerationOutputs:
                 ReqStep(
                     step_id=step_id,
                     step_time=step_time,
-                    is_prefill=req.is_prefilling,
+                    is_prefill=execution_is_prefill,
                     num_generated_tokens=req.new_tokens,
                     running_token_ids=(
                         req.running_sequence.copy() if req.running_sequence is not None else []
@@ -292,11 +343,10 @@ class GenerationOutputs:
 
     def fast_postfix(self) -> dict:
         """Lightweight postfix using pre-accumulated counters — O(1) per call."""
-        steps = max(self._batch_step_count, 1)
         elapsed = max(self._batch_total_time, 0.001)
         decode_elapsed = max(self._decode_batch_time, 0.001)
         return dict(
-            tpf=f"{self._batch_generated_tokens / steps:.2f}tok/step",
+            tpf=f"{self.tpf:.2f}tok/step",
             dtps=f"{self._decode_batch_tokens / decode_elapsed:.2f}tok/s",
             e2eps=f"{self._batch_generated_tokens / elapsed:.2f}tok/s",
         )

@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from diffulex_kernel.python.chunked_prefill_triton import (  # noqa: F401
         chunked_prefill_attn_unified as dllm_chunked_prefill,
     )
+    from diffulex_kernel.python.chunked_prefill_grouped_triton import (  # noqa: F401
+        chunked_prefill_attn_grouped_unified as chunked_prefill_attn_grouped_unified,
+    )
     from diffulex_kernel.python.kv_cache_kernels import (  # noqa: F401
         load_kv_cache as load_kv_cache,
         store_kv_cache_distinct_layout as store_kv_cache_distinct_layout,
@@ -25,6 +28,12 @@ def __getattr__(name: str):
             chunked_prefill_attn_unified,
         )
         return chunked_prefill_attn_unified
+
+    if name == "chunked_prefill_attn_grouped_unified":
+        from diffulex_kernel.python.chunked_prefill_grouped_triton import (
+            chunked_prefill_attn_grouped_unified,
+        )
+        return chunked_prefill_attn_grouped_unified
 
     if name == "store_kv_cache_unified_layout":
         from diffulex_kernel.python.kv_cache_kernels import store_kv_cache_unified_layout
@@ -58,12 +67,21 @@ def __getattr__(name: str):
         from diffulex_kernel.python.fused_topk_triton import fused_group_limited_topk
         return fused_group_limited_topk
 
+    if name == "greedy_confidence":
+        from diffulex_kernel.python.sampler_kernels import greedy_confidence
+        return greedy_confidence
+
+    if name == "rms_norm_add":
+        from diffulex_kernel.python.layernorm_kernels import rms_norm_add
+        return rms_norm_add
+
     raise AttributeError(name)
 
 
 __all__ = [
     "dllm_chunked_prefill",
     "chunked_prefill_attn_unified",
+    "chunked_prefill_attn_grouped_unified",
     "store_kv_cache_unified_layout",
     "store_kv_cache_distinct_layout",
     "load_kv_cache",
@@ -73,4 +91,6 @@ __all__ = [
     "fused_topk",
     "fused_group_limited_topk",
     "fused_grouped_topk",
+    "greedy_confidence",
+    "rms_norm_add",
 ]
