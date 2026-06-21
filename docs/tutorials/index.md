@@ -1,10 +1,24 @@
+---
+orphan: true
+---
+
 # Tutorials
 
-This section is reserved for future tutorials.
+Tutorials provide guided walkthroughs for common Diffulex workflows. Read them
+after the quickstart when you want to understand why a command is structured the
+way it is, or when you need to adapt the workflow to a new model.
 
-## Placeholder
+- [Model loading and configuration walkthrough](model_loading_configuration.md)
+- [Benchmark workflow deep dive](benchmark_workflow.md)
+- [HTTP serving and Streamlit client usage](http_serving_streamlit.md)
+- [Adding a new model family](adding_new_model_family.md)
 
-- Model loading and configuration walkthrough
-- Benchmark workflow deep dive
-- HTTP serving and Streamlit client usage
-- Adding a new model family
+## How to Use These Tutorials
+
+Read the model loading walkthrough first if you are changing model, tokenizer,
+strategy, or parallelism settings. Read the benchmark workflow before running a
+large evaluation so output paths and task resolution are clear.
+
+The serving tutorial focuses on local validation with the sample Streamlit
+client. The model-family tutorial is for developers adding new registered model
+or sampler code.

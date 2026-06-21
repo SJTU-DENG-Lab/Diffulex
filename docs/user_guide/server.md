@@ -1,8 +1,13 @@
+---
+orphan: true
+---
+
 # Server
 
-Use the HTTP server entry point when you want an interactive service instead of a benchmark run.
+Use the HTTP server entry point when a UI, integration test, or external client
+needs to send requests to Diffulex over HTTP.
 
-Generic form:
+Most serving commands follow this shape:
 
 ```bash
 python -m diffulex.server.launch \
@@ -17,16 +22,17 @@ python -m diffulex.server.launch \
   --gpu-memory-utilization 0.9
 ```
 
-The server process accepts the same core engine arguments as the benchmark path, plus HTTP-specific flags:
+The server process accepts the same core engine arguments as the benchmark path.
+It also adds serving-specific flags:
 
-- `--host`
-- `--port`
-- `--log-level`
-- `--device-ids`
-- `--zmq-command-addr`
-- `--zmq-event-addr`
+| Flag | How to set it | What it does |
+| --- | --- | --- |
+| `--host`, `--port` | Use the interface and TCP port where the HTTP frontend should listen. | Exposes the server endpoint to local or remote clients. |
+| `--log-level` | Use a server log level such as `info` or `debug`. | Controls server log verbosity. |
+| `--device-ids` | Provide PyTorch logical CUDA IDs when only selected GPUs should be used. | Narrows the devices available to the backend. |
+| `--zmq-command-addr`, `--zmq-event-addr` | Leave unset for most local runs, or provide explicit ZMQ addresses for custom process wiring. | Controls the internal frontend/backend transport addresses. |
 
-## Supported models
+## Supported Models
 
 ### Fast-dLLM-v2
 
