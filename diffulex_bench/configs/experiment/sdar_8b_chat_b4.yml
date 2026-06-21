@@ -1,0 +1,92 @@
+name: "sdar_8b_chat_b4"
+
+models:
+  sdar_b4:
+    path: "/root/data/ckpts/JetLM/SDAR-8B-Chat-b4"
+    env: "SDAR_B4_MODEL"
+    model_name: "sdar"
+    mask_token_id: 151669
+  mbd_sdar_b4_math:
+    path: "/root/workspace/jyj/workspaces/MultiBD/multi_bd_train/multibd_ckpt/sdar_8Bb4_mbd_v2_sft_math_60k_br2_bufsz4/checkpoints/global_step_1250/hf_ckpt"
+    env: "MBD_SDAR_B4_MATH_MODEL"
+    model_name: "sdar"
+    mask_token_id: 151669
+  mbd_sdar_b4_code:
+    path: "/root/workspace/jyj/workspaces/MultiBD/multi_bd_train/multibd_ckpt/sdar_8Bb4_mbd_v2_sft_code_60k_br2_bufsz4/checkpoints/global_step_1250/hf_ckpt"
+    env: "MBD_SDAR_B4_CODE_MODEL"
+    model_name: "sdar"
+    mask_token_id: 151669
+
+experiments:
+  - name: "sdar_8b_chat_b4_native_math"
+    variant: "SingleBD Native"
+    task: "sdar_math"
+    model: "sdar_b4"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 4
+    page_size: 4
+    buffer_size: 1
+    thresholds: {accept_threshold: 0.95}
+  - name: "sdar_8b_chat_b4_native_code"
+    variant: "SingleBD Native"
+    task: "sdar_code"
+    model: "sdar_b4"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 4
+    page_size: 4
+    buffer_size: 1
+    thresholds: {accept_threshold: 0.95}
+  - name: "sdar_8b_chat_b4_multibd_math"
+    variant: "MultiBD training-free"
+    task: "sdar_math"
+    model: "sdar_b4"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 4
+    page_size: 4
+    buffer_size: 4
+    thresholds:
+      add_block_threshold: 0.10
+      semi_complete_threshold: 0.25
+      accept_threshold: 0.95
+  - name: "sdar_8b_chat_b4_multibd_code"
+    variant: "MultiBD training-free"
+    task: "sdar_code"
+    model: "sdar_b4"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 4
+    page_size: 4
+    buffer_size: 4
+    thresholds:
+      add_block_threshold: 0.75
+      semi_complete_threshold: 0.75
+      accept_threshold: 0.95
+  - name: "mbd_sdar_8b_chat_b4_math"
+    variant: "MBD"
+    task: "sdar_math"
+    model: "mbd_sdar_b4_math"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 4
+    page_size: 4
+    buffer_size: 4
+    thresholds:
+      add_block_threshold: 0.10
+      semi_complete_threshold: 0.25
+      accept_threshold: 0.95
+  - name: "mbd_sdar_8b_chat_b4_code"
+    variant: "MBD"
+    task: "sdar_code"
+    model: "mbd_sdar_b4_code"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 4
+    page_size: 4
+    buffer_size: 4
+    thresholds:
+      add_block_threshold: 0.75
+      semi_complete_threshold: 0.75
+      accept_threshold: 0.95

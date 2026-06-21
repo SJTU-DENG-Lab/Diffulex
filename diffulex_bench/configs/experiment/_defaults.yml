@@ -1,0 +1,75 @@
+# Shared defaults for experiment-oriented benchmark groups.
+
+defaults:
+  engine:
+    tokenizer_path: null
+    use_lora: false
+    lora_path: ""
+    pre_merge_lora: false
+
+    tensor_parallel_size: 1
+    data_parallel_size: 1
+    expert_parallel_size: 1
+
+    gpu_memory_utilization: 0.85
+    max_model_len: 4096
+    max_num_batched_tokens: 4096
+    max_num_reqs: 128
+
+    enforce_eager: false
+    attn_impl: "triton"
+    enable_prefill_cudagraph: true
+    enable_full_static_runner: true
+    prefill_cudagraph_max_len: 0
+    enable_torch_compile: true
+    enable_cudagraph_torch_compile: false
+    torch_compile_mode: "reduce-overhead"
+
+    auto_max_nfe_warmup_steps: 8
+    auto_max_nfe_tpf_floor: 1.0
+
+    enable_prefix_caching: true
+    kv_cache_layout: "unified"
+    page_size: 32
+
+    token_merge_mode: "dmax_topk"
+    token_merge_top_k: 1
+    token_merge_renormalize: true
+    token_merge_weight: 1.0
+
+    moe_dispatcher_backend: "standard"
+    moe_gemm_impl: "triton"
+    deepep_mode: "auto"
+    deepep_num_max_dispatch_tokens_per_rank: 256
+
+    max_post_edit_steps: 16
+    multi_block_prefix_full: false
+
+  eval:
+    dataset_split: "test"
+    dataset_limit: null
+    temperature: 0.0
+    max_tokens: 4096
+    max_nfe: 1024
+    max_repetition_run: null
+    ignore_eos: false
+    add_bos_token: false
+    output_dir: "benchmark_results/experiment"
+    use_run_subdirectory: false
+    save_results: true
+    use_tqdm: false
+    confirm_run_unsafe_code: true
+
+  thresholds:
+    add_block_threshold: 0.1
+    semi_complete_threshold: 0.9
+    accept_threshold: 0.95
+    edit_threshold: 0.0
+    remask_threshold: 0.4
+    token_stability_threshold: 0.0
+
+tasks:
+  llada2_math: "gsm8k_llada2,math500_llada2"
+  llada2_code: "humaneval_plus_llada2,mbpp_plus_llada2"
+  sdar_math: "gsm8k_sdar,math500_sdar"
+  sdar_code: "humaneval_plus_sdar,mbpp_sanitized_sdar"

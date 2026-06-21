@@ -1,58 +1,109 @@
-<img src=./assets/imgs/diffulex_design.png />
-
-<div align="center">
-
 # Diffulex
 
-[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/NSa9WH4EKu)
+## Run Experiments
 
-</div>
-
-Diffulex is a Paged Attention-based block-wise dLLM accelerated decoding inference framework that is easy to develop and extensible. The design maximizes hiding the complexity of underlying KV Cache management, parallel strategy scheduling, and memory optimization. By providing a clean and unified API interface along with flexible inference strategy configurations (e.g., D2F, Block Diffusion, Fast-dLLM), Diffulex allows developers to focus on model inference logic and business requirements while maintaining production-level inference performance and resource utilization efficiency.
-
-## Supported Models
-
-Currently supported models: D2F-LLaDA, D2F-Dream, Fast-dLLM-v2, SDAR, SDAR-MoE.
-
-Models in progress: D2F-DiffuCoder, LLaDA2, LLaDA2.1, LLaDA2-DMax, Stable-DiffCoder.
-
-Diffulex does not plan to support full-attention dLLM models, including the original LLaDA, Dream, LLaDA1.5, and DiffuCoder variants.
-
-## Latest News
-- 12/22/2025 ✨: We are excited to announce that Diffulex, a Paged Attention-based dLLM accelerated decoding inference framework, is now open source and available to the public!
-
-## Tested Devices
-Although Diffulex aims to be portable across a range of Devices, it has been specifically tested and validated on the following devices: for NVIDIA GPUs, this includes the H200, A100, RTX 4090, RTX 3090.
-
-## Installation
-### Method 1: Install with Pip
-
-The only way to get started is to install from source:
+Experiment configs live in:
 
 ```bash
-uv pip install -e .
+diffulex_bench/configs/experiment/
 ```
 
-Install vLLM manually:
+Core hyperparameters are mirrored in those config files. Common values for all rows:
+
+```text
+max_model_len=4096, max_new_tokens=4096, max_nfe=1024
+```
+
+| Configuration | Variant | Task | Buffer | Block | tau_add | tau_semi | tau_stable | tau_M2T | tau_T2T |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| LLaDA2-Mini-DMax | SingleBD Native | Math | 1 | 32 | - | - | - | 0.50 | - |
+| LLaDA2-Mini-DMax | SingleBD Native | Code | 1 | 32 | - | - | - | 0.65 | - |
+| LLaDA2-Mini-DMax | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | 0.50 | 0.50 | - |
+| LLaDA2-Mini-DMax | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | 0.50 | 0.65 | - |
+| MBD-LLaDA2-Mini-DMax | MBD | Math | 2 | 32 | 0.10 | 0.90 | 0.50 | 0.50 | - |
+| MBD-LLaDA2-Mini-DMax | MBD | Code | 2 | 32 | 0.90 | 0.90 | 0.50 | 0.65 | - |
+| LLaDA2-Mini | SingleBD Native | Math | 1 | 32 | - | - | - | 0.95 | - |
+| LLaDA2-Mini | SingleBD Native | Code | 1 | 32 | - | - | - | 0.95 | - |
+| LLaDA2-Mini | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | - | 0.95 | - |
+| LLaDA2-Mini | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | - | 0.95 | - |
+| MBD-LLaDA2-Mini | MBD | Math | 2 | 32 | 0.10 | 0.90 | - | 0.95 | - |
+| MBD-LLaDA2-Mini | MBD | Code | 2 | 32 | 0.90 | 0.90 | - | 0.95 | - |
+| SDAR-8B-Chat-b32 | SingleBD Native | Math | 1 | 32 | - | - | - | 0.95 | - |
+| SDAR-8B-Chat-b32 | SingleBD Native | Code | 1 | 32 | - | - | - | 0.95 | - |
+| SDAR-8B-Chat-b32 | MultiBD training-free | Math | 4 | 32 | 0.10 | 0.90 | - | 0.95 | - |
+| SDAR-8B-Chat-b32 | MultiBD training-free | Code | 4 | 32 | 0.90 | 0.90 | - | 0.95 | - |
+| MBD-SDAR-8B-Chat-b32 | MBD | Math | 4 | 32 | 0.10 | 0.90 | - | 0.95 | - |
+| MBD-SDAR-8B-Chat-b32 | MBD | Code | 4 | 32 | 0.90 | 0.90 | - | 0.95 | - |
+| SDAR-8B-Chat-b4 | SingleBD Native | Math | 1 | 4 | - | - | - | 0.95 | - |
+| SDAR-8B-Chat-b4 | SingleBD Native | Code | 1 | 4 | - | - | - | 0.95 | - |
+| SDAR-8B-Chat-b4 | MultiBD training-free | Math | 4 | 4 | 0.10 | 0.25 | - | 0.95 | - |
+| SDAR-8B-Chat-b4 | MultiBD training-free | Code | 4 | 4 | 0.75 | 0.75 | - | 0.95 | - |
+| MBD-SDAR-8B-Chat-b4 | MBD | Math | 4 | 4 | 0.10 | 0.25 | - | 0.95 | - |
+| MBD-SDAR-8B-Chat-b4 | MBD | Code | 4 | 4 | 0.75 | 0.75 | - | 0.95 | - |
+| LLaDA2-Mini-CAP | SingleBD Native | Math | 1 | 32 | - | - | - | 0.95 | - |
+| LLaDA2-Mini-CAP | SingleBD Native | Code | 1 | 32 | - | - | - | 0.95 | - |
+| LLaDA2-Mini-CAP | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | - | 0.95 | - |
+| LLaDA2-Mini-CAP | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | - | 0.95 | - |
+| LLaDA2.1-Mini | SingleBD Native | Math | 1 | 32 | - | - | - | 0.70 | 0.50 |
+| LLaDA2.1-Mini | SingleBD Native | Code | 1 | 32 | - | - | - | 0.70 | 0.50 |
+| LLaDA2.1-Mini | MultiBD training-free | Math | 2 | 32 | 0.10 | 0.90 | - | 0.70 | 0.50 |
+| LLaDA2.1-Mini | MultiBD training-free | Code | 2 | 32 | 0.90 | 0.90 | - | 0.70 | 0.50 |
+
+The only experiment entrypoint is:
 
 ```bash
-uv pip install vllm==0.19.1
+./script/run_batch_experiments.sh
 ```
 
-## Quick Start
+Preview the run plan without launching models:
 
-For model-specific startup instructions and runnable configurations, see the [Cookbook](docs/cookbook.md).
+```bash
+DRY_RUN=1 ./script/run_batch_experiments.sh
+```
 
-## Upcoming Features
+Run all experiment configs:
 
-Check our [Diffulex v0.0.1 release plan](https://github.com/SJTU-DENG-Lab/Diffulex/issues/14) for upcoming features.
+```bash
+./script/run_batch_experiments.sh
+```
 
-## Join the Discussion
+Run selected config files:
 
-Welcome to join our Discord community for discussions, support, and collaboration!
+```bash
+CONFIG_FILES=llada2_mini.yml ./script/run_batch_experiments.sh
+CONFIG_FILES=llada2_mini.yml,sdar_8b_chat_b32.yml ./script/run_batch_experiments.sh
+```
 
-[![Join our Discord](https://img.shields.io/badge/Discord-Join%20Us-blue?logo=discord&style=for-the-badge)](https://discord.gg/NSa9WH4EKu)
+Filter selected experiments by name/group/task/model:
 
-## Acknowledgments
+```bash
+FILTER=multibd_math ./script/run_batch_experiments.sh
+FILTER=llada2_mini DATASET_LIMIT=10 ./script/run_batch_experiments.sh
+```
 
-We would like to express our gratitude to [Nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), which inspired the initial backend implementation of this project, and [vLLM](https://github.com/vllm-project/vllm), from which we draw core architectural concepts, particularly the Paged Attention mechanism. Our server design also references [mini-sglang](https://github.com/sgl-project/mini-sglang); although Diffulex has diverged significantly from these projects, we remain grateful for their contributions to the open-source inference community. The initial version of this project was mainly developed by [Yijie Jin](https://github.com/drewjin0827) with supervision from Prof. [Zhijie Deng](https://thudzj.github.io) at Shanghai Jiao Tong University.
+Override capacity or checkpoint paths:
+
+```bash
+MAX_NUM_REQS=256 ./script/run_batch_experiments.sh
+LLADA2_MINI_MODEL=/data/ckpts/inclusionAI/LLaDA2.0-mini ./script/run_batch_experiments.sh
+SDAR_B32_MODEL=/path/to/SDAR-8B-Chat-b32 ./script/run_batch_experiments.sh
+```
+
+If some configured checkpoints are unavailable and you want to run only the available ones:
+
+```bash
+SKIP_MISSING_MODELS=1 ./script/run_batch_experiments.sh
+```
+
+Outputs are written to:
+
+```bash
+benchmark_results/experiment/<run_id>/
+logs/experiment/<run_id>/
+```
+
+Each run also writes resolved per-experiment benchmark YAMLs under:
+
+```bash
+benchmark_results/experiment/<run_id>/resolved_configs/
+```

@@ -509,20 +509,21 @@ def load_config_from_args(args) -> BenchmarkConfig:
         if getattr(args, "multi_block_prefix_full", None) is not None:
             config.engine.multi_block_prefix_full = bool(args.multi_block_prefix_full)
 
-        # Override decoding_thresholds with CLI args
-        if config.engine.decoding_thresholds is None:
-            config.engine.decoding_thresholds = {}
-        for cli_key, yaml_key in (
-            ("add_block_threshold", "add_block_threshold"),
-            ("semi_complete_threshold", "semi_complete_threshold"),
-            ("accept_threshold", "accept_threshold"),
-            ("edit_threshold", "edit_threshold"),
-            ("remask_threshold", "remask_threshold"),
-            ("token_stability_threshold", "token_stability_threshold"),
-        ):
-            if getattr(args, cli_key, None) is not None:
+        # Override decoding_thresholds only when the CLI flag was explicitly provided.
+        threshold_overrides = (
+            ("add_block_threshold", "add_block_threshold", "--add-block-threshold"),
+            ("semi_complete_threshold", "semi_complete_threshold", "--semi-complete-threshold"),
+            ("accept_threshold", "accept_threshold", "--accept-threshold"),
+            ("edit_threshold", "edit_threshold", "--edit-threshold"),
+            ("remask_threshold", "remask_threshold", "--remask-threshold"),
+            ("token_stability_threshold", "token_stability_threshold", "--token-stability-threshold"),
+        )
+        for cli_key, yaml_key, flag in threshold_overrides:
+            if option_was_provided(flag):
+                if config.engine.decoding_thresholds is None:
+                    config.engine.decoding_thresholds = {}
                 config.engine.decoding_thresholds[yaml_key] = getattr(args, cli_key)
-        if getattr(args, "max_post_edit_steps", None) is not None:
+        if option_was_provided("--max-post-edit-steps"):
             config.engine.max_post_edit_steps = args.max_post_edit_steps
 
         apply_engine_arg_overrides(config.engine)

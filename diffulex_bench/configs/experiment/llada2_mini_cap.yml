@@ -1,0 +1,52 @@
+name: "llada2_mini_cap"
+
+models:
+  llada2_mini_cap:
+    path: "/root/data/ckpts/inclusionAI/LLaDA2.0-mini-CAP"
+    env: "LLADA2_MINI_CAP_MODEL"
+    model_name: "llada2_mini"
+    mask_token_id: 156895
+
+experiments:
+  - name: "llada2_mini_cap_native_math"
+    variant: "SingleBD Native"
+    task: "llada2_math"
+    model: "llada2_mini_cap"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 32
+    buffer_size: 1
+    thresholds: {accept_threshold: 0.95}
+  - name: "llada2_mini_cap_native_code"
+    variant: "SingleBD Native"
+    task: "llada2_code"
+    model: "llada2_mini_cap"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 32
+    buffer_size: 1
+    thresholds: {accept_threshold: 0.95}
+  - name: "llada2_mini_cap_multibd_math"
+    variant: "MultiBD training-free"
+    task: "llada2_math"
+    model: "llada2_mini_cap"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 32
+    buffer_size: 2
+    thresholds:
+      add_block_threshold: 0.10
+      semi_complete_threshold: 0.90
+      accept_threshold: 0.95
+  - name: "llada2_mini_cap_multibd_code"
+    variant: "MultiBD training-free"
+    task: "llada2_code"
+    model: "llada2_mini_cap"
+    decoding_strategy: "multi_bd"
+    sampling_mode: "naive"
+    block_size: 32
+    buffer_size: 2
+    thresholds:
+      add_block_threshold: 0.90
+      semi_complete_threshold: 0.90
+      accept_threshold: 0.95
