@@ -7,13 +7,13 @@ instead of in-process Python generation.
 The entry point is:
 
 ```bash
-python -m diffulex.server.launch --help
+python -m diffulex.server --help
 ```
 
 ## Minimal Command
 
 ```bash
-python -m diffulex.server.launch \
+python -m diffulex.server \
   --model /path/to/LLaDA2.0-mini \
   --model-name llada2_mini \
   --decoding-strategy multi_bd \

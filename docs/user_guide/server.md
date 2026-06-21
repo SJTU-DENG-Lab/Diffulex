@@ -11,7 +11,7 @@ the Diffulex engine. ZMQ addresses are generated automatically for local runs.
 ```bash
 export MODEL_PATH=/path/to/LLaDA2.0-mini
 
-CUDA_VISIBLE_DEVICES=0 python -m diffulex.server.launch \
+CUDA_VISIBLE_DEVICES=0 python -m diffulex.server \
   --model "$MODEL_PATH" \
   --model-name llada2_mini \
   --decoding-strategy multi_bd \
@@ -103,5 +103,5 @@ streamlit run examples/streamlit_block_append_chat.py -- --base-url http://127.0
 | `--disable-prefill-cudagraph` | Deprecated no-op retained for compatibility. |
 | `--use-lora`, `--lora-path`, `--pre-merge-lora` | LoRA loading and merge controls. |
 
-Run `python -m diffulex.server.launch --help` for the complete current option
+Run `python -m diffulex.server --help` for the complete current option
 list.

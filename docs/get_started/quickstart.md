@@ -117,7 +117,7 @@ The server uses the same engine configuration, exposed as CLI flags. A minimal
 single-GPU LLaDA2-mini command is:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m diffulex.server.launch \
+CUDA_VISIBLE_DEVICES=0 python -m diffulex.server \
   --model "$MODEL_PATH" \
   --model-name llada2_mini \
   --decoding-strategy multi_bd \

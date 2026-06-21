@@ -38,7 +38,7 @@ state visible by sending buffer snapshots as the model edits a block.
 
 ## diffulex.server.args
 
-`args` defines the CLI schema used by `diffulex.server.launch`. `ServerArgs`
+`args` defines the CLI schema used by `diffulex.server`. `ServerArgs`
 keeps web-server options and engine options in one dataclass, then exposes
 `engine_kwargs()` for constructing `DiffulexEngine`.
 

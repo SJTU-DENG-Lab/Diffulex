@@ -68,8 +68,8 @@ class SyncBackendWorker:
             self.ready_queue.put("SyncBackendWorker is ready")
 
     def run_forever(self) -> None:
-        self.init_engine()
         try:
+            self.init_engine()
             while not self.shutdown_requested:
                 self.normal_loop()
         finally:
@@ -137,6 +137,8 @@ def run_sync_backend_worker(
             ready_queue=ready_queue,
         )
         worker.run_forever()
+    except KeyboardInterrupt:
+        logger.info("Diffulex sync backend interrupted; shutting down.")
     except Exception as exc:
         if ready_queue is not None:
             ready_queue.put({"error": repr(exc)})

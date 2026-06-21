@@ -20,7 +20,7 @@ for compatibility, but the current benchmark CLI marks that path as a no-op.
 Use eager mode while validating a new model, sampler, strategy, or kernel:
 
 ```bash
-python -m diffulex.server.launch ... --enforce-eager
+python -m diffulex.server ... --enforce-eager
 ```
 
 After correctness is stable, remove eager mode and compare one optimization

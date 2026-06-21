@@ -14,7 +14,7 @@ The Streamlit app expects an already-running Diffulex HTTP server. Start the
 server with the model, strategy, and GPU settings you want to test:
 
 ```bash
-python -m diffulex.server.launch \
+python -m diffulex.server \
   --model /path/to/LLaDA2.0-mini \
   --model-name llada2_mini \
   --decoding-strategy multi_bd \

@@ -10,7 +10,7 @@ writing a custom client.
 Start with conservative engine limits:
 
 ```bash
-python -m diffulex.server.launch \
+python -m diffulex.server \
   --model /path/to/LLaDA2.0-mini \
   --model-name llada2_mini \
   --decoding-strategy multi_bd \
