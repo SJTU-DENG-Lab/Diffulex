@@ -124,14 +124,6 @@ user_guide/index
 
 :::{toctree}
 :hidden:
-:maxdepth: 1
-:caption: COOKBOOK
-
-cookbook/index
-:::
-
-:::{toctree}
-:hidden:
 :maxdepth: 2
 :caption: DEVELOPER GUIDE
 
