@@ -72,6 +72,9 @@ class ServingReply:
     finish_reason: str | None = None
     full_text: str | None = None
     full_token_ids: list[int] | None = None
+    engine_decode_time_s: float | None = None
+    engine_decode_tokens: int | None = None
+    engine_decode_tps: float | None = None
     finished: bool = True
 
     @property
@@ -87,6 +90,9 @@ class ServingReply:
             "finish_reason": self.finish_reason,
             "full_text": self.full_text if self.full_text is not None else self.text,
             "full_token_ids": self.full_token_ids if self.full_token_ids is not None else self.token_ids,
+            "engine_decode_time_s": self.engine_decode_time_s,
+            "engine_decode_tokens": self.engine_decode_tokens,
+            "engine_decode_tps": self.engine_decode_tps,
         }
 
 
@@ -98,6 +104,9 @@ class ServingDelta:
     token_ids: list[int]
     nfe: int
     finished: bool = False
+    engine_decode_time_s: float | None = None
+    engine_decode_tokens: int | None = None
+    engine_decode_tps: float | None = None
 
     @property
     def request_id(self) -> str:
@@ -112,6 +121,9 @@ class ServingDelta:
             "token_ids": self.token_ids,
             "nfe": self.nfe,
             "finished": self.finished,
+            "engine_decode_time_s": self.engine_decode_time_s,
+            "engine_decode_tokens": self.engine_decode_tokens,
+            "engine_decode_tps": self.engine_decode_tps,
         }
 
 
@@ -125,6 +137,9 @@ class ServingBufferSnapshot:
     token_ids: list[int]
     nfe: int
     finished: bool = False
+    engine_decode_time_s: float | None = None
+    engine_decode_tokens: int | None = None
+    engine_decode_tps: float | None = None
 
     @property
     def request_id(self) -> str:
@@ -141,6 +156,9 @@ class ServingBufferSnapshot:
             "token_ids": self.token_ids,
             "nfe": self.nfe,
             "finished": self.finished,
+            "engine_decode_time_s": self.engine_decode_time_s,
+            "engine_decode_tokens": self.engine_decode_tokens,
+            "engine_decode_tps": self.engine_decode_tps,
         }
 
 
@@ -242,6 +260,9 @@ def serving_event_to_dict(event: ServingEvent) -> dict[str, Any]:
             "finish_reason": event.finish_reason,
             "full_text": event.full_text,
             "full_token_ids": event.full_token_ids,
+            "engine_decode_time_s": event.engine_decode_time_s,
+            "engine_decode_tokens": event.engine_decode_tokens,
+            "engine_decode_tps": event.engine_decode_tps,
             "finished": event.finished,
         }
     if isinstance(event, ServingDelta):
@@ -253,6 +274,9 @@ def serving_event_to_dict(event: ServingEvent) -> dict[str, Any]:
             "token_ids": event.token_ids,
             "nfe": event.nfe,
             "finished": event.finished,
+            "engine_decode_time_s": event.engine_decode_time_s,
+            "engine_decode_tokens": event.engine_decode_tokens,
+            "engine_decode_tps": event.engine_decode_tps,
         }
     if isinstance(event, ServingBufferSnapshot):
         return {
@@ -265,6 +289,9 @@ def serving_event_to_dict(event: ServingEvent) -> dict[str, Any]:
             "token_ids": event.token_ids,
             "nfe": event.nfe,
             "finished": event.finished,
+            "engine_decode_time_s": event.engine_decode_time_s,
+            "engine_decode_tokens": event.engine_decode_tokens,
+            "engine_decode_tps": event.engine_decode_tps,
         }
     if isinstance(event, ServingError):
         return {"type": "error", "rid": event.rid, "message": event.message}
@@ -282,6 +309,9 @@ def serving_event_from_dict(payload: dict[str, Any]) -> ServingEvent:
             finish_reason=payload.get("finish_reason"),
             full_text=payload.get("full_text"),
             full_token_ids=payload.get("full_token_ids"),
+            engine_decode_time_s=payload.get("engine_decode_time_s"),
+            engine_decode_tokens=payload.get("engine_decode_tokens"),
+            engine_decode_tps=payload.get("engine_decode_tps"),
             finished=payload.get("finished", True),
         )
     if type_name == "delta":
@@ -292,6 +322,9 @@ def serving_event_from_dict(payload: dict[str, Any]) -> ServingEvent:
             token_ids=payload["token_ids"],
             nfe=payload["nfe"],
             finished=payload.get("finished", False),
+            engine_decode_time_s=payload.get("engine_decode_time_s"),
+            engine_decode_tokens=payload.get("engine_decode_tokens"),
+            engine_decode_tps=payload.get("engine_decode_tps"),
         )
     if type_name == "buffer_snapshot":
         return ServingBufferSnapshot(
@@ -303,6 +336,9 @@ def serving_event_from_dict(payload: dict[str, Any]) -> ServingEvent:
             token_ids=payload["token_ids"],
             nfe=payload["nfe"],
             finished=payload.get("finished", False),
+            engine_decode_time_s=payload.get("engine_decode_time_s"),
+            engine_decode_tokens=payload.get("engine_decode_tokens"),
+            engine_decode_tps=payload.get("engine_decode_tps"),
         )
     if type_name == "error":
         return ServingError(rid=payload["rid"], message=payload["message"])
