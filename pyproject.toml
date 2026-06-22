@@ -1,6 +1,6 @@
 [project]
 name = "Diffulex"
-version = "0.0.1"
+version = "0.1.0"
 authors = [
     { name = "Yijie Jin", email = "drewjin0827@gmail.com"},
 ]

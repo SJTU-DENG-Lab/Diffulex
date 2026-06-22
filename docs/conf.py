@@ -12,7 +12,7 @@ with open("../pyproject.toml", "r", encoding="utf-8") as f:
     if match:
         version = match.group(1)
     else:
-        version = "0.0.1"  # fallback
+        version = "0.1.0"  # fallback
 release = version
 
 extensions = [
