@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 
 from diffulex.logger import get_logger
 from diffulex.server.protocol import (
@@ -32,6 +33,14 @@ class ServingRequestState:
     stream_mode: str = "denoise"
     emitted_token_count: int = 0
     emitted_text_len: int = 0
+    engine_decode_time_s: float = 0.0
+    engine_decode_tokens: int = 0
+
+    @property
+    def engine_decode_tps(self) -> float | None:
+        if self.engine_decode_time_s <= 0 or self.engine_decode_tokens <= 0:
+            return None
+        return self.engine_decode_tokens / self.engine_decode_time_s
 
 
 @dataclass
@@ -107,13 +116,17 @@ class DiffulexAsyncEngineMixin:
                 break
 
     def step_serving_requests(self) -> list[ServingEvent]:
+        step_start = perf_counter()
         reqs, _ = self.step()
+        step_time = perf_counter() - step_start
         events: list[ServingEvent] = []
 
         for req in reqs:
             state = self.serving_state.requests.get(req.req_id)
             if state is None:
                 continue
+
+            self.record_serving_decode_metrics(state, req, step_time)
 
             if state.stream:
                 events.extend(self.build_stream_events(state, req))
@@ -122,9 +135,23 @@ class DiffulexAsyncEngineMixin:
                 continue
 
             del self.serving_state.requests[req.req_id]
-            events.append(self.build_serving_reply(state.rid, req))
+            events.append(self.build_serving_reply(state.rid, req, state))
 
         return events
+
+    def record_serving_decode_metrics(self, state: ServingRequestState, req, step_time: float) -> None:
+        execution_is_prefill = bool(getattr(req, "_last_execution_is_prefill", req.is_prefilling))
+        if execution_is_prefill:
+            return
+        state.engine_decode_time_s += max(0.0, float(step_time))
+        state.engine_decode_tokens += max(0, int(getattr(req, "new_tokens", 0) or 0))
+
+    def serving_metric_kwargs(self, state: ServingRequestState) -> dict[str, float | int | None]:
+        return {
+            "engine_decode_time_s": state.engine_decode_time_s,
+            "engine_decode_tokens": state.engine_decode_tokens,
+            "engine_decode_tps": state.engine_decode_tps,
+        }
 
     def build_stream_events(self, state: ServingRequestState, req) -> list[ServingEvent]:
         if state.stream_mode == "block_append":
@@ -148,6 +175,7 @@ class DiffulexAsyncEngineMixin:
             token_ids=token_ids[state.emitted_token_count :],
             nfe=int(req.nfe),
             finished=req.is_finished,
+            **self.serving_metric_kwargs(state),
         )
         state.emitted_token_count = len(token_ids)
         state.emitted_text_len = len(text)
@@ -169,6 +197,7 @@ class DiffulexAsyncEngineMixin:
             token_ids=token_ids,
             nfe=int(req.nfe),
             finished=req.is_finished,
+            **self.serving_metric_kwargs(state),
         )
 
     def stable_generated_token_ids(self, req) -> list[int]:
@@ -227,7 +256,7 @@ class DiffulexAsyncEngineMixin:
     def prompt_len(self, req) -> int:
         return int(req.prefix_len if req.is_multi_block else req.num_prompt_tokens)
 
-    def build_serving_reply(self, rid: str, req) -> ServingReply:
+    def build_serving_reply(self, rid: str, req, state: ServingRequestState | None = None) -> ServingReply:
         token_ids = self.drop_mask_tokens(list(req.truncated_response), req)
         full_token_ids = self.drop_mask_tokens(list(req.full_response), req)
         eos = getattr(self.tokenizer, "eos_token", None) or ""
@@ -244,6 +273,7 @@ class DiffulexAsyncEngineMixin:
             finish_reason=req.completion_reason,
             full_text=full_text,
             full_token_ids=full_token_ids,
+            **self.serving_metric_kwargs(state or ServingRequestState(rid=rid, engine_req_id=-1)),
         )
 
     def render_chat_prompt_for_serving(self, messages: list[dict[str, str]]) -> str:
