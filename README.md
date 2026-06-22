@@ -135,7 +135,7 @@ More runtime and serving notes are in `docs/cookbook/`.
 
 ## Tested Devices
 
-Diffulex has been tested on NVIDIA H200, A100, RTX 4090, and RTX 3090 GPUs. Kernel availability and performance depend on the selected model, tensor parallel size, MoE backend, and vLLM/Triton build.
+Diffulex has been tested on NVIDIA H200, H100, A100, RTX 4090, and RTX 3090 GPUs. Kernel availability and performance depend on the selected model, tensor parallel size, MoE backend, and vLLM/Triton build.
 
 ## Project Notes
 
