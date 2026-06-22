@@ -16,7 +16,7 @@ DEFAULT_STREAM_MODE = "denoise"
 DEFAULT_MAX_TOKENS = 8192
 MAX_TOKENS_LIMIT = 16384
 DEFAULT_MAX_NFE = 1024
-DEFAULT_MAX_REPETITION_RUN = 32
+DEFAULT_MAX_REPETITION_RUN = 0
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_SMOOTH_RENDER = True
 DEFAULT_RENDER_INTERVAL_MS = 250
@@ -599,6 +599,7 @@ def main() -> None:
             min_value=0,
             value=DEFAULT_MAX_REPETITION_RUN,
             step=1,
+            key="max_repetition_run_unset_default",
         )
         ignore_eos = st.checkbox("Ignore EOS", value=False)
         send_history = st.checkbox(
