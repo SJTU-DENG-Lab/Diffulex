@@ -7,7 +7,6 @@
 # Diffulex
 
 [![Documentation](https://img.shields.io/badge/Documentation-Read%20the%20Docs-0A66C2?logo=readthedocs&logoColor=white)](https://sjtu-deng-lab.github.io/Diffulex/)
-[![GitHub](https://img.shields.io/badge/GitHub-Diffulex-181717?logo=github)](https://github.com/SJTU-DENG-Lab/Diffulex)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/NSa9WH4EKu)
 
 </div>
