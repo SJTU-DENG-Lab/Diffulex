@@ -92,11 +92,14 @@ Install from source:
 uv pip install -e .
 ```
 
-Install a compatible vLLM build separately when using vLLM-backed layers, attention kernels, or MoE kernels:
+Install the tested vLLM build separately when using vLLM-backed layers, attention kernels, or MoE kernels:
 
 ```bash
-uv pip install vllm
+uv pip install vllm==0.23.0
 ```
+
+Diffulex currently validates its vLLM-backed paths against `vllm==0.23.0`. Use
+other vLLM versions only when you are intentionally testing compatibility.
 
 ## Quick Start
 

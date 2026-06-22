@@ -12,7 +12,7 @@ directories.
 | Python | Python 3.11 or newer. |
 | GPU | NVIDIA CUDA GPU visible to PyTorch. H200, H100, A100, RTX 4090, and RTX 3090 have been used in development. |
 | Checkpoints | Local checkpoint directories. Diffulex examples do not download model weights at runtime. |
-| vLLM | Recommended for optimized layer/MoE backends and required by some benchmark presets. |
+| vLLM | `vllm==0.23.0` is the tested version for optimized layer/MoE backends and vLLM baseline presets. |
 
 If PyTorch or vLLM cannot see the GPU, fix that environment first. Diffulex
 will not be able to recover from an invalid CUDA/PyTorch installation.
@@ -27,17 +27,19 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-Install vLLM in the same environment if you plan to use the optimized vLLM
-layer backends, MoE kernels, or the vLLM baseline scripts:
+Install the tested vLLM build in the same environment if you plan to use the
+optimized vLLM layer backends, MoE kernels, or the vLLM baseline scripts:
 
 ```bash
-uv pip install vllm
+uv pip install vllm==0.23.0
 ```
 
-On clusters with strict CUDA wheel requirements, install the PyTorch/vLLM build
-that matches the driver and CUDA runtime provided by the cluster. Keep all of
-Diffulex, PyTorch, and vLLM in the same Python environment unless you are only
-using the external vLLM baseline launcher.
+On clusters with strict CUDA wheel requirements, install a PyTorch build that
+matches the driver and CUDA runtime provided by the cluster. Diffulex currently
+validates its vLLM-backed paths against `vllm==0.23.0`; use other vLLM versions
+only when you are intentionally testing compatibility. Keep all of Diffulex,
+PyTorch, and vLLM in the same Python environment unless you are only using the
+external vLLM baseline launcher.
 
 ## Verify the Environment
 
@@ -56,7 +58,7 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_coun
 If vLLM-backed paths will be used, check vLLM separately:
 
 ```bash
-python -c "import vllm; print('vllm ok')"
+python -c "import vllm; print(vllm.__version__)"
 ```
 
 ## Model Paths
@@ -89,7 +91,9 @@ script/run_vllm_diffusion_gemma_gsm8k.sh
 ```
 
 The vLLM install used by that script must support
-`DiffusionGemmaForBlockDiffusion`.
+`DiffusionGemmaForBlockDiffusion`. The pinned Diffulex environment uses
+`vllm==0.23.0`; a separate editable vLLM checkout is only needed when you are
+testing unreleased baseline behavior.
 
 ## Build the Documentation
 

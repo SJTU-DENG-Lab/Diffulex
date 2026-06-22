@@ -37,7 +37,7 @@ From the repository root:
 uv venv --python 3.11 --seed
 source .venv/bin/activate
 uv pip install -e .
-uv pip install vllm
+uv pip install vllm==0.23.0
 ```
 
 Verify the install:
@@ -45,6 +45,7 @@ Verify the install:
 ```bash
 python -c "from diffulex import Diffulex, SamplingParams; print('ok')"
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"
+python -c "import vllm; print(vllm.__version__)"
 ```
 
 ## 2. Run a Small Benchmark
