@@ -12,10 +12,10 @@
 
 </div>
 
-Diffulex is a PagedAttention-based inference framework for block-wise diffusion
-language models. It provides a unified runtime for KV cache management, block
-scheduling, prefix reuse, MoE execution, CUDA graph replay, HTTP serving, and
-model-specific diffusion samplers.
+Diffulex is a Diffusion Language Model Serving Engine built on
+PagedAttention-style runtime primitives. It provides a unified runtime for KV
+cache management, block scheduling, prefix reuse, MoE execution, CUDA graph
+replay, HTTP serving, and model-specific diffusion samplers.
 
 Diffulex is also the runtime engine behind the **Multi-Block Diffusion Language
 Models (MBD-LMs)** line of work. In the engine, **Multi-Block Diffusion
@@ -36,7 +36,8 @@ configuration, benchmarks, serving, and development notes:
 | Check supported models and strategy combinations | [Models](https://sjtu-deng-lab.github.io/Diffulex/user_guide/models.html) |
 | Tune runtime and YAML parameters | [Configuration](https://sjtu-deng-lab.github.io/Diffulex/user_guide/configuration.html) |
 | Run GSM8K and other benchmark workflows | [Benchmark](https://sjtu-deng-lab.github.io/Diffulex/user_guide/benchmark.html) |
-| Start HTTP serving or the Streamlit demo | [Server](https://sjtu-deng-lab.github.io/Diffulex/user_guide/server.html) / [Streamlit](https://sjtu-deng-lab.github.io/Diffulex/user_guide/streamlit.html) |
+| Start HTTP serving and the local demo visualization | [Server](https://sjtu-deng-lab.github.io/Diffulex/user_guide/server.html) |
+| Use Diffulex as a research backend | [Research Engine](https://sjtu-deng-lab.github.io/Diffulex/developer_guide/research_engine.html) |
 | Add a model, decoding strategy, or kernel | [Developer Guide](https://sjtu-deng-lab.github.io/Diffulex/developer_guide/index.html) |
 
 ## Branches
@@ -49,6 +50,13 @@ algorithms and turning them into runnable systems, use the
 [`main`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/main) branch. `main`
 contains ongoing runtime and model-specific optimizations, so its behavior and
 performance profile may differ from the experiment reproduction branch.
+
+Diffulex `main` is built for researchers who want a real backend for block-level
+dLLM inference ideas. Its Block Buffer backend separates logical block state,
+running-set/cache policy, and paged KV plus Triton kernel execution, so new
+SingleBD, MultiBD, TokenMerge, edit, uniform diffusion, or cache-oriented
+algorithms can be implemented as bounded strategy changes instead of full
+serving-system rewrites.
 
 ## Current Scope
 

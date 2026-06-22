@@ -25,17 +25,6 @@ single request-processing group.
 Data parallelism is useful for serving throughput when each group can own a
 model-parallel worker set. It increases the required CUDA device count.
 
-## Expert Parallelism
-
-`expert_parallel_size` is reserved for MoE execution topology.
-
-The config accepts integer values from `1` to `32768`, and defaults to `1`.
-In the current engine path, keep it at `1`.
-
-Current config validation requires `expert_parallel_size == 1` and
-`moe_dispatcher_backend == "standard"` because MoE all-to-all backends are
-currently unsupported in this path.
-
 ## Device Selection
 
 Use `device_ids` or `--device-ids` to select logical CUDA device IDs. When
@@ -46,5 +35,5 @@ IDs starting at `0`.
 
 | Surface | Names | Notes |
 | --- | --- | --- |
-| Python/config | `tensor_parallel_size`, `data_parallel_size`, `expert_parallel_size`, `device_ids` | Use these when constructing `Config` or editing YAML. |
-| CLI | `--tensor-parallel-size`, `--data-parallel-size`, `--expert-parallel-size`, `--device-ids` | Use these when launching server or benchmark commands. |
+| Python/config | `tensor_parallel_size`, `data_parallel_size`, `device_ids` | Use these when constructing `Config` or editing YAML. |
+| CLI | `--tensor-parallel-size`, `--data-parallel-size`, `--device-ids` | Use these when launching server or benchmark commands. |

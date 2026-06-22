@@ -42,7 +42,6 @@ per run.
 | --- | --- | --- |
 | `--tensor-parallel-size` | Use `1` to `8` ranks. The CLI default is `1`. | Splits one model replica across multiple GPUs. |
 | `--data-parallel-size` | Use `1` to `1024` groups. The CLI default is `1`. | Runs independent evaluation groups when enough devices are available. |
-| `--expert-parallel-size` | Omit it or keep the effective value at `1` for the current validated path. | Reserves the MoE expert-parallel dimension. |
 | `--gpu-memory-utilization` | Use a fraction such as `0.9`. | Guides GPU memory planning for engine allocation. |
 | `--max-model-len` | Use a positive sequence length. The default is `2048`, and the HF config may clamp it. | Sets the requested prompt-plus-output length limit. |
 | `--max-num-batched-tokens` | Use a positive token budget. The default is `4096`; it must cover the effective model length. | Limits scheduler batch size by token count. |
@@ -89,7 +88,7 @@ per run.
 | `--pre-merge-lora` | Add when the adapter should be merged into the base model at load time. Benchmark YAML defaults to pre-merge on. | Avoids per-forward adapter compute when merging is supported. |
 | `--enforce-eager` / `--no-enforce-eager` | Use eager mode for debugging, or explicitly allow optimized graph paths for measurement. | Overrides config-driven eager/optimized execution behavior. |
 | `--kv-cache-layout` | Use `unified` for the default cache layout or `distinct` for strategy experiments. | Chooses KV cache storage layout. |
-| `--attn-impl` | Use `triton` or `triton_grouped` for optimized runs, `naive` for debugging, or omit to keep config defaults. | Overrides the attention backend. |
+| `--attn-impl` | Use `triton_grouped` for benchmark runs and performance reports. `triton` and `naive` are compatibility/debug fallbacks, or omit to keep config defaults. | Overrides the attention backend. |
 | `--page-size` | Use `4`, `8`, `16`, or `32` for most models; DiffusionGemma uses `256`. | Sets the KV cache page size. |
 | `--block-size` | Use `4`, `8`, `16`, or `32` for most models; DiffusionGemma uses `256`. Keep it no larger than `--page-size`. | Sets the token span of one diffusion block. |
 | `--buffer-size` | Use a positive block count, or omit it and keep the config default of `4`. | Controls how many diffusion blocks can remain active. |

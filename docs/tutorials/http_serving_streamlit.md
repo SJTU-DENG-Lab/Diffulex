@@ -1,7 +1,7 @@
-# HTTP Serving and Streamlit Client Usage
+# HTTP Serving and Demo Visualization
 
-Diffulex can run as an HTTP service and can be paired with the sample Streamlit
-client for local interactive validation. This workflow is useful when you want
+Diffulex can run as an HTTP service and can be paired with the local demo
+visualization for interactive validation. This workflow is useful when you want
 to test request handling, server lifecycle, or a chat-style frontend without
 writing a custom client.
 
@@ -45,16 +45,16 @@ During debugging, prefer predictable behavior:
 For throughput checks, remove `--enforce-eager` and increase request and token
 limits gradually.
 
-## Start the Streamlit Client
+## Start the Demo Visualization
 
-After the server reports that it is ready, start the sample frontend:
+After the server reports that it is ready, start the sample visualization demo:
 
 ```bash
 streamlit run examples/streamlit_block_append_chat.py -- --base-url http://localhost:8000
 ```
 
-The Streamlit app talks to the server API. It is intended for local validation,
-not as a production UI.
+The demo talks to the server API. It is intended for local validation and video
+capture, not as a production UI.
 
 ## Basic Health Checks
 

@@ -81,14 +81,11 @@ Most local runs should leave the ZMQ addresses unset.
 
 | Flag | How to set it | What it does |
 | --- | --- | --- |
-| `--disable-prefill-cudagraph` | Deprecated no-op retained for compatibility. | Does not change current runtime behavior. |
 | `--disable-full-static-runner` | Add the flag when isolating full-static runner issues. | Disables the supported full-static CUDA Graph runner path. |
-| `--prefill-cudagraph-max-len` | Use `0` to follow `max_model_len`, or set a non-negative bucket length explicitly. | Caps the longest prefill bucket captured. |
 | `--disable-torch-compile` | Add the flag while debugging compile-related behavior. | Disables `torch.compile` where it would otherwise be used. |
-| `--enable-cudagraph-torch-compile` | Add only for experiments with the combined graph/compile path. | Enables torch compile inside decode graph capture. |
 | `--torch-compile-mode` | Defaults to `reduce-overhead`; use another PyTorch compile mode only when profiling calls for it. | Passes compile mode through to PyTorch. |
 | `--enforce-eager` | Add during correctness debugging. Leave it off for optimized throughput checks. | Forces eager execution and bypasses graph-style optimizations. |
-| `--attn-impl` | Use `triton` for optimized runs or `naive` for debugging. The default is `triton`. | Selects the server attention backend. |
+| `--attn-impl` | Use `triton_grouped` for normal serving and performance reports. `triton` and `naive` are compatibility/debug fallbacks. The default is `triton_grouped`. | Selects the server attention backend. |
 | `--disable-prefix-caching` | Add only when debugging cache behavior or comparing without reuse. | Turns off compatible prefix cache reuse. |
 
 Use `--enforce-eager` while debugging model or scheduler behavior. Remove it
@@ -102,7 +99,7 @@ when measuring optimized throughput.
 | `--lora-path` | Point to the adapter checkpoint directory. Required with `--use-lora`. | Loads the adapter weights. |
 | `--pre-merge-lora` | Add when the adapter should be merged into the base model at load time. | Avoids per-forward adapter compute when the model path supports merging. |
 
-## Threshold and MoE Arguments
+## Threshold Arguments
 
 | Flag | How to set it | What it does |
 | --- | --- | --- |
@@ -111,10 +108,6 @@ when measuring optimized throughput.
 | `--accept-threshold` | Use a confidence value from `0` to `1`. The default is `0.9`. | Accepts mask-to-token updates once confidence is high enough. |
 | `--remask-threshold` | Use a confidence value from `0` to `1`. The default is `0.4`. | Remasks filled tokens that fall below the confidence threshold. |
 | `--token-stability-threshold` | Use a stability ratio from `0` to `1`. The default is `0.0`. | Controls edit-block progress for DMax-style decoding. |
-| `--moe-dispatcher-backend` | The parser exposes `standard`, `naive`, and `deepep`; current config validation requires `standard`. | Selects the MoE token dispatcher backend. |
-| `--moe-gemm-impl` | Use `triton`, `vllm`, `vllm_modular`, or `naive`. The default is `triton`. | Selects the MoE GEMM implementation. |
-| `--deepep-mode` | Use `normal`, `low_latency`, or `auto`. The default is `auto`. | Chooses the DeepEP dispatcher mode when that backend is available. |
-| `--deepep-num-max-dispatch-tokens-per-rank` | Use a positive token count. The default is `256`. | Sets the DeepEP dispatch budget per rank. |
 
 ## Validation Tips
 

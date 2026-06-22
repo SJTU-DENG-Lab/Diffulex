@@ -7,8 +7,8 @@ deployment settings.
   parameter reference.
 - [Models](models.md): model family, strategy, and sampling compatibility.
 - [Benchmark](benchmark.md): config-first evaluation workflow.
-- [Server](server.md): HTTP serving commands and request formats.
-- [Streamlit](streamlit.md): local chat frontend for server validation.
+- [Server](server.md): HTTP serving commands, request formats, and local demo
+  visualization.
 - [Features](features/index.md): focused pages for prefix caching, CUDA Graph,
   LoRA, parallelism, and kernels.
 - [Troubleshooting](troubleshooting.md): common environment, CUDA, config, and

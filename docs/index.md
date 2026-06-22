@@ -5,7 +5,7 @@
 </figure>
 
 <p style="text-align:center">
-<strong>Block-wise diffusion LLM inference engine</strong>
+<strong>Diffusion Language Model Serving Engine</strong>
 </p>
 
 <p style="text-align:center">
@@ -17,10 +17,10 @@
 </a>
 </p>
 
-Diffulex is a PagedAttention-based inference framework for block-wise diffusion
-language models. It provides a unified engine for KV cache management, block
-scheduling, prefix reuse, MoE execution, CUDA graph replay, and model-specific
-diffusion samplers.
+Diffulex is a Diffusion Language Model Serving Engine built on
+PagedAttention-style runtime primitives. It provides a unified engine for KV
+cache management, block scheduling, prefix reuse, MoE execution, CUDA graph
+replay, and model-specific diffusion samplers.
 
 Diffulex is also the runtime engine behind the **Multi-Block Diffusion Language
 Models (MBD-LMs)** line of work. In that terminology, **Multi-Block Diffusion
@@ -47,6 +47,7 @@ performance profile may differ from the experiment reproduction branch.
 | Run GSM8K or other lm-eval benchmarks | [Benchmark](user_guide/benchmark.md) |
 | Start the HTTP server | [Server](user_guide/server.md) |
 | Tune engine or YAML parameters | [Configuration](user_guide/configuration.md) |
+| Use Diffulex as a research backend | [Research Engine](developer_guide/research_engine.md) |
 | Add a model, strategy, or kernel | [Developer Guide](developer_guide/index.md) |
 
 ## Current Scope
@@ -60,6 +61,13 @@ runtime pieces are:
 - Tensor and data parallel inference paths.
 - Optional vLLM-backed common layers and MoE kernels.
 - Benchmark and HTTP serving entry points.
+
+For new algorithms, Diffulex `main` is intended to be a research backend rather
+than only a benchmark runner. Its Block Buffer, paged KV cache, scheduler,
+sampler, and Triton kernel boundaries are designed so block-level generation
+ideas can be implemented as strategy components. See
+[Research Engine](developer_guide/research_engine.md) for the implementation
+map.
 
 ## Model Families
 
@@ -109,7 +117,6 @@ user_guide/configuration
 user_guide/models
 user_guide/benchmark
 user_guide/server
-user_guide/streamlit
 user_guide/features/index
 user_guide/troubleshooting
 user_guide/index
@@ -129,6 +136,7 @@ cookbook/index
 :caption: DEVELOPER GUIDE
 
 developer_guide/the_design
+developer_guide/research_engine
 developer_guide/extending_the_engine
 developer_guide/testing
 developer_guide/developer_troubleshooting

@@ -136,7 +136,7 @@ CUDA_VISIBLE_DEVICES=0 python -m diffulex.server \
   --buffer-size 1 \
   --page-size 32 \
   --gpu-memory-utilization 0.45 \
-  --attn-impl triton \
+  --attn-impl triton_grouped \
   --host 127.0.0.1 \
   --port 8000
 ```
@@ -150,7 +150,7 @@ curl -s http://127.0.0.1:8000/generate \
   | python -m json.tool
 ```
 
-For streaming chat validation:
+For local server demo visualization:
 
 ```bash
 streamlit run examples/streamlit_block_append_chat.py -- --base-url http://127.0.0.1:8000

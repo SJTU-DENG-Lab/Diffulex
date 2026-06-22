@@ -47,7 +47,7 @@ keeps web-server options and engine options in one dataclass, then exposes
 | `parse_device_ids` | Pass a comma-separated string such as `0,1,2,3`. | Converts it to logical CUDA device IDs; empty input becomes an empty list. |
 | `ServerArgs` | Construct directly in tests, or receive it from `parse_args`. | Stores host/port, ZMQ addresses, model identity, parallelism, cache, attention, MoE, threshold, and LoRA options. |
 | `ServerArgs.engine_kwargs` | Call before creating the engine. | Returns only the engine-facing subset and fills threshold defaults when a CLI value is omitted. |
-| `build_arg_parser` | Use when extending the server CLI. | Creates the `argparse.ArgumentParser` and declares allowed values for fields such as `sampling_mode`, `attn_impl`, and MoE backends. |
+| `build_arg_parser` | Use when extending the server CLI. | Creates the `argparse.ArgumentParser` and declares allowed values for fields such as `sampling_mode` and `attn_impl`. |
 | `parse_args` | Pass an optional argv sequence. | Parses CLI flags and returns `ServerArgs`. |
 
 When adding a new serving flag, add it to `ServerArgs`, `build_arg_parser`, and

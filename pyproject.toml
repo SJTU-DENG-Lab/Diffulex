@@ -7,7 +7,7 @@ authors = [
 maintainers = [
     { name = "DENG Lab @ SJTU" }
 ]
-description = "Flexible Diffusion LLM serving engine supporting multiple variants of dLLM decoding strategies with high efficiency and low latency."
+description = "Diffusion Language Model Serving Engine supporting multiple variants of dLLM decoding strategies with high efficiency and low latency."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

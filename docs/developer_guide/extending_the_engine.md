@@ -5,6 +5,10 @@ implementations. Keep each extension focused: add the component required for the
 new behavior, then verify it with a targeted test or smoke run before expanding
 the scope.
 
+If the goal is a new dLLM inference algorithm, read
+[Research Engine](research_engine.md) first. It maps block-level algorithms to
+Diffulex's Block Buffer backend and lists the files a code agent should cover.
+
 ## Add New Models
 
 See [Add New Models](add_new_models.md) for the model, sampler, config, CLI, and
@@ -21,6 +25,7 @@ strategy component walkthrough.
 add_new_models
 add_decoding_strategy
 add_new_kernel
+research_engine
 :::
 
 Strategy work usually touches these components:

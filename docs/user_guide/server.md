@@ -25,13 +25,14 @@ CUDA_VISIBLE_DEVICES=0 python -m diffulex.server \
   --buffer-size 1 \
   --page-size 32 \
   --gpu-memory-utilization 0.45 \
-  --attn-impl triton \
+  --attn-impl triton_grouped \
   --host 127.0.0.1 \
   --port 8000
 ```
 
-The server CLI currently exposes `--attn-impl triton` and `--attn-impl naive`.
-Use benchmark or Python configs when you specifically need `triton_grouped`.
+Use `--attn-impl triton_grouped` for normal serving and demos. Other attention
+backends are compatibility/debug fallbacks and are not recommended for
+performance reporting.
 
 ## Generate Endpoint
 
@@ -81,11 +82,17 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
-The Streamlit example uses this chat endpoint:
+## Demo Visualization
+
+The repository includes a local Streamlit demo for visualizing server responses.
+Start it after the HTTP server is ready:
 
 ```bash
 streamlit run examples/streamlit_block_append_chat.py -- --base-url http://127.0.0.1:8000
 ```
+
+The demo talks to the server API and is intended for local validation and video
+capture, not production serving or throughput measurement.
 
 ## Important Server Flags
 
@@ -100,7 +107,6 @@ streamlit run examples/streamlit_block_append_chat.py -- --base-url http://127.0
 | `--max-model-len`, `--max-num-batched-tokens`, `--max-num-reqs` | Capacity controls. Start small. |
 | `--block-size`, `--buffer-size`, `--page-size` | Strategy/model layout controls. DiffusionGemma uses `256/1/256`. |
 | `--disable-full-static-runner`, `--disable-torch-compile`, `--enforce-eager` | Debugging toggles for optimized paths. |
-| `--disable-prefill-cudagraph` | Deprecated no-op retained for compatibility. |
 | `--use-lora`, `--lora-path`, `--pre-merge-lora` | LoRA loading and merge controls. |
 
 Run `python -m diffulex.server --help` for the complete current option

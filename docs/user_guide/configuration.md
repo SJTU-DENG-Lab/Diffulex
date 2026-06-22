@@ -26,7 +26,6 @@ the supported page/block sizes for the selected model family.
 | `mask_token_id` | Use the tokenizer's mask token ID. The default is `151666`, and tokenizer metadata can override it. | Tells diffusion samplers which token represents a masked position. |
 | `tensor_parallel_size` | Use `1` to `8` tensor-parallel ranks. Core config defaults to `2`; CLI examples usually start at `1`. | Splits one model replica across multiple GPUs. |
 | `data_parallel_size` | Use `1` to `1024` data-parallel groups. The default is `1`. | Runs independent serving or evaluation groups for higher throughput. |
-| `expert_parallel_size` | The accepted range is `1` to `32768`, but the current validated path requires `1`. | Reserved for MoE expert-parallel layouts. |
 | `gpu_memory_utilization` | Use a fractional target such as `0.9`. | Guides engine memory planning so it does not reserve the entire GPU. |
 | `max_model_len` | Use a positive sequence length. The default is `2048`, and the HF model config may clamp it lower. | Sets the requested maximum prompt-plus-output length. |
 | `max_num_batched_tokens` | Use a positive token budget. The default is `4096`, and it must be at least the effective `max_model_len`. | Limits how many tokens the scheduler can place in one batch. |
@@ -35,14 +34,11 @@ the supported page/block sizes for the selected model family.
 | `buffer_size` | Use a positive block count. The default is `4`; `diffusion_gemma` is forced to `1`. | Controls how many diffusion blocks can be active for one request. |
 | `page_size` | Use `4`, `8`, `16`, or `32` for most models; `diffusion_gemma` uses `256`. Keep it greater than or equal to `block_size`. | Sets the KV cache page size. |
 | `kv_cache_layout` | Use `unified` unless a strategy or experiment needs `distinct`. | Chooses how KV cache storage is organized internally. |
-| `attn_impl` | Use `triton` or `triton_grouped` for optimized runs, and `naive` for debugging. The default is `triton`. | Selects the attention backend. |
+| `attn_impl` | Use `triton_grouped` for normal serving and benchmark runs. `triton` and `naive` are compatibility/debug fallbacks and are not recommended for performance reporting. The default is `triton_grouped`. | Selects the attention backend. |
 | `enable_prefix_caching` | Leave it `True` for compatible strategies. `d2f` forces it off during normalization. | Reuses compatible prefix KV cache state across requests. |
 | `enforce_eager` | Set `True` while debugging; leave `False` for optimized runs. | Disables graph-style optimized execution paths. |
-| `enable_prefill_cudagraph` | Kept for config compatibility; current benchmark CLI marks this path as a no-op. | Historical prefill graph toggle. |
 | `enable_full_static_runner` | Leave `True` for supported optimized multi-block paths. | Enables full-static CUDA graph runner paths. |
-| `prefill_cudagraph_max_len` | Use `0` to follow `max_model_len`, or set a non-negative bucket length explicitly. | Caps the longest prefill bucket considered for graph capture. |
 | `enable_torch_compile` | Leave `True` when the model path supports compile; turn it off for debugging. | Enables `torch.compile` where Diffulex can use it safely. |
-| `enable_cudagraph_torch_compile` | Keep `False` unless testing the experimental combined path. | Allows torch compile inside decode graph capture. |
 | `torch_compile_mode` | Defaults to `reduce-overhead`; use another PyTorch compile mode only when profiling justifies it. | Passes the compile mode through to PyTorch. |
 | `enable_vllm_layers` | Leave `True` unless isolating a layer implementation issue. | Uses optional vLLM-backed common layers. |
 
@@ -54,10 +50,7 @@ the supported page/block sizes for the selected model family.
 | `token_merge_top_k` | Use a positive integer. The default is `1`. | Keeps this many candidate tokens in token-merge metadata. |
 | `token_merge_renormalize` | Leave `True` unless an experiment needs raw probabilities. | Renormalizes token-merge probabilities after candidate filtering. |
 | `token_merge_weight` | Use a non-negative float. The default is `1.0`. | Weights the token-merge interpolation. |
-| `moe_dispatcher_backend` | The config accepts `standard`, `naive`, and `deepep`, but the current validated path requires `standard`. | Selects the MoE token dispatcher backend. |
 | `moe_gemm_impl` | Use `triton`, `vllm`, `vllm_modular`, or `naive`. The default is `triton`. | Selects the MoE GEMM implementation. |
-| `deepep_mode` | Use `normal`, `low_latency`, or `auto`. The default is `auto`. | Chooses the DeepEP dispatcher mode when that backend becomes available. |
-| `deepep_num_max_dispatch_tokens_per_rank` | Use a positive integer. The default is `256`. | Sets the DeepEP dispatch token budget per rank. |
 
 ## Strategy Defaults
 
@@ -121,11 +114,8 @@ when the model path and runtime support it.
 | Key | How to set it | What it does |
 | --- | --- | --- |
 | `enforce_eager` | Set `True` while debugging; keep `False` for optimized runs. | Bypasses graph-style execution paths. |
-| `enable_prefill_cudagraph` | Keep unset unless testing legacy behavior. The current benchmark flag is a deprecated no-op. | Historical prefill CUDA graph toggle. |
 | `enable_full_static_runner` | Leave `True` for supported multi-block optimized paths. | Enables the full-static runner where available. |
-| `prefill_cudagraph_max_len` | Use `0` to follow `max_model_len`, or set a non-negative bucket limit. | Bounds the longest prefill graph bucket. |
 | `enable_torch_compile` | Leave `True` when the model supports compile; disable it to isolate compile issues. | Enables `torch.compile` where supported. |
-| `enable_cudagraph_torch_compile` | Keep `False` unless testing the experimental combined path. | Allows torch compile inside decode graph capture. |
 | `torch_compile_mode` | Defaults to `reduce-overhead`. Change it only for a measured profiling reason. | Passes the compile mode to PyTorch. |
 | `enable_vllm_layers` | Leave `True` unless comparing layer implementations. | Uses optional vLLM-backed common layers. |
 

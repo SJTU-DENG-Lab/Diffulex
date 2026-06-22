@@ -28,9 +28,8 @@ without directly choosing a kernel.
 | `triton_attention` | Optimized attention path for the standard metadata layout. |
 | `triton_grouped_attention` | Optimized grouped attention path for grouped metadata layouts. |
 
-Use the reference path when debugging tensor shapes or metadata. Use Triton
-paths for normal optimized runs once request scheduling and cache layout are
-known to be correct.
+Use `triton_grouped` when measuring throughput or reporting performance. The
+plain `triton` and reference paths are retained for compatibility and debugging.
 
 ## diffulex.attention.metadata
 

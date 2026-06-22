@@ -5,13 +5,16 @@ metadata, token dispatchers, top-k routing, and fused expert execution layers.
 Model code should use the package-level builders instead of selecting MoE
 implementations directly.
 
+Current public support is conservative: model code should use the package-level
+builders and the documented MoE GEMM options instead of selecting dispatcher
+internals directly.
+
 | Module | Role |
 | --- | --- |
 | `diffulex.moe.config` | Reads MoE-related attributes from model configs. |
 | `diffulex.moe.dispatcher` | Token dispatcher implementations and dispatcher factory. |
 | `diffulex.moe.layer` | Fused MoE layer implementations and layer factory. |
 | `diffulex.moe.metadata` | Router, dispatcher, and expert execution metadata dataclasses. |
-| `diffulex.moe.mode` | DeepEP mode enum and normalization helpers. |
 | `diffulex.moe.topk` | Top-k router implementations and router factory. |
 
 ## diffulex.moe.config
@@ -39,11 +42,10 @@ factory chooses an implementation based on config.
 | `TokenDispatcher` | Abstract dispatcher contract. |
 | `DispatcherOutput` | Output structure returned by dispatchers. |
 | `build_token_dispatcher` | Factory for the configured dispatcher backend. |
-| `NaiveA2ADispatcher` | Reference all-to-all dispatcher. |
-| `DeepEPDispatcher` | DeepEP-backed dispatcher for supported environments. |
+| `NaiveA2ADispatcher` | Reference all-to-all dispatcher used by internal experiments. |
 
-The current validated config path keeps dispatcher use conservative; treat
-non-standard backends as experimental unless explicitly enabled and tested.
+Use the dispatcher factory from model code. Direct dispatcher selection is not a
+public tuning surface for normal serving or benchmark runs.
 
 ## diffulex.moe.layer
 
@@ -73,18 +75,9 @@ expert execution layers.
 | `RouterMetadata` | Router output metadata. |
 | `DispatchMetadata` | Base dispatcher metadata. |
 | `ExpertExecutionMetadata` | Metadata needed while executing experts. |
-| `DeepEPDispatchMetadata` | DeepEP-specific dispatcher metadata. |
 | `DispatcherStage` | Dispatcher lifecycle stage enum. |
 
 Use these dataclasses to keep dispatcher and expert-layer contracts explicit.
-
-## diffulex.moe.mode
-
-This module defines supported DeepEP mode values and string normalization.
-
-| Symbol | Purpose |
-| --- | --- |
-| `DeepEPMode` | Enum for `normal`, `low_latency`, and `auto` dispatcher modes. |
 
 ## diffulex.moe.topk
 

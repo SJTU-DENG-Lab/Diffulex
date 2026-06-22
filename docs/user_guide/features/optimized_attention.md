@@ -9,11 +9,11 @@ combining strategy metadata, paged KV cache layout, and specialized kernels.
 
 The core config accepts `triton`, `triton_grouped`, and `naive`.
 
-The server CLI currently exposes `triton` and `naive`. Benchmark CLI exposes all
-core choices.
+The server CLI and benchmark CLI expose all core choices.
 
-Use `naive` for debugging and `triton` or `triton_grouped` for optimized runs
-when the selected strategy supports them.
+Use `triton_grouped` for normal serving, benchmarking, and performance reports.
+The older `triton` path and the `naive` path are kept for compatibility and
+debugging; they are not recommended for optimized runs.
 
 ## Paged Attention
 
