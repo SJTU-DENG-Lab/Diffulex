@@ -19,7 +19,7 @@ DEFAULT_MAX_NFE = 1024
 DEFAULT_MAX_REPETITION_RUN = 0
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_SMOOTH_RENDER = True
-DEFAULT_RENDER_INTERVAL_MS = 250
+DEFAULT_RENDER_INTERVAL_MS = 80
 MASK_TOKEN_TEXTS = ("<|MASK|>", "<|mask|>", "<mask>")
 DEFAULT_MASK_SYMBOL = "▨"
 DISPLAY_STOP_TOKENS = ("<|im_end|>", "<eos>", "<turn|>", "<|turn>", "<|endoftext|>")
@@ -629,6 +629,7 @@ def main() -> None:
             value=DEFAULT_RENDER_INTERVAL_MS,
             step=10,
             disabled=not smooth_render,
+            key="render_interval_ms_default_80",
         )
 
         if st.button("Clear chat", use_container_width=True):
