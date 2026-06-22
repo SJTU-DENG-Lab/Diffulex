@@ -144,7 +144,7 @@ class EngineConfig:
 
     # Engine behavior configuration
     enforce_eager: bool = False
-    attn_impl: str = "triton"
+    attn_impl: str = "triton_grouped"
     enable_prefix_caching: bool = True
     kv_cache_layout: str = "unified"  # Options: unified, distinct
     page_size: int = 32

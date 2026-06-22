@@ -71,7 +71,7 @@ class DreamReasonerAttention(nn.Module):
             self.head_dim,
             self.scaling,
             self.num_kv_heads,
-            attn_impl=getattr(config, "attn_impl", "triton"),
+            attn_impl=getattr(config, "attn_impl", "triton_grouped"),
         )
 
     def forward(

@@ -429,7 +429,7 @@ class DiffusionGemmaAttention(nn.Module):
             self.head_dim,
             1.0,
             self.num_kv_heads,
-            attn_impl=getattr(config, "attn_impl", "triton"),
+            attn_impl=getattr(config, "attn_impl", "triton_grouped"),
             sliding_window=self.sliding_window,
         )
 

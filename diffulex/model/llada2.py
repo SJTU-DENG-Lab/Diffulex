@@ -134,7 +134,7 @@ class LLaDA2Attention(nn.Module):
             self.head_dim,
             self.scaling,
             self.num_kv_heads,
-            attn_impl=getattr(config, "attn_impl", "triton"),
+            attn_impl=getattr(config, "attn_impl", "triton_grouped"),
         )
         self._fused_qk_norm_rope_unavailable = False
 

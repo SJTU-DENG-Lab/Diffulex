@@ -20,7 +20,7 @@ engine:
   max_num_reqs: 64
 
   enforce_eager: false
-  attn_impl: "triton"
+  attn_impl: "triton_grouped"
   enable_prefill_cudagraph: false
   prefill_cudagraph_max_len: 0
   enable_torch_compile: true

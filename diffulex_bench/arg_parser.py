@@ -139,7 +139,7 @@ Examples:
         "--expert-parallel-size",
         type=int,
         default=None,
-        help="Expert parallel size",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--gpu-memory-utilization",
@@ -355,7 +355,7 @@ Examples:
         type=str,
         default=None,
         choices=MOE_DISPATCHER_BACKEND_CHOICES,
-        help="MoE token dispatcher backend",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--moe-gemm-impl",
@@ -369,13 +369,13 @@ Examples:
         type=str,
         default=None,
         choices=DEEP_EP_MODE_CHOICES,
-        help="DeepEP dispatcher mode",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--deepep-num-max-dispatch-tokens-per-rank",
         type=int,
         default=None,
-        help="DeepEP max dispatch tokens per rank",
+        help=argparse.SUPPRESS,
     )
 
     # D2F-specific arguments
@@ -438,7 +438,7 @@ Examples:
         "--enable-prefill-cudagraph",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Deprecated no-op; prefill CUDA graph replay is disabled",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--enable-full-static-runner",
@@ -450,7 +450,7 @@ Examples:
         "--prefill-cudagraph-max-len",
         type=int,
         default=None,
-        help="Maximum prefill bucket length to capture; 0 uses max_model_len",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--enable-torch-compile",
@@ -462,7 +462,7 @@ Examples:
         "--enable-cudagraph-torch-compile",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Experimental: allow torch.compile inside decode CUDA graph capture",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--torch-compile-mode",

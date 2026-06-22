@@ -70,7 +70,7 @@ class ParallelConfig:
 @dataclass
 class KernelConfig:
     enforce_eager: bool = False
-    attn_impl: str = "triton"
+    attn_impl: str = "triton_grouped"
     enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0

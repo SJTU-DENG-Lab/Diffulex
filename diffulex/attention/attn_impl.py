@@ -118,7 +118,7 @@ class Attention(nn.Module):
         head_dim,
         scale,
         num_kv_heads,
-        attn_impl: str = "triton",
+        attn_impl: str = "triton_grouped",
         sliding_window: int | None = None,
     ):
         super().__init__()

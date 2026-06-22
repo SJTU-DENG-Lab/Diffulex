@@ -131,7 +131,7 @@ class Config:
 
     # CUDA Graph
     enforce_eager: bool = False
-    attn_impl: str = "triton"  # "triton", "triton_grouped", or "naive"
+    attn_impl: str = "triton_grouped"  # "triton_grouped", "triton", or "naive"
     enable_prefill_cudagraph: bool = False
     enable_full_static_runner: bool = True
     prefill_cudagraph_max_len: int = 0

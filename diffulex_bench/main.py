@@ -620,7 +620,7 @@ def load_config_from_args(args) -> BenchmarkConfig:
                 if getattr(args, "token_merge_weight", None) is not None
                 else 1.0
             ),
-            attn_impl=(getattr(args, "attn_impl", None) or "triton"),
+            attn_impl=(getattr(args, "attn_impl", None) or "triton_grouped"),
             moe_dispatcher_backend=(getattr(args, "moe_dispatcher_backend", None) or "standard"),
             moe_gemm_impl=(getattr(args, "moe_gemm_impl", None) or "triton"),
             deepep_mode=(getattr(args, "deepep_mode", None) or "auto"),

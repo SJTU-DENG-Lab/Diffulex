@@ -46,7 +46,7 @@ class ServerArgs:
     auto_max_nfe_tpf_floor: float = 1.0
     gpu_memory_utilization: float = 0.9
     enforce_eager: bool = False
-    attn_impl: str = "triton"
+    attn_impl: str = "triton_grouped"
     enable_prefix_caching: bool = True
     kv_cache_layout: str = "unified"
     moe_dispatcher_backend: str = "standard"
@@ -157,23 +157,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
     parser.add_argument("--max-num-reqs", type=int, default=128)
     parser.add_argument("--max-model-len", type=int, default=2048)
-    parser.add_argument("--disable-prefill-cudagraph", action="store_true", help="Deprecated no-op")
+    parser.add_argument("--disable-prefill-cudagraph", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--disable-full-static-runner", action="store_true")
-    parser.add_argument("--prefill-cudagraph-max-len", type=int, default=0)
+    parser.add_argument("--prefill-cudagraph-max-len", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--disable-torch-compile", action="store_true")
-    parser.add_argument("--enable-cudagraph-torch-compile", action="store_true")
+    parser.add_argument("--enable-cudagraph-torch-compile", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--torch-compile-mode", default="reduce-overhead")
     parser.add_argument("--auto-max-nfe-warmup-steps", type=int, default=8)
     parser.add_argument("--auto-max-nfe-tpf-floor", type=float, default=1.0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--enforce-eager", action="store_true")
-    parser.add_argument("--attn-impl", default="triton", choices=["triton", "naive"])
+    parser.add_argument("--attn-impl", default="triton_grouped", choices=["triton_grouped", "triton", "naive"])
     parser.add_argument("--disable-prefix-caching", action="store_true")
     parser.add_argument("--kv-cache-layout", default="unified", choices=["unified", "distinct"])
-    parser.add_argument("--moe-dispatcher-backend", default="standard", choices=["standard", "naive", "deepep"])
+    parser.add_argument("--moe-dispatcher-backend", default="standard", choices=["standard", "naive", "deepep"], help=argparse.SUPPRESS)
     parser.add_argument("--moe-gemm-impl", default="triton", choices=["triton", "vllm", "vllm_modular", "naive"])
-    parser.add_argument("--deepep-mode", default="auto", choices=["normal", "low_latency", "auto"])
-    parser.add_argument("--deepep-num-max-dispatch-tokens-per-rank", type=int, default=256)
+    parser.add_argument("--deepep-mode", default="auto", choices=["normal", "low_latency", "auto"], help=argparse.SUPPRESS)
+    parser.add_argument("--deepep-num-max-dispatch-tokens-per-rank", type=int, default=256, help=argparse.SUPPRESS)
     parser.add_argument("--add-block-threshold", type=float, default=None)
     parser.add_argument("--semi-complete-threshold", type=float, default=None)
     parser.add_argument("--accept-threshold", type=float, default=None)
