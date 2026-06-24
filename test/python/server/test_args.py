@@ -53,3 +53,9 @@ def test_server_args_forward_recent_engine_config_fields():
         "delay_iterations": 0,
         "max_iterations": 3,
     }
+
+
+def test_server_args_forward_explicit_mask_token_id():
+    args = parse_args(["--model", "/tmp/model", "--mask-token-id", "126336"])
+
+    assert args.engine_kwargs()["mask_token_id"] == 126336
