@@ -1,14 +1,11 @@
-# Fast_dLLM V2 model - native dual-cache strategy on GSM8K using
+# Fast_dLLM V2 model - training-free MultiBD strategy on GSM8K using
 # Diffulex's bundled gsm8k_diffulex task.
-# Fast-dLLM v2 paper defaults map to Diffulex block_size=8, buffer_size=4:
-# one Fast-dLLM sub-block is one Diffulex block, and one Fast-dLLM block is
-# one Diffulex DllmBlockBuffer.
 
 engine:
   model_path: "Efficient-Large-Model/Fast_dLLM_v2_7B"
   tokenizer_path: null
   model_name: "fast_dllm_v2"
-  decoding_strategy: "fast_dllm_v2"
+  decoding_strategy: "multi_bd"
   mask_token_id: 151665
 
   use_lora: false
@@ -23,16 +20,14 @@ engine:
 
   enforce_eager: false
   kv_cache_layout: "unified"
-  # Fast_dLLM_v2_7B has 28 attention heads; the grouped Triton path currently
-  # requires power-of-two tile ranges during warmup for this shape.
   attn_impl: "triton"
 
   decoding_thresholds:
     add_block_threshold: 0.1
     semi_complete_threshold: 0.9
-    accept_threshold: 0.95
-  block_size: 8
-  buffer_size: 4
+    accept_threshold: 0.90
+  block_size: 32
+  buffer_size: 2
 
 eval:
   dataset_name: "gsm8k_diffulex"

@@ -32,6 +32,7 @@ EDIT_SAMPLING_MODEL_NAMES = {
     "llada2_mini_dmax",
 }
 DIFFUSION_GEMMA_MODEL_NAMES = {"diffusion_gemma"}
+FAST_DLLM_V2_MODEL_NAMES = {"fast_dllm_v2"}
 
 def _token_content(token) -> str | None:
     if isinstance(token, dict):
@@ -78,7 +79,7 @@ class Config:
     model: str
     lora_path: str = ""
     model_name: str = "dream"
-    decoding_strategy: str = "d2f"  # "d2f", "multi_bd", "dmax", or "diffusion_gemma"
+    decoding_strategy: str = "d2f"  # "d2f", "multi_bd", "dmax", "fast_dllm_v2", or "diffusion_gemma"
 
     # Sampling Harness
     hf_config: Any | None = None
@@ -162,6 +163,10 @@ class Config:
     diffusion_gemma_confidence_threshold: float = 0.1
     diffusion_gemma_entropy_bound: float = 1.0
 
+    # Fast-dLLM v2 controls. When false, keep native sub-block refinement but
+    # recompute the full 32-token FDv2 block for each refinement step.
+    fdv2_use_block_cache: bool = True
+
     # Profiling
     profiler_config: ProfilerConfig | dict | None = None
 
@@ -184,6 +189,10 @@ class Config:
     def is_diffusion_gemma(self) -> bool:
         return self.model_name in DIFFUSION_GEMMA_MODEL_NAMES
 
+    @property
+    def is_fast_dllm_v2(self) -> bool:
+        return self.model_name in FAST_DLLM_V2_MODEL_NAMES
+
     def __post_init__(self):
         if not os.path.isdir(self.model):
             raise ValueError(f"model must be an existing directory, got: {self.model}")
@@ -191,6 +200,12 @@ class Config:
 
         if self.is_diffusion_gemma:
             self.decoding_strategy = "diffusion_gemma"
+        elif self.is_fast_dllm_v2:
+            # Fast_dLLM v2 supports two useful execution modes:
+            # the specialized dual-cache strategy, and the generic MultiBD
+            # runner for plain baseline comparisons.
+            if self.decoding_strategy not in ("fast_dllm_v2", "multi_bd"):
+                self.decoding_strategy = "fast_dllm_v2"
 
         self.strategy = StrategyConfigRegistry.normalize(self)
 

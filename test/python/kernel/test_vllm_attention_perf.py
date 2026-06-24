@@ -338,6 +338,8 @@ def _diffulex_attention_fixed(data: AttentionBenchData, case: AttentionBenchCase
         IS_PREFIX_FULL=metadata.is_prefix_full,
         MASK_PREFIX_HOLE=bool(getattr(metadata, "mask_prefix_hole", False)),
         PREFIX_CAUSAL=bool(getattr(metadata, "prefix_causal", False)),
+        FDV2_CACHE_ONLY=False,
+        SLIDING_WINDOW=int(data.case.sliding_window or 0),
     )
     return out
 

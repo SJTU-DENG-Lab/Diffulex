@@ -75,6 +75,7 @@ def _chunked_prefill_grouped_attn_unified_kernel(
     IS_PREFIX_FULL: tl.constexpr,
     MASK_PREFIX_HOLE: tl.constexpr,
     PREFIX_CAUSAL: tl.constexpr,
+    FDV2_CACHE_ONLY: tl.constexpr,
     SLIDING_WINDOW: tl.constexpr,
 ):
     req_id = tl.program_id(0)
@@ -186,6 +187,8 @@ def _chunked_prefill_grouped_attn_unified_kernel(
             loop_range = block_causal_range
     else:
         loop_range = full_range
+    if FDV2_CACHE_ONLY:
+        loop_range = 0
 
     for kv_block_id in range(0, loop_range):
         kv_block_start = kv_block_id * BLOCK_N
@@ -313,6 +316,7 @@ def chunked_prefill_attn_grouped_unified(
         IS_PREFIX_FULL=attn_metadata.is_prefix_full,
         MASK_PREFIX_HOLE=bool(getattr(attn_metadata, "mask_prefix_hole", False)),
         PREFIX_CAUSAL=bool(getattr(attn_metadata, "prefix_causal", False)),
+        FDV2_CACHE_ONLY=bool(getattr(attn_metadata, "fdv2_cache_only", False)),
         SLIDING_WINDOW=int(sliding_window or 0),
     )
     return out

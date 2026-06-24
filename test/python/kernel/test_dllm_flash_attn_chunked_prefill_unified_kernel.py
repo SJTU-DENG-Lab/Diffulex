@@ -154,6 +154,8 @@ def call_chunked_prefill_kernel(
         IS_PREFIX_FULL=is_prefix_full,
         MASK_PREFIX_HOLE=False,
         PREFIX_CAUSAL=False,
+        FDV2_CACHE_ONLY=False,
+        SLIDING_WINDOW=0,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
     )
