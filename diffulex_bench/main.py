@@ -539,7 +539,8 @@ def load_config_from_args(args) -> BenchmarkConfig:
             ("remask_threshold", "remask_threshold"),
             ("token_stability_threshold", "token_stability_threshold"),
         ):
-            if was_provided(cli_key) and getattr(args, cli_key, None) is not None:
+            flag = f"--{cli_key.replace('_', '-')}"
+            if option_was_provided(flag) and getattr(args, cli_key, None) is not None:
                 config.engine.decoding_thresholds[yaml_key] = getattr(args, cli_key)
         if was_provided("max_post_edit_steps") and getattr(args, "max_post_edit_steps", None) is not None:
             config.engine.max_post_edit_steps = args.max_post_edit_steps

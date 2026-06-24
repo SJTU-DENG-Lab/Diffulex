@@ -109,7 +109,7 @@ class EngineConfig:
     model_path: str
     tokenizer_path: Optional[str] = None
     model_name: str = "dream"  # Options: dream, sdar, fast_dllm_v2, llada
-    decoding_strategy: str = "d2f"  # Options: d2f, multi_bd, dmax, diffusion_gemma
+    decoding_strategy: str = "d2f"  # Options: d2f, multi_bd, dmax, fast_dllm_v2, diffusion_gemma
     sampling_mode: str = "naive"  # Options: naive, edit
     max_post_edit_steps: int = 16  # max refinement steps after all masks filled
     mask_token_id: int = 151666

@@ -19,7 +19,7 @@ MODEL_NAME_CHOICES = [
     "diffusion_gemma",
 ]
 
-DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax"]
+DECODING_STRATEGY_CHOICES = ["d2f", "multi_bd", "dmax", "fast_dllm_v2"]
 TOKEN_MERGE_MODE_CHOICES = ["dmax_topk", "iter_smooth_topk"]
 ATTN_IMPL_CHOICES = ["triton", "triton_grouped", "naive"]
 MOE_GEMM_IMPL_CHOICES = ["triton", "vllm", "vllm_modular", "naive"]
@@ -106,7 +106,7 @@ Examples:
         type=str,
         default="d2f",
         choices=DECODING_STRATEGY_CHOICES,
-        help="Decoding strategy (d2f, multi_bd, dmax)",
+        help="Decoding strategy (d2f, multi_bd, dmax, fast_dllm_v2)",
     )
     parser.add_argument(
         "--sampling-mode",
