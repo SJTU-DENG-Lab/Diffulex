@@ -25,6 +25,32 @@ from diffulex.utils.tokenizer import auto_tokenizer_from_pretrained
 logger = get_logger(__name__)
 
 
+def maybe_override_mask_token_id(
+    config: Config,
+    tokenizer,
+    *,
+    mask_token_id_explicit: bool = False,
+) -> None:
+    """Resolve mask token id from tokenizer artifacts when using the default."""
+
+    if mask_token_id_explicit:
+        return
+
+    default_mask_token_id = Config.__dataclass_fields__["mask_token_id"].default
+    tokenizer_mask_token_id = getattr(tokenizer, "mask_token_id", None)
+    if (
+        tokenizer_mask_token_id is not None
+        and config.mask_token_id == default_mask_token_id
+        and int(tokenizer_mask_token_id) != default_mask_token_id
+    ):
+        logger.warning(
+            "Overriding default mask_token_id from %s to tokenizer mask_token_id %s.",
+            config.mask_token_id,
+            tokenizer_mask_token_id,
+        )
+        config.mask_token_id = int(tokenizer_mask_token_id)
+
+
 def _set_parent_death_signal(sig: int = signal.SIGTERM) -> None:
     if os.name != "posix":
         return
@@ -62,6 +88,15 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
             )
         self.ps = []
         self.events = []
+        self.tokenizer = auto_tokenizer_from_pretrained(config.model, use_fast=True, trust_remote_code=True)
+        config.tokenizer_vocab_size = len(self.tokenizer)
+        config.eos = self.tokenizer.eos_token_id
+        maybe_override_mask_token_id(
+            config,
+            self.tokenizer,
+            mask_token_id_explicit="mask_token_id" in config_kwargs,
+        )
+
         ctx = mp.get_context("spawn")
         for i in range(1, self.model_parallel_world_size):
             event = ctx.Event()
@@ -75,21 +110,6 @@ class DiffulexEngine(DiffulexAsyncEngineMixin):
         self._install_signal_handlers()
 
         try:
-            self.tokenizer = auto_tokenizer_from_pretrained(config.model, use_fast=True, trust_remote_code=True)
-            config.tokenizer_vocab_size = len(self.tokenizer)
-            config.eos = self.tokenizer.eos_token_id
-
-            if (
-                getattr(self.tokenizer, "mask_token_id", None) is not None
-                and config.mask_token_id != self.tokenizer.mask_token_id
-            ):
-                logger.warning(
-                    "Overriding mask_token_id from %s to tokenizer mask_token_id %s.",
-                    config.mask_token_id,
-                    self.tokenizer.mask_token_id,
-                )
-                config.mask_token_id = self.tokenizer.mask_token_id
-
             self.model_runner = AutoModelRunner.from_config(config, 0, self.events)
             self.scheduler: SchedulerBase | DataParallelScheduler = AutoScheduler.from_config(config)
         except BaseException:
