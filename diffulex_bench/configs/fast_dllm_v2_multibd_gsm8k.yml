@@ -1,5 +1,6 @@
-# Fast_dLLM V2 model - training-free MultiBD strategy on GSM8K using
-# Diffulex's bundled gsm8k_diffulex task.
+# Fast_dLLM V2 model - training-free MultiBD on GSM8K using Diffulex's
+# bundled gsm8k_diffulex task. This uses Diffulex's generic MultiBD runtime:
+# a bounded block buffer of consecutive diffusion blocks decoded concurrently.
 
 engine:
   model_path: "Efficient-Large-Model/Fast_dLLM_v2_7B"
@@ -25,9 +26,10 @@ engine:
   decoding_thresholds:
     add_block_threshold: 0.1
     semi_complete_threshold: 0.9
-    accept_threshold: 0.90
-  block_size: 32
-  buffer_size: 2
+    accept_threshold: 0.975
+    token_stability_threshold: 0.5
+  block_size: 4
+  buffer_size: 6
 
 eval:
   dataset_name: "gsm8k_diffulex"

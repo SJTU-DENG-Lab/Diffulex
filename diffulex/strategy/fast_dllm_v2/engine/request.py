@@ -32,6 +32,51 @@ class FastDLLMV2Req(DllmReq):
         self.fdv2_pending_next_token_id: int | None = None
         self.fdv2_use_block_cache = True
 
+    @property
+    def fdv2_sequence_limit(self) -> int:
+        if not hasattr(self, "prefix_len"):
+            return int(getattr(self, "max_model_len", len(self.token_ids)))
+        return min(int(self.max_model_len), int(self.prefix_len) + int(self.max_new_tokens))
+
+    @property
+    def fdv2_committed_generated_len(self) -> int:
+        total = 0
+        for block in getattr(self, "dllm_blocks", []):
+            if not block.is_in_cache:
+                continue
+            valid_len = int(getattr(block, "valid_commit_len", block.block_size))
+            block_gen_start = max(int(self.prefix_len), int(block.start))
+            block_gen_end = min(int(block.start) + valid_len, int(block.end), self.fdv2_sequence_limit)
+            total += max(0, block_gen_end - block_gen_start)
+        return total
+
+    def _fdv2_block_valid_commit_len(self, block: DllmBlock, committed_generated_len: int | None = None) -> int:
+        if committed_generated_len is None:
+            committed_generated_len = self.fdv2_committed_generated_len
+        prompt_len = max(0, min(int(block.end), int(self.prefix_len)) - int(block.start))
+        remaining_new = max(0, int(self.max_new_tokens) - int(committed_generated_len))
+        remaining_model = max(
+            0,
+            int(self.max_model_len) - int(self.prefix_len) - int(committed_generated_len),
+        )
+        generated_len = min(int(block.block_size) - prompt_len, remaining_new, remaining_model)
+        return max(0, min(int(block.block_size), prompt_len + generated_len))
+
+    def fdv2_block_valid_len(self, block: DllmBlock) -> int:
+        if block.is_in_cache or block.is_to_cache:
+            return max(0, min(int(getattr(block, "valid_commit_len", block.block_size)), int(block.block_size)))
+        return max(0, min(int(block.end), self.fdv2_sequence_limit) - int(block.start))
+
+    def fdv2_block_mask_token_relative_ids(self, block: DllmBlock) -> list[int]:
+        valid_len = self.fdv2_block_valid_len(block)
+        return [idx for idx in block.mask_token_relative_ids if idx < valid_len]
+
+    def _fdv2_block_complete(self, block: DllmBlock) -> bool:
+        valid_len = self.fdv2_block_valid_len(block)
+        if valid_len <= int(getattr(block, "editable_start", 0)):
+            return True
+        return all(token_id != self.mask_token_id for token_id in block.token_ids[:valid_len])
+
     def init_multi_block(self, config: Config):
         self.is_multi_block = True
         self.status_history = [self.status]
@@ -42,7 +87,9 @@ class FastDLLMV2Req(DllmReq):
         self.block_size = config.block_size
         self.buffer_size = config.buffer_size
         strategy_config = getattr(config, "strategy", None)
-        self.fdv2_use_block_cache = bool(getattr(strategy_config, "use_block_cache", True))
+        self.fdv2_use_block_cache = bool(
+            getattr(strategy_config, "use_block_cache", getattr(config, "fdv2_use_block_cache", True))
+        )
         self.mask_token_id = config.mask_token_id
         self.thresholds = config.decoding_thresholds
         self.eos_token_id = config.eos
@@ -107,6 +154,7 @@ class FastDLLMV2Req(DllmReq):
             )
             dllm_block.post_init_dllm_block(self, None)
             dllm_block.commit_ready = False
+            dllm_block.valid_commit_len = self.block_size
             self.dllm_blocks.append(dllm_block)
 
         self.dllm_block_buffer = DllmBlockBuffer(
@@ -144,12 +192,16 @@ class FastDLLMV2Req(DllmReq):
         return self.dllm_block_buffer.last_running_block.end
 
     @property
+    def fdv2_effective_buffer_end(self) -> int:
+        return min(self.fdv2_buffer_end, self.fdv2_sequence_limit)
+
+    @property
     def fdv2_buffer_token_ids(self) -> list[int]:
-        return self.token_ids[self.fdv2_buffer_start : self.fdv2_buffer_end]
+        return self.token_ids[self.fdv2_buffer_start : self.fdv2_effective_buffer_end]
 
     @property
     def fdv2_buffer_position_ids(self) -> list[int]:
-        return list(range(self.fdv2_buffer_start, self.fdv2_buffer_end))
+        return list(range(self.fdv2_buffer_start, self.fdv2_effective_buffer_end))
 
     @property
     def fdv2_replace_position(self) -> int:
@@ -157,7 +209,7 @@ class FastDLLMV2Req(DllmReq):
 
     @property
     def fdv2_read_cache_len(self) -> int:
-        return self.fdv2_buffer_end
+        return min(self.fdv2_buffer_end, self.fdv2_sequence_limit)
 
     @property
     def fdv2_read_cache_pages(self) -> int:
@@ -169,22 +221,65 @@ class FastDLLMV2Req(DllmReq):
 
     @property
     def fdv2_sub_block_complete(self) -> bool:
-        return self.fdv2_current_sub_block.is_complete
+        return self._fdv2_block_complete(self.fdv2_current_sub_block)
 
     @property
     def fdv2_current_sub_block_first_token_is_mask(self) -> bool:
-        return self.fdv2_current_sub_block.token_ids[0] == self.mask_token_id
+        return (
+            self.fdv2_block_valid_len(self.fdv2_current_sub_block) > 0
+            and self.fdv2_current_sub_block.token_ids[0] == self.mask_token_id
+        )
 
     @property
     def fdv2_buffer_complete(self) -> bool:
-        return all(block.is_complete for block in self.fdv2_buffer_blocks)
+        return all(self._fdv2_block_complete(block) for block in self.fdv2_buffer_blocks)
+
+    @property
+    def max_new_tokens_reached(self) -> bool:
+        if hasattr(self, "prefix_len"):
+            return self.fdv2_committed_generated_len >= self.max_new_tokens
+        return super().max_new_tokens_reached
+
+    @property
+    def max_model_len_reached(self) -> bool:
+        if hasattr(self, "prefix_len"):
+            return int(self.prefix_len) + self.fdv2_committed_generated_len >= self.max_model_len
+        return super().max_model_len_reached
+
+    @property
+    def eos_token_generated(self) -> bool:
+        if self.ignore_eos:
+            return False
+        return self.eos_token_id in self.full_response
+
+    @property
+    def full_response(self) -> list[int]:
+        tokens: list[int] = []
+        for block in getattr(self, "dllm_blocks", []):
+            if not block.is_in_cache:
+                continue
+            valid_len = max(0, min(int(getattr(block, "valid_commit_len", block.block_size)), int(block.block_size)))
+            start = max(int(block.start), int(self.prefix_len))
+            end = min(int(block.start) + valid_len, int(block.end), self.fdv2_sequence_limit)
+            if end > start:
+                tokens.extend(self.token_ids[start:end])
+        return tokens
+
+    @property
+    def truncated_response(self) -> list[int]:
+        generated_seq = self.full_response
+        if self.eos_token_id in generated_seq and not self.ignore_eos:
+            generated_seq = generated_seq[: generated_seq.index(self.eos_token_id)]
+        if self.max_new_tokens_reached:
+            generated_seq = generated_seq[: self.max_new_tokens]
+        return generated_seq
 
     def refresh_fdv2_mode(self) -> None:
         if not self.is_decoding:
             return
         while (
             self.fdv2_current_sub_block_idx < self.buffer_size - 1
-            and self.fdv2_current_sub_block.is_complete
+            and self._fdv2_block_complete(self.fdv2_current_sub_block)
         ):
             self.fdv2_current_sub_block_idx += 1
         if not self.fdv2_current_buffer_initialized:
@@ -204,7 +299,8 @@ class FastDLLMV2Req(DllmReq):
             return super().running_sequence
         if self.is_decoding or self.is_completed:
             if self.fdv2_mode == FastDLLMV2Mode.SUB_BLOCK_REFINE and self.fdv2_use_block_cache:
-                return self.fdv2_current_sub_block.token_ids
+                valid_len = self.fdv2_block_valid_len(self.fdv2_current_sub_block)
+                return self.fdv2_current_sub_block.token_ids[:valid_len]
             return self.fdv2_buffer_token_ids
         return []
 
@@ -214,7 +310,8 @@ class FastDLLMV2Req(DllmReq):
             return super().running_position_ids
         if self.is_decoding or self.is_completed:
             if self.fdv2_mode == FastDLLMV2Mode.SUB_BLOCK_REFINE and self.fdv2_use_block_cache:
-                return list(range(self.fdv2_current_sub_block.start, self.fdv2_current_sub_block.end))
+                valid_len = self.fdv2_block_valid_len(self.fdv2_current_sub_block)
+                return list(range(self.fdv2_current_sub_block.start, self.fdv2_current_sub_block.start + valid_len))
             return self.fdv2_buffer_position_ids
         return []
 
@@ -224,8 +321,8 @@ class FastDLLMV2Req(DllmReq):
             return int(self.fdv2_prefix_cache_len)
         if self.is_decoding:
             if self.fdv2_mode == FastDLLMV2Mode.SUB_BLOCK_REFINE and self.fdv2_use_block_cache:
-                return self.block_size
-            return self.chunk_size
+                return self.fdv2_block_valid_len(self.fdv2_current_sub_block)
+            return len(self.fdv2_buffer_token_ids)
         return super().running_len
 
     @property
@@ -234,8 +331,8 @@ class FastDLLMV2Req(DllmReq):
             return int(self.fdv2_prefix_cache_len)
         if self.is_decoding:
             if self.fdv2_mode == FastDLLMV2Mode.SUB_BLOCK_REFINE and self.fdv2_use_block_cache:
-                return self.block_size
-            return self.chunk_size
+                return self.fdv2_block_valid_len(self.fdv2_current_sub_block)
+            return len(self.fdv2_buffer_token_ids)
         return super().valid_len
 
     @property
@@ -284,13 +381,18 @@ class FastDLLMV2Req(DllmReq):
             return
 
         if self.is_decoding and self.fdv2_mode == FastDLLMV2Mode.SUB_BLOCK_REFINE:
-            if self.fdv2_current_sub_block.is_complete and self.fdv2_current_sub_block_idx < self.buffer_size - 1:
+            if self._fdv2_block_complete(self.fdv2_current_sub_block) and self.fdv2_current_sub_block_idx < self.buffer_size - 1:
                 self.fdv2_current_sub_block_idx += 1
             self.refresh_fdv2_mode()
             return
 
         if self.is_decoding and self.fdv2_mode == FastDLLMV2Mode.FINAL_COMMIT:
+            committed_generated_len = self.fdv2_committed_generated_len
             for block in self.fdv2_buffer_blocks:
+                block.valid_commit_len = self._fdv2_block_valid_commit_len(block, committed_generated_len)
+                block_gen_start = max(int(self.prefix_len), int(block.start))
+                block_gen_end = min(int(block.start) + int(block.valid_commit_len), int(block.end))
+                committed_generated_len += max(0, block_gen_end - block_gen_start)
                 if block.is_active:
                     block.commit_ready = True
                     block.status = DllmBlockStatus.TO_CACHE

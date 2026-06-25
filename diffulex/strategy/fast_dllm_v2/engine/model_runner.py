@@ -48,10 +48,11 @@ class FastDLLMV2ModelRunner(ModelRunnerBase):
                 return prepared
 
             block = req.fdv2_current_sub_block
-            input_ids = list(block.token_ids)
-            positions = list(range(block.start, block.end))
+            valid_len = req.fdv2_block_valid_len(block)
+            input_ids = list(block.token_ids[:valid_len])
+            positions = list(range(block.start, block.start + valid_len))
             slot_mapping = []
-            for abs_pos in range(block.start, block.end):
+            for abs_pos in range(block.start, block.start + valid_len):
                 rel_page_id = abs_pos // req.page_size
                 if rel_page_id >= len(req.page_table):
                     slot_mapping.append(-1)
@@ -63,9 +64,9 @@ class FastDLLMV2ModelRunner(ModelRunnerBase):
                 input_ids=input_ids,
                 positions=positions,
                 context_len=req.fdv2_read_cache_len,
-                seqlen_q=req.block_size,
+                seqlen_q=valid_len,
                 seqlen_k=req.fdv2_read_cache_len,
-                valid_slice=req.block_size,
+                valid_slice=valid_len,
                 slot_mapping=slot_mapping,
                 status=2,
                 prefix_len=0,
@@ -88,7 +89,7 @@ class FastDLLMV2ModelRunner(ModelRunnerBase):
 
     def _fdv2_buffer_slot_mapping(self, req) -> list[int]:
         slots: list[int] = []
-        for abs_pos in range(req.fdv2_buffer_start, req.fdv2_buffer_end):
+        for abs_pos in range(req.fdv2_buffer_start, req.fdv2_effective_buffer_end):
             rel_page_id = abs_pos // req.page_size
             if rel_page_id >= len(req.page_table):
                 slots.append(-1)
@@ -173,6 +174,11 @@ class FastDLLMV2ModelRunner(ModelRunnerBase):
         num_tokens = int(input_ids.size(0))
         if num_tokens <= 0 or num_tokens % q_len != 0:
             return False
+        cu_seqlens_q = getattr(attn_metadata, "cu_seqlens_q", None)
+        if cu_seqlens_q is not None and int(cu_seqlens_q.numel()) > 1:
+            q_diffs = cu_seqlens_q[1:] - cu_seqlens_q[:-1]
+            if bool(torch.any(q_diffs != q_len).item()):
+                return False
         mode_bs = graph_bs.get(mode)
         return bool(mode_bs) and num_tokens <= max(mode_bs)
 

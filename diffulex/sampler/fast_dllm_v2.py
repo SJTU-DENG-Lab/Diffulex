@@ -69,7 +69,14 @@ class FastdLLMV2Sampler(DllmSamplerShiftBase):
                 initial_confidence_map[req_id_str] = initial_confidence_sub_map
                 continue
 
-            shifted_logits = self._shift_logits(req_logits)
+            is_fdv2_native_req = hasattr(req, "fdv2_current_sub_block") or int(
+                getattr(req, "fdv2_mode", -1)
+            ) in (_FDV2_SUB_BLOCK_REFINE, _FDV2_FINAL_COMMIT)
+            if is_fdv2_native_req:
+                shifted_logits = self._shift_logits(req_logits)
+            else:
+                last_logits = self._fetch_last_logits(req_logits, req)
+                shifted_logits = DllmSamplerShiftBase._shift_logits(self, req_logits, last_logits)
 
             if attn_metadata.is_prefill[idx]:
                 candidate_blocks = []
@@ -79,7 +86,12 @@ class FastdLLMV2Sampler(DllmSamplerShiftBase):
                 candidate_blocks = [req.fdv2_current_sub_block]
 
             for block in candidate_blocks:
-                if not block.is_active or block.num_mask_tokens == 0 or not block.mask_token_global_ids:
+                block_mask_relative_ids = (
+                    req.fdv2_block_mask_token_relative_ids(block)
+                    if hasattr(req, "fdv2_block_mask_token_relative_ids")
+                    else list(block.mask_token_relative_ids)
+                )
+                if not block.is_active or not block_mask_relative_ids:
                     continue
 
                 if attn_metadata.is_prefill[idx]:
@@ -87,14 +99,14 @@ class FastdLLMV2Sampler(DllmSamplerShiftBase):
                     mask_token_logits = shifted_logits[local_ids, ...]
                 elif int(getattr(req, "fdv2_mode", -1)) == _FDV2_SUB_BLOCK_REFINE:
                     if bool(getattr(req, "fdv2_use_block_cache", True)):
-                        buf_ids = list(block.mask_token_relative_ids)
+                        buf_ids = list(block_mask_relative_ids)
                     else:
                         buf_offset = int(block.start - req.dllm_block_buffer.first_running_block.start)
-                        buf_ids = [buf_offset + i for i in block.mask_token_relative_ids]
+                        buf_ids = [buf_offset + i for i in block_mask_relative_ids]
                     mask_token_logits = shifted_logits[buf_ids, ...]
                 else:
                     buf_offset = int(block.start - req.dllm_block_buffer.first_running_block.start)
-                    buf_ids = [buf_offset + i for i in block.mask_token_relative_ids]
+                    buf_ids = [buf_offset + i for i in block_mask_relative_ids]
                     mask_token_logits = shifted_logits[buf_ids, ...]
 
                 confidence, sampled_tokens, initial_confidence = self.sample_tokens(
@@ -119,10 +131,10 @@ class FastdLLMV2Sampler(DllmSamplerShiftBase):
                     initial_confidence,
                     **kwargs,
                 )
-                true_local_ids_sub_map[block_id_str] = [block.mask_token_relative_ids[i] for i in accepted_ids_list]
+                true_local_ids_sub_map[block_id_str] = [block_mask_relative_ids[i] for i in accepted_ids_list]
                 accepted_ids_sub_map[block_id_str] = accepted_ids_list
                 sampled_tokens_sub_map[block_id_str] = sampled_tokens_list
-                mask_token_rel_ids_sub_map[block_id_str] = list(block.mask_token_relative_ids)
+                mask_token_rel_ids_sub_map[block_id_str] = list(block_mask_relative_ids)
                 confidence_sub_map[block_id_str] = confidence_list
                 initial_confidence_sub_map[block_id_str] = initial_confidence_list
 
