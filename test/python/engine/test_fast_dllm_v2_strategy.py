@@ -14,7 +14,10 @@ from diffulex.strategy.fast_dllm_v2.engine.model_runner import FastDLLMV2ModelRu
 from diffulex.strategy.fast_dllm_v2.engine.request import FastDLLMV2Mode, FastDLLMV2Req
 from diffulex.strategy.fast_dllm_v2.engine.scheduler import FastDLLMV2Scheduler
 from diffulex.strategy.multi_bd.config import MultiBDStrategyConfig
+from diffulex.strategy.multi_bd.engine.kv_cache_manager import MultiBDKVCacheManager
+from diffulex.strategy.multi_bd.engine.model_runner import MultiBDModelRunner
 from diffulex.strategy.multi_bd.engine.request import MultiBDReq
+from diffulex.strategy.multi_bd.engine.scheduler import MultiBDScheduler
 
 
 def _runtime_config(tmp_path):
@@ -135,6 +138,9 @@ def test_fast_dllm_v2_can_use_plain_multi_bd_strategy(tmp_path):
     assert cfg.decoding_strategy == "multi_bd"
     assert isinstance(cfg.strategy, MultiBDStrategyConfig)
     assert isinstance(AutoReq.create(cfg, [1, 2, 3]), MultiBDReq)
+    assert isinstance(AutoKVCacheManager.from_config(cfg), MultiBDKVCacheManager)
+    assert isinstance(AutoScheduler.from_config(cfg), MultiBDScheduler)
+    assert AutoModelRunner._MODULE_MAPPING["multi_bd"] is MultiBDModelRunner
 
 
 def test_fast_dllm_v2_request_activates_whole_buffer_and_advances_modes():
