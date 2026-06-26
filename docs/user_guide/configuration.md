@@ -52,6 +52,75 @@ the supported page/block sizes for the selected model family.
 | `token_merge_weight` | Use a non-negative float. The default is `1.0`. | Weights the token-merge interpolation. |
 | `moe_gemm_impl` | Use `triton`, `vllm`, `vllm_modular`, or `naive`. The default is `triton`. | Selects the MoE GEMM implementation. |
 
+## DMax and Edit Sampling Parameters
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `max_post_edit_steps` | Use a positive integer. The default is `16`. | Caps the number of edit steps per block in DMax/edit-sampling runs. |
+| `penalty_lambda` | Use a non-negative float. The default is `0.0`. | Penalty weight for token-to-token edit selection. |
+| `dmax_sampler_fast_path` | Leave `True` unless debugging. The default is `True`. | Enables the fast argmax path for DMax confidence computation. |
+| `dmax_force_prefill_active` | Leave `False` unless profiling a specific DMax prefill pattern. | Forces DMax active blocks to remain on the prefill execution path. |
+| `enable_vectorized_sampler` | Leave `False` unless extending the vectorized sampler. | Enables the vectorized greedy sampler for batched mask-filling. |
+| `enable_vectorized_sampler_compile` | Leave `False` unless paired with `enable_vectorized_sampler`. | Applies `torch.compile` to the vectorized sampler path. |
+
+## Fast-dLLM-v2 Parameters
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `fdv2_use_block_cache` | Leave `True` for the standard dual-cache path. The default is `True`. | When enabled, already-refined sub-blocks within the buffer reuse cached KV — only the active sub-block is recomputed. Set `False` to re-compute the full buffer every sub-block step. |
+
+## DiffusionGemma Sampler Controls
+
+DiffusionGemma uses a canvas-denoising sampler with its own hyperparameters.
+These are only active when `model_name=diffusion_gemma`:
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `diffusion_gemma_max_denoising_steps` | Use a positive integer. The default is `48`. | Caps the number of denoising steps per block. |
+| `diffusion_gemma_stability_threshold` | Use a positive integer. The default is `2`. | Number of consecutive argmax matches required for convergence. |
+| `diffusion_gemma_confidence_threshold` | Use a float from `0` to `1`. The default is `0.1`. | Mean entropy threshold for accepting convergence. |
+| `diffusion_gemma_t_min` | Use a float. The default is `0.0`. | Minimum temperature in the denoising schedule. |
+| `diffusion_gemma_t_max` | Use a float. The default is `1.0`. | Maximum (initial) temperature in the denoising schedule. |
+| `diffusion_gemma_entropy_bound` | Use a float from `0` to `1`. The default is `1.0`. | Entropy threshold for stochastic re-masking during denoising. |
+
+## MoE Dispatching
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `expert_parallel_size` | Use `1` for standard MoE; increase only when extending the runtime. The default is `1`. | Number of expert-parallel groups for MoE models. |
+| `moe_dispatcher_backend` | Use `standard`, `naive`, or `deepep`. The default is `standard`. | Selects the MoE token dispatcher. |
+| `deepep_mode` | Use `auto` unless debugging DeepEP-specific behavior. | Controls the DeepEP dispatch mode when `moe_dispatcher_backend=deepep`. |
+| `deepep_num_max_dispatch_tokens_per_rank` | Use a positive integer. The default is `256`. | Caps tokens per rank in DeepEP dispatch. |
+
+## Distributed and Deployment
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `master_addr` | Use an IP or hostname. The default is `"localhost"`. | PyTorch distributed master address. |
+| `master_port` | Use an integer. The default is `2333`. | PyTorch distributed master port. |
+| `distributed_backend` | Use `nccl` unless debugging with `gloo`. | PyTorch distributed communication backend. |
+| `distributed_timeout_seconds` | Use a positive integer. The default is `600`. | Timeout for distributed operations. |
+| `device_start` | Use `0` unless mapping specific GPUs. | Starting CUDA device index for local ranks. |
+
+## Runtime Tuning
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `skip_warmup` | Leave `False` unless iterating on config changes. The default is `False`. | Skips model and CUDA graph warmup at engine startup. |
+| `enable_cudagraph_torch_compile` | Leave `False` unless profiling shows a measurable gain. | Applies `torch.compile` to CUDA graph captured regions. |
+| `enable_prefill_cudagraph` | Leave `False` unless prefill latency is the bottleneck. | Enables CUDA graph capture for prefill steps. |
+| `prefill_cudagraph_max_len` | Use `0` (auto-detect) or a positive token count. | Maximum sequence length for prefill CUDA graph capture. |
+| `auto_max_nfe_warmup_steps` | Use a positive integer. The default is `8`. | Number of warmup steps when auto-computing max NFE. |
+| `auto_max_nfe_tpf_floor` | Use a positive float. The default is `1.0`. | Minimum TPF used when auto-computing max NFE. |
+| `num_pages` | Use `-1` for auto-sizing, or a specific page count. | Overrides automatic KV cache page pool sizing. |
+| `k_cache_hdim_split_factor_x` | Leave at the default `8` unless tuning the KV cache layout. | Splits the K cache head dimension for memory layout optimization. |
+
+## Profiler
+
+| Key | How to set it | What it does |
+| --- | --- | --- |
+| `profiler_config` | Use `null` unless collecting a profiling trace. | PyTorch profiler configuration dict. Set to a dict with `activities`, `schedule`, etc. to enable profiling. |
+
 ## Strategy Defaults
 
 Some settings are normalized based on the selected strategy:

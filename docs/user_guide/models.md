@@ -19,10 +19,10 @@ known invalid combinations.
 | Dream reasoner | `dream_reasoner` | `multi_bd` | Block-causal MultiBD path. |
 | Stable-DiffCoder | `stable_diffcoder` | `multi_bd` | Block-causal MultiBD path. |
 | LLaDA / D2F-LLaDA | `llada` | `d2f` | Use D2F LoRA-style configs when applicable. |
-| Fast-dLLM-v2 | `fast_dllm_v2` | `multi_bd` | Multi-Block Diffusion path. |
+| Fast-dLLM-v2 | `fast_dllm_v2` | `multi_bd` or `fast_dllm_v2` | Dual-Cache sub-block refinement; `fast_dllm_v2` strategy enables the native FDv2 decoding path. |
 | SDAR | `sdar` | `multi_bd` | Dense SDAR path. |
 | SDAR-MoE | `sdar_moe` | `multi_bd` | MoE path; keep expert parallel at `1` unless extending the runtime. |
-| LLaDA2 family | `llada2`, `llada2_mini`, `llada2_moe`, `llada2dot1_mini` | `multi_bd` or `dmax` | LLaDA2-mini GSM8K is the primary maintained benchmark path. |
+| LLaDA2 family | `llada2`, `llada2_mini`, `llada2_moe`, `llada2dot1_mini`, `llada2_mini_dmax` | `multi_bd`, `dmax`, or `fast_dllm_v2` | `llada2_mini_dmax` enables DMax sampler defaults. |
 | DiffusionGemma | `diffusion_gemma` | `diffusion_gemma` | Native 256-token canvas/block decoder. |
 
 The original full-attention inference implementations from some upstream dLLM
@@ -34,8 +34,9 @@ through block-wise adapters, samplers, and strategy registrations.
 | Strategy | Use it for | Important behavior |
 | --- | --- | --- |
 | `d2f` | D2F-style LLaDA, Dream, and DiffuCoder paths | Forces full-prefix multi-block behavior and disables prefix caching. |
-| `multi_bd` | LLaDA2, SDAR, Fast-dLLM-v2, stable DiffuCoder/Dream reasoner paths | Implements Multi-Block Diffusion with block-causal visibility and prefix caching. |
-| `dmax` | Supported LLaDA2 edit-sampling experiments | Requires `sampling_mode="edit"`. |
+| `multi_bd` | LLaDA2, SDAR, stable DiffuCoder/Dream reasoner paths | Implements Multi-Block Diffusion with block-causal visibility and prefix caching. |
+| `fast_dllm_v2` | Fast-dLLM-v2 native dual-cache decoding | 3-mode sub-block refinement FSM with dedicated CUDA graphs per mode. |
+| `dmax` | Supported LLaDA2 edit-sampling experiments | Token merge + edit sampling; requires `sampling_mode="edit"`. |
 | `diffusion_gemma` | DiffusionGemma | Uses DiffusionGemma request, sampler, block/page size, and canvas defaults. |
 
 ## Sampling Modes
@@ -76,5 +77,8 @@ Common starting points live under `diffulex_bench/configs/`:
 | `fast_dllm_v2_gsm8k.yml` | Fast-dLLM-v2 multi-block benchmark. |
 | `sdar_chat_gsm8k.yml` | SDAR dense benchmark. |
 | `sdar_moe_chat_gsm8k.yml` | SDAR-MoE benchmark. |
+| `fast_dllm_v2_multibd_gsm8k.yml` | Fast-dLLM-v2 training-free MultiBD variant (blksz=4, bufsz=6). |
+| `llada_instruct_gsm8k.yml` | LLaDA D2F-style benchmark. |
+| `llada2_mini_gsm8k_tp1_limit200_maxnfe2048.yml` | Parity/evaluation variant with TP=1 and 200-sample limit. |
 
 Start with `--dataset-limit` before running a full dataset.

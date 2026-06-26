@@ -17,10 +17,15 @@ cache management, block scheduling, prefix reuse, MoE execution, CUDA graph
 replay, HTTP serving, and model-specific diffusion samplers.
 
 Diffulex is also the runtime engine behind the **Multi-Block Diffusion Language
-Models (MBD-LMs)** line of work. In the engine, **Multi-Block Diffusion
-(MultiBD)** is exposed as `decoding_strategy=multi_bd`, where a bounded
-running-set of consecutive diffusion blocks is decoded concurrently instead of
-finishing one block at a time.
+Models (MBD-LMs)** line of work. Native Block Diffusion LMs perform
+**Single-Block Diffusion (SingleBD)**: one noisy block per forward pass,
+creating a store bubble where no new output is produced. **Multi-Block
+Diffusion (MultiBD)** removes this bottleneck with a bounded running-set of
+consecutive blocks, enabling decode-store overlap and inter-block parallelism.
+MBD-LMs are BD-LMs post-trained with **Multi-block Teacher Forcing (MultiTF)**
+to handle practical MultiBD states, and Diffulex executes them with an optimized
+**Block Buffer** runtime that preserves static shapes for CUDA Graph replay.
+In the engine, this is exposed as `decoding_strategy=multi_bd`.
 
 ## Start Here
 
@@ -42,13 +47,15 @@ configuration, benchmarks, serving, and development notes:
 ## Branches
 
 For reproducing the MBD-LMs experiments, use the Diffulex
-[`mbd-lms`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/mbd-lms) branch.
+[`mbd-lms`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/mbd-lms) branch
+(CUDA 12).
 
 For engine development, open-source contributions, or exploring new decoding
 algorithms and turning them into runnable systems, use the
 [`main`](https://github.com/SJTU-DENG-Lab/Diffulex/tree/main) branch. `main`
 contains ongoing runtime and model-specific optimizations, so its behavior and
 performance profile may differ from the experiment reproduction branch.
+**The `main` branch requires CUDA 13.**
 
 Diffulex `main` is built for researchers who want a real backend for block-level
 dLLM inference ideas. Its Block Buffer backend separates logical block state,
@@ -59,10 +66,12 @@ serving-system rewrites.
 
 ## Current Scope
 
-Diffulex focuses on cache-aware block-wise dLLM decoding. The current engine
-supports D2F-style decoding, block-causal MultiBD, DMax token-merge decoding,
-DiffusionGemma canvas decoding, vLLM-backed common layers/MoE kernels, benchmark
-entry points, and HTTP serving.
+Diffulex focuses on cache-aware block-wise dLLM decoding through a **single core
+backend** that supports multiple main strategies: MultiBD (SingleBD at BufSz=1,
+full MultiBD at BufSz&ge;2), Token Merge + Edit (DMax), Edit Sampling / T2T
+(LLaDA2.1), D2F MultiBD, Fast-dLLM-v2 Dual Cache, and DiffusionGemma. The most
+complex part of adding a strategy is modifying the request state machine —
+sampler-only strategies like DMax require no state machine changes at all.
 
 Supported model families include Dream/DiffuCoder-style dense dLLMs, Dream
 reasoner, Stable-DiffCoder, LLaDA, Fast-dLLM-v2, SDAR, SDAR-MoE, LLaDA2, and

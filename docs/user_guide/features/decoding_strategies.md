@@ -6,7 +6,7 @@ chosen by `decoding_strategy`.
 
 ## Decoding Strategy
 
-Set `decoding_strategy` to one of `d2f`, `multi_bd`, `dmax`, or
+Set `decoding_strategy` to one of `d2f`, `multi_bd`, `fast_dllm_v2`, `dmax`, or
 `diffusion_gemma`.
 
 Benchmark config input also normalizes older aliases `multi_block_diffusion`,
@@ -18,6 +18,7 @@ The choice changes more than the sampler name:
 | --- | --- |
 | `d2f` | Forces full-prefix multi-block behavior and disables prefix caching. |
 | `multi_bd` | Implements Multi-Block Diffusion (MultiBD): a bounded active block set with block-causal visibility and prefix caching enabled when compatible. |
+| `fast_dllm_v2` | Implements Fast-dLLM-v2 dual-cache decoding: 3-mode FSM (full-buffer init, sub-block refine, final commit) with per-mode CUDA graphs. |
 | `dmax` | Enables DMax-style token merging on supported edit-sampling models. |
 | `diffusion_gemma` | Uses the native DiffusionGemma canvas/block runtime. |
 
