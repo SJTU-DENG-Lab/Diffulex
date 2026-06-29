@@ -26,6 +26,8 @@ class DiffusionGemmaReq(DllmReq):
         self.is_multi_block = True
         self.status_history = [self.status]
         self.completion_reason = None
+        self._resume_prefill_until = 0
+        self._terminal_context_block_id: int | None = None
 
         self.block_size = config.block_size
         self.buffer_size = config.buffer_size
