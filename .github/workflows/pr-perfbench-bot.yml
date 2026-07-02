@@ -76,7 +76,7 @@ jobs:
           python maint/scripts/ci_performance.py
 
       - name: Post test results as PR comment
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
